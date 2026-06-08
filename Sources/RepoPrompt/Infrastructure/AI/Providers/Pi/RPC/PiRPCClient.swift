@@ -95,6 +95,31 @@ actor PiRPCClient {
         }
     }
 
+    struct ExpectedAgentPIDRegistration: Equatable {
+        let clientName: String
+        let runID: UUID
+    }
+
+    struct ExpectedAgentPIDRegistrar {
+        let register: @Sendable (_ pid: pid_t, _ clientName: String, _ runID: UUID) async -> Void
+        let clear: @Sendable (_ pid: pid_t, _ clientName: String, _ runID: UUID) async -> Void
+
+        static let serverNetworkManager = ExpectedAgentPIDRegistrar(
+            register: { pid, clientName, runID in
+                await ServerNetworkManager.shared.registerExpectedAgentPID(pid, for: clientName, runID: runID)
+            },
+            clear: { pid, clientName, runID in
+                await ServerNetworkManager.shared.clearExpectedAgentPID(pid, for: clientName, runID: runID)
+            }
+        )
+    }
+
+    private struct RegisteredExpectedAgentPID: Equatable {
+        let pid: pid_t
+        let clientName: String
+        let runID: UUID
+    }
+
     enum ClientError: Error, LocalizedError, Equatable {
         case processNotRunning
         case executableUnavailable(String)
@@ -146,9 +171,16 @@ actor PiRPCClient {
     private var eventsStream: AsyncStream<Event>
     private var eventsContinuation: AsyncStream<Event>.Continuation?
     private var isShuttingDown = false
+    private var expectedAgentPIDRegistration: ExpectedAgentPIDRegistration?
+    private var registeredExpectedAgentPID: RegisteredExpectedAgentPID?
+    private let expectedAgentPIDRegistrar: ExpectedAgentPIDRegistrar
 
-    init(config: Config = Config()) {
+    init(
+        config: Config = Config(),
+        expectedAgentPIDRegistrar: ExpectedAgentPIDRegistrar = .serverNetworkManager
+    ) {
         self.config = config
+        self.expectedAgentPIDRegistrar = expectedAgentPIDRegistrar
         let stream = Self.makeEventsStream()
         eventsStream = stream.stream
         eventsContinuation = stream.continuation
@@ -164,6 +196,56 @@ actor PiRPCClient {
 
     func updateConfig(_ config: Config) {
         self.config = config
+    }
+
+    func setExpectedAgentPIDRegistration(_ registration: ExpectedAgentPIDRegistration?) async {
+        expectedAgentPIDRegistration = registration
+        guard registration != nil else {
+            await clearRegisteredExpectedAgentPIDIfNeeded()
+            return
+        }
+        guard let process else {
+            await clearRegisteredExpectedAgentPIDIfNeeded()
+            return
+        }
+        await registerExpectedAgentPIDIfNeeded(for: process.pid)
+    }
+
+    func clearExpectedAgentPIDRegistration() async {
+        expectedAgentPIDRegistration = nil
+        await clearRegisteredExpectedAgentPIDIfNeeded()
+    }
+
+    private func registerExpectedAgentPIDIfNeeded(for pid: pid_t) async {
+        guard let registration = expectedAgentPIDRegistration else { return }
+        let target = RegisteredExpectedAgentPID(
+            pid: pid,
+            clientName: registration.clientName,
+            runID: registration.runID
+        )
+        guard registeredExpectedAgentPID != target else { return }
+        await clearRegisteredExpectedAgentPIDIfNeeded()
+        guard expectedAgentPIDRegistration == registration, process?.pid == pid else { return }
+        registeredExpectedAgentPID = target
+        await expectedAgentPIDRegistrar.register(target.pid, target.clientName, target.runID)
+        guard expectedAgentPIDRegistration == registration, process?.pid == pid else {
+            if registeredExpectedAgentPID == target {
+                registeredExpectedAgentPID = nil
+            }
+            await expectedAgentPIDRegistrar.clear(target.pid, target.clientName, target.runID)
+            return
+        }
+    }
+
+    private func clearRegisteredExpectedAgentPIDIfNeeded() async {
+        guard let registered = takeRegisteredExpectedAgentPIDForDeferredClear() else { return }
+        await expectedAgentPIDRegistrar.clear(registered.pid, registered.clientName, registered.runID)
+    }
+
+    private func takeRegisteredExpectedAgentPIDForDeferredClear() -> RegisteredExpectedAgentPID? {
+        let registered = registeredExpectedAgentPID
+        registeredExpectedAgentPID = nil
+        return registered
     }
 
     func ensureEventsStreamReady() {
@@ -216,6 +298,7 @@ actor PiRPCClient {
             workingDirectory: workingDirectory
         )
         process = spawned
+        await registerExpectedAgentPIDIfNeeded(for: spawned.pid)
         stdoutFramer = LineFramer()
         stderrTail.removeAll(keepingCapacity: false)
         do {
@@ -226,6 +309,7 @@ actor PiRPCClient {
             spawned.stderr.readabilityHandler = nil
             spawned.stdin?.closeFile()
             process = nil
+            await clearRegisteredExpectedAgentPIDIfNeeded()
             _ = await ProcessTermination.terminateAndReap(
                 pid: spawned.pid,
                 logger: config.enableDebugLogging ? { print("[PiRPCClient] \($0)") } : { _ in }
@@ -241,6 +325,7 @@ actor PiRPCClient {
         guard !isShuttingDown else { return }
         isShuttingDown = true
         let activeProcess = process
+        let expectedAgentPIDToClear = takeRegisteredExpectedAgentPIDForDeferredClear()
         process = nil
         stdoutConsumerTask?.cancel()
         stderrConsumerTask?.cancel()
@@ -254,6 +339,13 @@ actor PiRPCClient {
         activeProcess?.stderr.readabilityHandler = nil
         activeProcess?.stdin?.closeFile()
         failAllPendingRequests(ClientError.transportClosed("pi RPC transport shut down."))
+        if let expectedAgentPIDToClear {
+            await expectedAgentPIDRegistrar.clear(
+                expectedAgentPIDToClear.pid,
+                expectedAgentPIDToClear.clientName,
+                expectedAgentPIDToClear.runID
+            )
+        }
         if let pid = activeProcess?.pid {
             _ = await ProcessTermination.terminateAndReap(
                 pid: pid,

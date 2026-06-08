@@ -56,6 +56,10 @@ struct ExecOptions {
 
     /// Show verbose output including timing.
     var verbose: Bool = false
+
+    /// Override the MCP bootstrap client name. Internal managed-run integrations use this
+    /// to route helper invocations through the parent agent provider policy.
+    var clientNameOverride: String?
 }
 
 /// Exit codes for exec mode.

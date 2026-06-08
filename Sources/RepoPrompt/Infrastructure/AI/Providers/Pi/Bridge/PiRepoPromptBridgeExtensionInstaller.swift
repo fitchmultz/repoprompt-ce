@@ -15,7 +15,7 @@ enum PiRepoPromptBridgeExtensionInstaller {
         }
     }
 
-    static let extensionVersion = "1"
+    static let extensionVersion = "2"
 
     static func install(
         windowID: Int,
@@ -45,31 +45,45 @@ enum PiRepoPromptBridgeExtensionInstaller {
     static func extensionSource(windowID: Int, cliPath: String) -> String {
         let escapedCLIPath = jsonStringLiteral(cliPath)
         return """
-        import type { ExtensionAPI } from \"@earendil-works/pi-coding-agent\";
-        import { Type } from \"typebox\";
+        import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-        const BRIDGE_VERSION = \"\(extensionVersion)\";
+        const BRIDGE_VERSION = "\(extensionVersion)";
         const REPOPROMPT_CLI = \(escapedCLIPath);
-        const REPOPROMPT_WINDOW_ID = \"\(windowID)\";
+        const REPOPROMPT_CLIENT_NAME = "pi";
+        const REPOPROMPT_WINDOW_ID = "\(windowID)";
+        const SCHEMA_LOAD_TIMEOUT_MS = 60_000;
+        const TOOL_EXEC_TIMEOUT_MS = 600_000;
         const MAX_RESULT_CHARS = 50 * 1024;
 
-        const repoPromptToolSchema = Type.Object({
-          tool: Type.String({
-            description: \"RepoPrompt MCP tool name, for example get_file_tree, read_file, file_search, manage_selection, workspace_context, prompt, apply_edits, ask_user, context_builder, agent_run, agent_manage, share_thoughts, set_status, or wait_for_next_user_instruction.\",
-          }),
-          args: Type.Optional(Type.Record(Type.String(), Type.Any(), {
-            description: \"JSON arguments to pass to the RepoPrompt MCP tool.\",
-          })),
-          timeoutMs: Type.Optional(Type.Number({
-            description: \"Execution timeout in milliseconds. Defaults to 120000.\",
-          })),
-        });
+        type JSONRecord = Record<string, unknown>;
 
-        type RepoPromptToolParams = {
-          tool: string;
-          args?: Record<string, unknown>;
-          timeoutMs?: number;
+        type RepoPromptToolEntry = {
+          name: string;
+          description?: string;
+          inputSchema?: unknown;
         };
+
+        type RepoPromptToolsEnvelope = {
+          tools?: RepoPromptToolEntry[];
+        };
+
+        function isRecord(value: unknown): value is JSONRecord {
+          return typeof value === "object" && value !== null && !Array.isArray(value);
+        }
+
+        function asParameterSchema(schema: unknown): any {
+          if (!isRecord(schema)) {
+            return { type: "object", properties: {}, additionalProperties: false };
+          }
+          return schema;
+        }
+
+        function requireToolName(name: unknown): string {
+          if (typeof name !== "string" || name.trim().length === 0) {
+            throw new Error("RepoPrompt MCP tool schema included a tool without a valid name.");
+          }
+          return name.trim();
+        }
 
         function truncate(text: string): { text: string; truncated: boolean } {
           if (text.length <= MAX_RESULT_CHARS) return { text, truncated: false };
@@ -79,47 +93,86 @@ enum PiRepoPromptBridgeExtensionInstaller {
           };
         }
 
-        export default function repoPromptBridge(pi: ExtensionAPI) {
-          pi.registerTool({
-            name: \"repoprompt_tool\",
-            label: \"RepoPrompt Tool\",
-            description: \"Call a RepoPrompt MCP tool through the current RepoPrompt CE window.\",
-            promptSnippet: \"Call RepoPrompt MCP tools for workspace context, file tree/read/search, selection, edits, user interaction, and Agent Mode control.\",
-            promptGuidelines: [
-              \"Use repoprompt_tool when RepoPrompt workspace context, selected files, prompt content, apply-edits review, ask-user UI, or Agent Mode control is needed.\",
-              \"For repoprompt_tool, pass the exact RepoPrompt MCP tool name in tool and its JSON arguments in args.\",
-              \"Common repoprompt_tool tool names include get_file_tree, read_file, file_search, manage_selection, workspace_context, prompt, apply_edits, ask_user, context_builder, agent_run, agent_manage, share_thoughts, set_status, and wait_for_next_user_instruction.\",
-            ],
-            parameters: repoPromptToolSchema,
-            async execute(_toolCallId: string, params: RepoPromptToolParams, signal) {
-              const tool = params.tool.trim();
-              if (!tool) throw new Error(\"RepoPrompt tool name is required.\");
-              const jsonArgs = JSON.stringify(params.args ?? {});
-              const timeout = Math.max(1, Math.min(params.timeoutMs ?? 120_000, 600_000));
-              const result = await pi.exec(
-                REPOPROMPT_CLI,
-                [\"-w\", REPOPROMPT_WINDOW_ID, \"-c\", tool, \"-j\", jsonArgs],
-                { signal, timeout },
-              );
-              const stdout = result.stdout.trim();
-              const stderr = result.stderr.trim();
-              if (result.code !== 0) {
-                throw new Error(stderr || stdout || `RepoPrompt tool ${tool} failed with exit code ${result.code}`);
-              }
-              const merged = stdout || stderr || `RepoPrompt tool ${tool} completed.`;
-              const truncated = truncate(merged);
-              return {
-                content: [{ type: \"text\", text: truncated.text }],
-                details: {
-                  bridgeVersion: BRIDGE_VERSION,
-                  tool,
-                  windowID: REPOPROMPT_WINDOW_ID,
-                  exitCode: result.code,
-                  truncated: truncated.truncated,
-                },
-              };
+        function parseToolsSchema(stdout: string): RepoPromptToolEntry[] {
+          let parsed: RepoPromptToolsEnvelope;
+          try {
+            parsed = JSON.parse(stdout) as RepoPromptToolsEnvelope;
+          } catch (error) {
+            throw new Error(`RepoPrompt MCP tool schema was not valid JSON: ${String(error)}`);
+          }
+          if (!Array.isArray(parsed.tools)) {
+            throw new Error("RepoPrompt MCP tool schema did not include a tools array.");
+          }
+          return parsed.tools.map((tool) => ({
+            ...tool,
+            name: requireToolName(tool.name),
+          }));
+        }
+
+        async function loadRepoPromptTools(pi: ExtensionAPI): Promise<RepoPromptToolEntry[]> {
+          const result = await pi.exec(
+            REPOPROMPT_CLI,
+            ["--client-name", REPOPROMPT_CLIENT_NAME, "--tools-schema", "--compact"],
+            { timeout: SCHEMA_LOAD_TIMEOUT_MS },
+          );
+          const stdout = result.stdout.trim();
+          const stderr = result.stderr.trim();
+          if (result.code !== 0) {
+            throw new Error(stderr || stdout || `RepoPrompt MCP tool schema export failed with exit code ${result.code}`);
+          }
+          return parseToolsSchema(stdout);
+        }
+
+        async function callRepoPromptTool(
+          pi: ExtensionAPI,
+          toolName: string,
+          params: JSONRecord,
+          signal?: AbortSignal,
+        ) {
+          const result = await pi.exec(
+            REPOPROMPT_CLI,
+            ["--client-name", REPOPROMPT_CLIENT_NAME, "-w", REPOPROMPT_WINDOW_ID, "-c", toolName, "-j", JSON.stringify(params ?? {})],
+            { signal, timeout: TOOL_EXEC_TIMEOUT_MS },
+          );
+          const stdout = result.stdout.trim();
+          const stderr = result.stderr.trim();
+          if (result.code !== 0) {
+            throw new Error(stderr || stdout || `RepoPrompt tool ${toolName} failed with exit code ${result.code}`);
+          }
+          const merged = stdout || stderr || `RepoPrompt tool ${toolName} completed.`;
+          const truncated = truncate(merged);
+          return {
+            content: [{ type: "text", text: truncated.text }],
+            details: {
+              bridgeVersion: BRIDGE_VERSION,
+              tool: toolName,
+              windowID: REPOPROMPT_WINDOW_ID,
+              exitCode: result.code,
+              truncated: truncated.truncated,
             },
-          });
+          };
+        }
+
+        export default async function repoPromptBridge(pi: ExtensionAPI) {
+          const tools = await loadRepoPromptTools(pi);
+          for (const tool of tools) {
+            const toolName = requireToolName(tool.name);
+            const description = tool.description?.trim() || `Call RepoPrompt MCP tool ${toolName} through the current RepoPrompt CE window.`;
+            pi.registerTool({
+              name: toolName,
+              label: toolName,
+              description,
+              promptSnippet: `RepoPrompt: ${description}`,
+              promptGuidelines: [
+                `Use ${toolName} when RepoPrompt workspace context, selection, editing, user interaction, or Agent Mode control requires this RepoPrompt MCP tool.`,
+                "RepoPrompt bridge tools are routed to the current RepoPrompt CE window and governed by RepoPrompt Agent Mode permissions.",
+              ],
+              parameters: asParameterSchema(tool.inputSchema),
+              async execute(_toolCallId: string, params: JSONRecord, signal?: AbortSignal) {
+                return await callRepoPromptTool(pi, toolName, params ?? {}, signal);
+              },
+            });
+          }
         }
         """
     }

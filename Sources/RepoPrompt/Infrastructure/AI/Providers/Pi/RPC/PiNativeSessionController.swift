@@ -156,6 +156,14 @@ actor PiNativeSessionController {
         currentRef
     }
 
+    func setExpectedAgentPIDRegistration(clientName: String?, runID: UUID?) async {
+        guard let clientName, let runID else {
+            await client.clearExpectedAgentPIDRegistration()
+            return
+        }
+        await client.setExpectedAgentPIDRegistration(.init(clientName: clientName, runID: runID))
+    }
+
     func applyModelAndThinking(model: String?, thinkingLevel: String?) async throws {
         let specifier = PiModelSpecifier(raw: model)
         if let requestedModel = specifier?.modelID {
@@ -209,6 +217,7 @@ actor PiNativeSessionController {
         hasStartedForwarding = false
         pendingTurnIDs.removeAll()
         currentRef = nil
+        await client.clearExpectedAgentPIDRegistration()
         await client.shutdown()
         eventsContinuation?.finish()
         eventsContinuation = nil

@@ -17,6 +17,7 @@ struct InteractiveOptions {
     var rawJSON: Bool = false
     var verbose: Bool = false
     var toolCallTimeoutSeconds: Double?
+    var clientNameOverride: String?
 
     // Single-shot command options
     var listToolsOnly: Bool = false

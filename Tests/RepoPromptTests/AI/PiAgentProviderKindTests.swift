@@ -13,7 +13,25 @@ final class PiAgentProviderKindTests: XCTestCase {
         XCTAssertTrue(AgentProviderKind.pi.requiresExpectedPIDOwnedAgentModeMCPRouting)
     }
 
-    func testPiModelsAreAvailableButHiddenFromSelectableAgentsUntilRunnerWiring() {
+    @MainActor
+    func testPiAgentModeBootstrapSpecUsesMultiUseExpectedPIDPolicy() {
+        let spec = MCPBootstrapLeaseSpec.agentMode(
+            tabID: UUID(),
+            runID: UUID(),
+            gateID: UUID(),
+            windowID: 7,
+            agent: .pi
+        )
+
+        XCTAssertEqual(spec.clientName, "pi")
+        XCTAssertFalse(spec.oneShot)
+        XCTAssertEqual(spec.ttl, 3600)
+        XCTAssertTrue(spec.requiresExpectedAgentPID)
+        XCTAssertEqual(spec.purpose, .agentModeRun)
+        XCTAssertEqual(spec.additionalTools, AgentModeMCPToolPolicy.piGrantedTools)
+    }
+
+    func testPiModelsAreAvailableButHiddenFromSelectableAgentsUntilRuntimeValidationCompletes() {
         let availability = AgentModelCatalog.AvailabilityContext(piAvailable: true)
 
         XCTAssertTrue(AgentModelCatalog.isAgentAvailable(.pi, availability: availability))
@@ -28,7 +46,7 @@ final class PiAgentProviderKindTests: XCTestCase {
         )
         XCTAssertFalse(
             AgentModelCatalog.selectableAgents(availability: availability).contains(.pi),
-            "pi should stay hidden from visible Agent Mode selection until native runner support is wired."
+            "pi should stay hidden from visible Agent Mode selection until runtime, routing, permissions, and resume validation are complete."
         )
     }
 }

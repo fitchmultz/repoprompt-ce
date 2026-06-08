@@ -2,6 +2,30 @@
 import XCTest
 
 final class PiRPCClientTests: XCTestCase {
+    private actor ExpectedPIDRecorder {
+        struct Event: Equatable {
+            enum Kind: Equatable {
+                case register
+                case clear
+            }
+
+            var kind: Kind
+            var pid: pid_t
+            var clientName: String
+            var runID: UUID
+        }
+
+        private var recordedEvents: [Event] = []
+
+        func record(_ kind: Event.Kind, pid: pid_t, clientName: String, runID: UUID) {
+            recordedEvents.append(.init(kind: kind, pid: pid, clientName: clientName, runID: runID))
+        }
+
+        func events() -> [Event] {
+            recordedEvents
+        }
+    }
+
     private var temporaryURLs: [URL] = []
 
     override func tearDown() {
@@ -109,6 +133,46 @@ final class PiRPCClientTests: XCTestCase {
         } catch let error as PiRPCClient.ClientError {
             XCTAssertEqual(error, .requestFailed("bad thinking level"))
         }
+    }
+
+    func testExpectedAgentPIDRegistrationRegistersSpawnedPiProcessAndClearsOnShutdown() async throws {
+        let scriptURL = try makeFakePiRPCScript()
+        let recorder = ExpectedPIDRecorder()
+        let runID = UUID()
+        let registrar = PiRPCClient.ExpectedAgentPIDRegistrar(
+            register: { pid, clientName, runID in
+                await recorder.record(.register, pid: pid, clientName: clientName, runID: runID)
+            },
+            clear: { pid, clientName, runID in
+                await recorder.record(.clear, pid: pid, clientName: clientName, runID: runID)
+            }
+        )
+        let client = PiRPCClient(
+            config: .init(
+                commandName: scriptURL.path,
+                additionalPathHints: [],
+                requestTimeout: 2,
+                launchArguments: []
+            ),
+            expectedAgentPIDRegistrar: registrar
+        )
+
+        await client.setExpectedAgentPIDRegistration(.init(clientName: "pi", runID: runID))
+        _ = try await client.getState()
+        var events = await recorder.events()
+        XCTAssertEqual(events.count, 1)
+        XCTAssertEqual(events.first?.kind, .register)
+        XCTAssertEqual(events.first?.clientName, "pi")
+        XCTAssertEqual(events.first?.runID, runID)
+        XCTAssertNotEqual(events.first?.pid, 0)
+
+        await client.shutdown()
+        events = await recorder.events()
+        XCTAssertEqual(events.count, 2)
+        XCTAssertEqual(events[1].kind, .clear)
+        XCTAssertEqual(events[1].pid, events[0].pid)
+        XCTAssertEqual(events[1].clientName, "pi")
+        XCTAssertEqual(events[1].runID, runID)
     }
 
     func testExtensionUIResponsePreservesOriginalRequestID() async throws {

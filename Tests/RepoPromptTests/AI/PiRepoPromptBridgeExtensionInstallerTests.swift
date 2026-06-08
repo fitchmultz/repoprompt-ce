@@ -2,19 +2,23 @@
 import XCTest
 
 final class PiRepoPromptBridgeExtensionInstallerTests: XCTestCase {
-    func testExtensionSourceRegistersRepoPromptToolAndEscapesCLIPath() {
+    func testExtensionSourceRegistersConcreteRepoPromptToolsFromExportedSchemasAndEscapesCLIPath() {
         let source = PiRepoPromptBridgeExtensionInstaller.extensionSource(
             windowID: 42,
             cliPath: #"/tmp/RepoPrompt "Debug"/repoprompt-mcp"#
         )
 
+        XCTAssertTrue(source.contains("export default async function repoPromptBridge"))
+        XCTAssertTrue(source.contains("loadRepoPromptTools"))
         XCTAssertTrue(source.contains("pi.registerTool"))
-        XCTAssertTrue(source.contains("name: \"repoprompt_tool\""))
+        XCTAssertTrue(source.contains("name: toolName"))
+        XCTAssertTrue(source.contains("parameters: asParameterSchema(tool.inputSchema)"))
+        XCTAssertTrue(source.contains("[\"--client-name\", REPOPROMPT_CLIENT_NAME, \"--tools-schema\", \"--compact\"]"))
+        XCTAssertTrue(source.contains("[\"--client-name\", REPOPROMPT_CLIENT_NAME, \"-w\", REPOPROMPT_WINDOW_ID, \"-c\", toolName"))
+        XCTAssertTrue(source.contains("const REPOPROMPT_CLIENT_NAME = \"pi\""))
         XCTAssertTrue(source.contains("const REPOPROMPT_WINDOW_ID = \"42\""))
         XCTAssertTrue(source.contains("\\\"Debug\\\""))
         XCTAssertTrue(source.contains("repoprompt-mcp"))
-        XCTAssertTrue(source.contains("get_file_tree"))
-        XCTAssertTrue(source.contains("apply_edits"))
-        XCTAssertTrue(source.contains("agent_run"))
+        XCTAssertFalse(source.contains("name: \"repoprompt_tool\""))
     }
 }

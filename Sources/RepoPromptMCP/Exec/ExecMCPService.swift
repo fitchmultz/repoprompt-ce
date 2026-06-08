@@ -23,7 +23,7 @@ actor ExecMCPService: Service {
     init(options: ExecOptions, logger: Logger? = nil) {
         self.options = options
         sessionToken = UUID().uuidString
-        clientName = "RepoPrompt CLI (Exec)"
+        clientName = options.clientNameOverride ?? "RepoPrompt CLI (Exec)"
         var configuredLogger = logger ?? Logger(label: "mcp.exec") { _ in
             SwiftLogNoOpLogHandler()
         }

@@ -246,7 +246,8 @@ final class AgentModeRunService {
                 initialUserMessage: initialUserMessage,
                 initialMessageForRun: initialMessageForRun,
                 attachments: attachments,
-                workspacePath: workspacePath
+                workspacePath: workspacePath,
+                makeLease: makeLease
             )
             return nil
         }

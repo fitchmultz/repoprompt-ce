@@ -1808,6 +1808,29 @@ func parseCLIMode() -> CLIMode {
             interactiveOptions.toolCallTimeoutSeconds = seconds
             execOptions.toolCallTimeoutSeconds = seconds
 
+        case "--client-name":
+            i = args.index(after: i)
+            guard i < args.endIndex else {
+                fputs("Error: --client-name requires a non-empty name.\n", stderr)
+                exit(2)
+            }
+            let clientName = args[i].trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !clientName.isEmpty else {
+                fputs("Error: --client-name requires a non-empty name.\n", stderr)
+                exit(2)
+            }
+            interactiveOptions.clientNameOverride = clientName
+            execOptions.clientNameOverride = clientName
+
+        case let s where s.hasPrefix("--client-name="):
+            let clientName = String(s.dropFirst("--client-name=".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !clientName.isEmpty else {
+                fputs("Error: --client-name requires a non-empty name.\n", stderr)
+                exit(2)
+            }
+            interactiveOptions.clientNameOverride = clientName
+            execOptions.clientNameOverride = clientName
+
         case let s where s.hasPrefix("--tool-timeout="):
             let raw = String(s.dropFirst("--tool-timeout=".count))
             guard let seconds = parseToolTimeoutSeconds(raw) else {

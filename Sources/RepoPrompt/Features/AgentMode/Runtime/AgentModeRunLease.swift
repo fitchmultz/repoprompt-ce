@@ -11,7 +11,8 @@ extension MCPBootstrapLeaseSpec {
         taskLabelKind: AgentModelCatalog.TaskLabelKind? = nil,
         allowsAgentExternalControlTools: Bool = false
     ) -> MCPBootstrapLeaseSpec {
-        MCPBootstrapLeaseSpec(
+        let isPi = agent == .pi
+        return MCPBootstrapLeaseSpec(
             runID: runID,
             gateID: gateID,
             windowID: windowID,
@@ -19,9 +20,9 @@ extension MCPBootstrapLeaseSpec {
             clientName: agent.mcpClientNameHint,
             restrictedTools: AgentModeMCPToolPolicy.restrictedTools,
             additionalTools: AgentModeMCPPolicyInstaller.additionalTools(for: agent),
-            oneShot: true,
+            oneShot: !isPi,
             reason: AgentModeMCPPolicyInstaller.policyReason,
-            ttl: AgentModeMCPPolicyInstaller.policyTTL,
+            ttl: isPi ? 3600 : AgentModeMCPPolicyInstaller.policyTTL,
             purpose: .agentModeRun,
             taskLabelKind: taskLabelKind,
             allowsAgentExternalControlTools: allowsAgentExternalControlTools,

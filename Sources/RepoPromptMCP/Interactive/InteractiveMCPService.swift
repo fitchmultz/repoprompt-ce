@@ -23,7 +23,7 @@ actor InteractiveMCPService: Service {
     init(options: InteractiveOptions, logger: Logger? = nil) {
         self.options = options
         sessionToken = UUID().uuidString
-        clientName = "RepoPrompt CLI (Interactive)"
+        clientName = options.clientNameOverride ?? "RepoPrompt CLI (Interactive)"
         self.logger = logger ?? Logger(label: "mcp.interactive") { _ in
             SwiftLogNoOpLogHandler()
         }

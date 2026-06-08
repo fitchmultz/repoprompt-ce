@@ -22,7 +22,8 @@ final class PiIntegratedAgentModeRunner {
         initialUserMessage: String,
         initialMessageForRun: String,
         attachments: [AgentImageAttachment],
-        workspacePath: String?
+        workspacePath: String?,
+        makeLease: (_ runID: UUID) -> MCPBootstrapLease
     ) async {
         let attachmentReservationID = hooks.reserveAttachmentsForTurn(attachments, session)
         if initialMessageForRun != initialUserMessage,
@@ -33,6 +34,7 @@ final class PiIntegratedAgentModeRunner {
         hooks.startNonCodexTurnAccountingIfNeeded(session, initialMessageForRun)
 
         let runID = AgentModeProcessRunIdentity.startFreshProcessRun(for: session)
+        let lease = makeLease(runID)
         let ownership = session.beginRunAttempt(source: "pi")
         let runAttemptID = ownership.attemptID
         session.recordRunProgress(ownership: ownership, kind: .stageTransition, stage: .preparingRuntime)
@@ -86,16 +88,52 @@ final class PiIntegratedAgentModeRunner {
                 session.runID = nil
             }
             AgentModeProcessRunIdentity.clearProcessRunID(for: session)
+            let windowID = self.windowID
             return {
                 if terminalState == .cancelled {
                     _ = await controller.interruptTurn(reason: "cancel")
                 }
+                await Self.cleanupManagedMCPRouting(windowID: windowID, runID: runID)
                 await controller.shutdown()
             }
         }
 
         session.agentTask = Task { [weak self, weak session] in
             guard let self, let session else { return }
+            await controller.setExpectedAgentPIDRegistration(
+                clientName: AgentProviderKind.pi.mcpClientNameHint,
+                runID: runID
+            )
+            let acquired = await lease.acquire()
+            guard acquired else {
+                await terminalCommitBarrier.commit(.init(
+                    session: session,
+                    ownership: ownership,
+                    expectedRunID: runID,
+                    terminalState: .cancelled,
+                    source: "pi.acquireFailure",
+                    attachmentReservationID: attachmentReservationID,
+                    attachmentDisposition: .deleteFiles,
+                    finalizeNonCodexUsage: true,
+                    supportsFollowUp: false,
+                    notifyTurnComplete: false,
+                    prepareProviderState: {
+                        if session.piController === controller {
+                            session.piController = nil
+                        }
+                        if session.runID == runID {
+                            session.runID = nil
+                        }
+                        AgentModeProcessRunIdentity.clearProcessRunID(for: session)
+                        let windowID = self.windowID
+                        return {
+                            await Self.cleanupManagedMCPRouting(windowID: windowID, runID: runID)
+                            await controller.shutdown()
+                        }
+                    }
+                ))
+                return
+            }
             await executePiRun(
                 session: session,
                 controller: controller,
@@ -104,7 +142,8 @@ final class PiIntegratedAgentModeRunner {
                 runAttemptID: runAttemptID,
                 ownership: ownership,
                 attachments: attachments,
-                attachmentReservationID: attachmentReservationID
+                attachmentReservationID: attachmentReservationID,
+                lease: lease
             )
         }
     }
@@ -117,7 +156,8 @@ final class PiIntegratedAgentModeRunner {
         runAttemptID: UUID,
         ownership: AgentRunOwnership,
         attachments: [AgentImageAttachment],
-        attachmentReservationID: UUID?
+        attachmentReservationID: UUID?,
+        lease: MCPBootstrapLease
     ) async {
         var didCommitTerminal = false
         func commitTerminal(
@@ -148,7 +188,11 @@ final class PiIntegratedAgentModeRunner {
                         session.runID = nil
                     }
                     AgentModeProcessRunIdentity.clearProcessRunID(for: session)
-                    return { await controller.shutdown() }
+                    let windowID = self.windowID
+                    return {
+                        await Self.cleanupManagedMCPRouting(windowID: windowID, runID: runID)
+                        await controller.shutdown()
+                    }
                 }
             ))
         }
@@ -166,6 +210,7 @@ final class PiIntegratedAgentModeRunner {
                 model: session.selectedModelRaw,
                 thinkingLevel: session.selectedReasoningEffortRaw
             )
+            await lease.releaseWithoutRoutingWait()
             applySessionRef(ref, to: session)
             hooks.recordPendingHandoffSendOutcome(session, true)
             hooks.stageConsumedAttachmentFilesForDeferredCleanup(attachments, session)
@@ -238,6 +283,18 @@ final class PiIntegratedAgentModeRunner {
         } catch {
             // The follow-up error will surface through the pi event stream or transport close.
         }
+    }
+
+    private static func cleanupManagedMCPRouting(windowID: Int, runID: UUID) async {
+        if let clientName = AgentProviderKind.pi.mcpClientNameHint {
+            await ServerNetworkManager.shared.clearClientConnectionPolicy(
+                for: clientName,
+                windowID: windowID,
+                runID: runID
+            )
+        }
+        await ServerNetworkManager.shared.cleanupRunRoutingState(for: runID, windowID: windowID)
+        await AgentRunCoordinator.shared.cleanupRouting(runID: runID)
     }
 
     private func applySessionState(_ state: PiRPCClient.SessionState, to session: AgentModeViewModel.TabSession) {
