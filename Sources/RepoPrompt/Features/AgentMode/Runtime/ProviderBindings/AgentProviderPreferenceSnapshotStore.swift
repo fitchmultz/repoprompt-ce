@@ -135,6 +135,8 @@ final class AgentProviderPreferenceSnapshotStore {
                 autoApproveAllACPToolPermissions: level.autoApprovesACPToolPermissions,
                 acceptsPendingACPApprovalWhenActivated: level.autoApprovesACPToolPermissions
             )
+        case .pi:
+            return AgentProviderRuntimePermissionBinding()
         }
     }
 
@@ -149,6 +151,8 @@ final class AgentProviderPreferenceSnapshotStore {
             OpenCodeAgentToolPreferences.setPermissionLevel(level, defaults: defaults, secureStore: securePermissions)
         case let .cursor(level):
             CursorAgentToolPreferences.setPermissionLevel(level, defaults: defaults, secureStore: securePermissions)
+        case .pi:
+            break
         }
         bumpRevision(for: id.providerID)
         return id.providerID
@@ -307,6 +311,26 @@ final class AgentProviderPreferenceSnapshotStore {
                 options: CursorAgentToolPreferences.PermissionLevel.allCases.map { level in
                     AgentPermissionOptionBinding(
                         id: .cursor(level),
+                        title: level.displayName,
+                        iconName: level.iconName,
+                        detailText: level.detailText,
+                        isWarning: level.isWarning,
+                        isSelected: level == effective,
+                        isEnabled: externallyManagedReason == nil
+                    )
+                }
+            )
+        case .pi:
+            let effective = effectivePiPermissionLevel(profile: profile)
+            return AgentPermissionChromeBinding(
+                providerID: providerID,
+                displayName: effective.displayName,
+                iconName: effective.iconName,
+                isWarning: effective.isWarning,
+                externallyManagedReason: externallyManagedReason,
+                options: PiAgentToolPreferences.PermissionLevel.allCases.map { level in
+                    AgentPermissionOptionBinding(
+                        id: .pi(level),
                         title: level.displayName,
                         iconName: level.iconName,
                         detailText: level.detailText,
@@ -476,12 +500,28 @@ final class AgentProviderPreferenceSnapshotStore {
         }
     }
 
+    private func effectivePiPermissionLevel(
+        profile: AgentProviderPermissionProfile
+    ) -> PiAgentToolPreferences.PermissionLevel {
+        switch profile {
+        case .userConfigured:
+            PiAgentToolPreferences.permissionLevel()
+        case .mcpSafeDefaults:
+            .managedDefault
+        case let .providerOverride(.pi(level)):
+            level
+        case .providerOverride:
+            .managedDefault
+        }
+    }
+
     private static func representativeAgent(for providerID: AgentProviderBindingID) -> AgentProviderKind {
         switch providerID {
         case .codex: .codexExec
         case .claude: .claudeCode
         case .openCode: .openCode
         case .cursor: .cursor
+        case .pi: .pi
         }
     }
 

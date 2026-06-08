@@ -228,6 +228,8 @@ final class AgentModeProviderBindingService {
                         updateActiveBindings(session)
                     }
                 }
+            case .pi:
+                break
             }
         }
 

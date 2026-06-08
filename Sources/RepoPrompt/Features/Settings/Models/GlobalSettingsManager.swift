@@ -1335,7 +1335,7 @@ class GlobalSettingsStore: ObservableObject {
     /// `persistedGlobalContextBuilderAgentSelection()` and validate against current availability.
     func globalContextBuilderAgentSelection() -> (agentRaw: String?, modelRaw: String?) {
         let persisted = persistedGlobalContextBuilderAgentSelection()
-        let normalized = AgentModelCatalog.normalizeSelection(
+        let normalized = AgentModelCatalog.normalizePersistedSelection(
             agentRaw: persisted.agentRaw,
             modelRaw: persisted.modelRaw
         )
@@ -1374,7 +1374,7 @@ class GlobalSettingsStore: ObservableObject {
         function: StaticString = #function
     ) {
         let oldSelection = globalContextBuilderAgentSelection()
-        let normalized = AgentModelCatalog.normalizeSelection(agentRaw: agentRaw, modelRaw: modelRaw)
+        let normalized = AgentModelCatalog.normalizePersistedSelection(agentRaw: agentRaw, modelRaw: modelRaw)
         globalDefaults.discoverAgentRaw = normalized.agent.rawValue
         if globalDefaults.discoverModelsByAgent == nil {
             globalDefaults.discoverModelsByAgent = [:]
@@ -1421,7 +1421,7 @@ class GlobalSettingsStore: ObservableObject {
         let trimmedModelRaw = modelRaw?.trimmingCharacters(in: .whitespacesAndNewlines)
         let newModelRaw: String?
         if let trimmedModelRaw, !trimmedModelRaw.isEmpty {
-            let normalized = AgentModelCatalog.normalizeSelection(
+            let normalized = AgentModelCatalog.normalizePersistedSelection(
                 agentRaw: agent.rawValue,
                 modelRaw: trimmedModelRaw
             )

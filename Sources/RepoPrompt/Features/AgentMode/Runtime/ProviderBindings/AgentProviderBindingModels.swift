@@ -18,6 +18,7 @@ enum AgentProviderPermissionLevelID: Hashable {
     case claude(ClaudeAgentToolPreferences.PermissionLevel)
     case openCode(OpenCodeAgentToolPreferences.PermissionLevel)
     case cursor(CursorAgentToolPreferences.PermissionLevel)
+    case pi(PiAgentToolPreferences.PermissionLevel)
 
     var providerID: AgentProviderBindingID {
         switch self {
@@ -29,6 +30,8 @@ enum AgentProviderPermissionLevelID: Hashable {
             .openCode
         case .cursor:
             .cursor
+        case .pi:
+            .pi
         }
     }
 
@@ -42,6 +45,8 @@ enum AgentProviderPermissionLevelID: Hashable {
             .openCode(.managedDefault)
         case .cursor:
             .cursor(.managedDefault)
+        case .pi:
+            .pi(.managedDefault)
         }
     }
 
@@ -55,6 +60,8 @@ enum AgentProviderPermissionLevelID: Hashable {
             OpenCodeAgentToolPreferences.PermissionLevel.allCases.map(AgentProviderPermissionLevelID.openCode)
         case .cursor:
             CursorAgentToolPreferences.PermissionLevel.allCases.map(AgentProviderPermissionLevelID.cursor)
+        case .pi:
+            PiAgentToolPreferences.PermissionLevel.allCases.map(AgentProviderPermissionLevelID.pi)
         }
     }
 
@@ -73,6 +80,9 @@ enum AgentProviderPermissionLevelID: Hashable {
         case .cursor:
             guard let level = CursorAgentToolPreferences.PermissionLevel(rawValue: raw) else { return nil }
             self = .cursor(level)
+        case .pi:
+            guard let level = PiAgentToolPreferences.PermissionLevel(rawValue: raw) else { return nil }
+            self = .pi(level)
         }
     }
 
@@ -85,6 +95,8 @@ enum AgentProviderPermissionLevelID: Hashable {
         case let .openCode(level):
             level.rawValue
         case let .cursor(level):
+            level.rawValue
+        case let .pi(level):
             level.rawValue
         }
     }
@@ -99,6 +111,8 @@ enum AgentProviderPermissionLevelID: Hashable {
             level.displayName
         case let .cursor(level):
             level.displayName
+        case let .pi(level):
+            level.displayName
         }
     }
 
@@ -111,6 +125,8 @@ enum AgentProviderPermissionLevelID: Hashable {
         case let .openCode(level):
             level.iconName
         case let .cursor(level):
+            level.iconName
+        case let .pi(level):
             level.iconName
         }
     }
@@ -125,6 +141,8 @@ enum AgentProviderPermissionLevelID: Hashable {
             level.detailText
         case let .cursor(level):
             level.detailText
+        case let .pi(level):
+            level.detailText
         }
     }
 
@@ -137,6 +155,8 @@ enum AgentProviderPermissionLevelID: Hashable {
         case let .openCode(level):
             level.isWarning
         case let .cursor(level):
+            level.isWarning
+        case let .pi(level):
             level.isWarning
         }
     }

@@ -48,6 +48,27 @@ final class SettingsJSONOnlyPersistenceTests: XCTestCase {
         XCTAssertFalse(store.respectGitignore())
     }
 
+    func testGlobalContextBuilderPiSelectionDoesNotDowngradeWhenUnavailable() throws {
+        let temp = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let suiteName = "SettingsJSONOnlyPersistenceTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let fileURL = temp.appendingPathComponent("Settings/globalSettings.json")
+        let store = GlobalSettingsStore(defaults: defaults, fileStore: GlobalSettingsFileStore(fileURL: fileURL))
+
+        store.setGlobalContextBuilderAgentSelection(
+            agentRaw: AgentProviderKind.pi.rawValue,
+            modelRaw: AgentModel.defaultModel.rawValue,
+            markUserDefined: true,
+            reason: "test"
+        )
+
+        let selection = store.globalContextBuilderAgentSelection()
+        XCTAssertEqual(selection.agentRaw, AgentProviderKind.pi.rawValue)
+        XCTAssertEqual(selection.modelRaw, AgentModel.defaultModel.rawValue)
+    }
+
     func testWorktreeVisualIdentityDefaultsAreEmptyAndFallbackDoesNotPersist() throws {
         let temp = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: temp) }

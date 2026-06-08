@@ -100,6 +100,18 @@ struct AgentModelOptionsMenuContent: View {
                     openCodeModelGroupContent(providerGroup.groups)
                 }
             }
+        } else if agentKind == .pi {
+            let piMenu = AgentModelCatalog.piMenu(for: options)
+            if let defaultOption = piMenu.defaultOption {
+                modelOptionButton(defaultOption)
+            }
+            ForEach(piMenu.providerGroups) { providerGroup in
+                Menu(providerGroup.displayName) {
+                    ForEach(providerGroup.options) { menuOption in
+                        modelOptionButton(menuOption.option, title: menuOption.displayName)
+                    }
+                }
+            }
         } else {
             ForEach(options, id: \.rawValue) { option in
                 modelOptionButton(option)
@@ -239,6 +251,15 @@ enum AgentModelStableMenuItems {
                 guard providerGroup.rendersAsSubmenu else { return modelItems }
                 return [.submenu(providerGroup.displayName, items: modelItems)]
             }
+        }
+        if agentKind == .pi {
+            return piModelItems(
+                agentKind: agentKind,
+                options: visibleOptions,
+                selectedAgent: selectedAgent,
+                selectedModelRaw: selectedModelRaw,
+                onSelect: onSelect
+            )
         }
 
         return visibleOptions.map { option in
@@ -386,6 +407,44 @@ enum AgentModelStableMenuItems {
             )
         }
         return .separator
+    }
+
+    private static func piModelItems(
+        agentKind: AgentProviderKind,
+        options: [AgentModelOption],
+        selectedAgent: AgentProviderKind,
+        selectedModelRaw: String,
+        onSelect: @escaping (AgentProviderKind, AgentModelOption) -> Void
+    ) -> [StableMenuItem] {
+        let piMenu = AgentModelCatalog.piMenu(for: options)
+        var items: [StableMenuItem] = []
+        if let defaultOption = piMenu.defaultOption {
+            items.append(
+                modelItem(
+                    defaultOption,
+                    agentKind: agentKind,
+                    selectedAgent: selectedAgent,
+                    selectedModelRaw: selectedModelRaw,
+                    onSelect: onSelect
+                )
+            )
+        }
+        items.append(contentsOf: piMenu.providerGroups.map { providerGroup in
+            StableMenuItem.submenu(
+                providerGroup.displayName,
+                items: providerGroup.options.map { menuOption in
+                    modelItem(
+                        menuOption.option,
+                        title: menuOption.displayName,
+                        agentKind: agentKind,
+                        selectedAgent: selectedAgent,
+                        selectedModelRaw: selectedModelRaw,
+                        onSelect: onSelect
+                    )
+                }
+            )
+        })
+        return items
     }
 
     private static func modelItem(

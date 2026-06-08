@@ -2123,7 +2123,8 @@ final class AgentModeViewModel: ObservableObject {
                 apiSettingsViewModel.$isClaudeCodeConnected.dropFirst().map { _ in () },
                 apiSettingsViewModel.$isCodexConnected.dropFirst().map { _ in () },
                 apiSettingsViewModel.$isOpenCodeConnected.dropFirst().map { _ in () },
-                apiSettingsViewModel.$isCursorConnected.dropFirst().map { _ in () }
+                apiSettingsViewModel.$isCursorConnected.dropFirst().map { _ in () },
+                apiSettingsViewModel.$isPiConnected.dropFirst().map { _ in () }
             ])
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in

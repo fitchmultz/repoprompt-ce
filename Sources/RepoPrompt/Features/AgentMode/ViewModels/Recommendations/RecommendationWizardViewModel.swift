@@ -255,6 +255,7 @@ final class RecommendationWizardViewModel: ObservableObject {
                 api.$isClaudeCodeConnected.map { _ in () }.eraseToAnyPublisher(),
                 api.$isCodexConnected.map { _ in () }.eraseToAnyPublisher(),
                 api.$isCursorConnected.map { _ in () }.eraseToAnyPublisher(),
+                api.$isPiConnected.map { _ in () }.eraseToAnyPublisher(),
                 api.$isOpenAIKeyValid.map { _ in () }.eraseToAnyPublisher()
             ])
             .debounce(for: .milliseconds(300), scheduler: RunLoop.main)

@@ -31,7 +31,7 @@ final class PiAgentProviderKindTests: XCTestCase {
         XCTAssertEqual(spec.additionalTools, AgentModeMCPToolPolicy.piGrantedTools)
     }
 
-    func testPiModelsAreAvailableButHiddenFromSelectableAgentsUntilRuntimeValidationCompletes() {
+    func testPiModelsAreSelectableWhenRuntimeAvailabilityIsProven() {
         let availability = AgentModelCatalog.AvailabilityContext(piAvailable: true)
 
         XCTAssertTrue(AgentModelCatalog.isAgentAvailable(.pi, availability: availability))
@@ -44,9 +44,7 @@ final class PiAgentProviderKindTests: XCTestCase {
             AgentModelCatalog.options(for: .pi, availability: availability).map(\.rawValue),
             [AgentModel.defaultModel.rawValue]
         )
-        XCTAssertFalse(
-            AgentModelCatalog.selectableAgents(availability: availability).contains(.pi),
-            "pi should stay hidden from visible Agent Mode selection until runtime, routing, permissions, and resume validation are complete."
-        )
+        XCTAssertTrue(AgentModelCatalog.selectableAgents(availability: availability).contains(.pi))
+        XCTAssertEqual(AgentProviderKind.pi.providerBindingID, .pi)
     }
 }

@@ -172,6 +172,18 @@ struct AgentPermissionCapabilitySummaryBuilder {
                 approvalModeDescription: level.autoApprovesACPToolPermissions ? "Auto-approve: on" : "Auto-approve: off",
                 warnings: warnings
             )
+        case .pi:
+            return AgentPermissionCapabilitySummary(
+                providerID: providerID,
+                providerName: providerID.displayName,
+                isAvailable: isAvailable,
+                fileMutation: "RepoPrompt bridge tools only",
+                shell: "pi built-ins use pi config",
+                externalMCP: safeManaged ? "Bridge MCP: managed run only" : "Bridge MCP: RepoPrompt policy",
+                search: "Managed by pi",
+                approvalModeDescription: "Bridge permissions: Managed Bridge",
+                warnings: []
+            )
         }
     }
 
@@ -193,6 +205,7 @@ struct AgentPermissionCapabilitySummaryBuilder {
         case .claude: availability.claudeCodeAvailable
         case .openCode: availability.openCodeAvailable
         case .cursor: availability.cursorAvailable
+        case .pi: availability.piAvailable
         }
     }
 

@@ -43,7 +43,7 @@ struct APISettingsView: View {
                     Text("API Providers")
                         .font(fontPreset.swiftUIFont(sizeAtNormal: 22, weight: .semibold))
 
-                    Text("API keys for direct model access — primarily used by the Oracle Model, built-in chat, and legacy integrations. To add CLI-backed agents (Claude Code, Codex, OpenCode, Cursor), use CLI Providers under Agent Mode.")
+                    Text("API keys for direct model access — primarily used by the Oracle Model, built-in chat, and legacy integrations. To add CLI-backed agents (Claude Code, Codex, OpenCode, Cursor, pi), use CLI Providers under Agent Mode.")
                         .font(fontPreset.subheadlineFont)
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)

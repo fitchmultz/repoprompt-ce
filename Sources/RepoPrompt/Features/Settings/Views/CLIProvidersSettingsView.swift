@@ -40,11 +40,13 @@ struct CLIProvidersSettingsView: View {
     @State private var isLoggingIntoCodex = false
     @State private var isLoadingOpenCode = false
     @State private var isLoadingCursor = false
+    @State private var isLoadingPi = false
     @State private var isLoadingZAI = false
     @State private var showClaudeCodeTraceDump = false
     @State private var showCodexTraceDump = false
     @State private var showOpenCodeTraceDump = false
     @State private var showCursorTraceDump = false
+    @State private var showPiTraceDump = false
     @State private var isClaudePromptSettingsExpanded = false
     @State private var claudeNativePromptMode = ClaudeAgentToolPreferences.agentModePromptDelivery()
 
@@ -57,6 +59,8 @@ struct CLIProvidersSettingsView: View {
     @State private var isCodexExpanded: Bool = false
     @State private var isOpenCodeExpanded: Bool = false
     @State private var isCursorExpanded: Bool = false
+    @State private var isPiExpanded: Bool = false
+    @State private var hasSetInitialExpansion = false
 
     // Per-backend secret text entry buffers (GLM uses viewModel.zaiApiKey directly).
     // SEARCH-HELPER: Claude-Compatible Backends settings, Kimi API key entry, Custom backend key entry
@@ -75,6 +79,7 @@ struct CLIProvidersSettingsView: View {
             || viewModel.isCodexConnected
             || viewModel.isOpenCodeConnected
             || viewModel.isCursorConnected
+            || viewModel.isPiConnected
     }
 
     private var codexStatusText: String? {
@@ -105,7 +110,7 @@ struct CLIProvidersSettingsView: View {
                         .font(.title2)
                         .fontWeight(.semibold)
 
-                    Text("Primary way to add Agent Mode model support. Connect Claude Code, Codex, OpenCode, or Cursor to leverage your existing subscriptions — OpenCode can also proxy any API key.")
+                    Text("Primary way to add Agent Mode model support. Connect Claude Code, Codex, OpenCode, Cursor, or pi to leverage your existing subscriptions — OpenCode can also proxy any API key.")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -132,6 +137,7 @@ struct CLIProvidersSettingsView: View {
                 claudeCompatibleBackendsSection
                 openCodeCard
                 cursorCard
+                piCard
             }
             .padding(16)
         }
@@ -140,6 +146,19 @@ struct CLIProvidersSettingsView: View {
             Task {
                 await viewModel.loadCompatibleBackendState()
                 await viewModel.refreshClaudeCodeBinaryStatus()
+                await MainActor.run {
+                    if !hasSetInitialExpansion {
+                        isClaudeCodeExpanded = !viewModel.isClaudeCodeConnected
+                        isClaudeCodeGLMExpanded = shouldExpandCompatibleBackendInitially(.glmZAI)
+                        isKimiCodeExpanded = shouldExpandCompatibleBackendInitially(.kimi)
+                        isCustomCompatibleExpanded = shouldExpandCompatibleBackendInitially(.custom)
+                        isCodexExpanded = !viewModel.isCodexConnected
+                        isOpenCodeExpanded = !viewModel.isOpenCodeConnected
+                        isCursorExpanded = !viewModel.isCursorConnected
+                        isPiExpanded = !viewModel.isPiConnected
+                        hasSetInitialExpansion = true
+                    }
+                }
             }
         }
         .alert(isPresented: $showAlert) {
@@ -171,6 +190,13 @@ struct CLIProvidersSettingsView: View {
                     primaryButton: .default(Text("Save Trace to Downloads"), action: dumpCursorTrace),
                     secondaryButton: .cancel(Text("OK"), action: { showCursorTraceDump = false })
                 )
+            } else if showPiTraceDump, viewModel.hasPiTrace() {
+                Alert(
+                    title: Text("CLI Provider Management"),
+                    message: Text(alertMessage),
+                    primaryButton: .default(Text("Save Trace to Downloads"), action: dumpPiTrace),
+                    secondaryButton: .cancel(Text("OK"), action: { showPiTraceDump = false })
+                )
             } else {
                 Alert(
                     title: Text("CLI Provider Management"),
@@ -185,6 +211,7 @@ struct CLIProvidersSettingsView: View {
                 showCodexTraceDump = false
                 showOpenCodeTraceDump = false
                 showCursorTraceDump = false
+                showPiTraceDump = false
             }
         }
     }
@@ -368,6 +395,8 @@ struct CLIProvidersSettingsView: View {
             return level.autoApprovesACPToolPermissions
                 ? "ACP auto-approve: on"
                 : "ACP auto-approve: off"
+        case .pi:
+            return "Managed Bridge · pi built-ins use pi config"
         }
     }
 
@@ -434,7 +463,7 @@ struct CLIProvidersSettingsView: View {
             } else {
                 permissionControlsUnavailableRow()
             }
-        case .openCode, .cursor:
+        case .openCode, .cursor, .pi:
             EmptyView()
         }
     }
@@ -1866,6 +1895,94 @@ struct CLIProvidersSettingsView: View {
         return hasComposer2 ? "\(base) Composer 2 is available when selected." : "\(base) Auto is the built-in fallback."
     }
 
+    // MARK: - pi Card
+
+    private var piCard: some View {
+        providerCard(
+            title: "pi",
+            subtitle: "Uses pi's native RPC runtime for Agent Mode, preserving your pi config, auth, models, extensions, skills, and sessions while adding RepoPrompt bridge tools.",
+            infoURL: "https://github.com/earendil-works/pi",
+            isConnected: viewModel.isPiConnected,
+            isExpanded: $isPiExpanded
+        ) {
+            VStack(alignment: .leading, spacing: 12) {
+                if viewModel.isPiConnected {
+                    HStack(spacing: 8) {
+                        Button(action: { testPiConnection() }) {
+                            if isLoadingPi {
+                                ProgressView()
+                                    .scaleEffect(0.6)
+                                    .frame(height: 16)
+                            } else {
+                                Label("Test Connection", systemImage: "antenna.radiowaves.left.and.right")
+                            }
+                        }
+                        .disabled(isLoadingPi)
+                        .buttonStyle(CustomButtonStyle())
+
+                        Spacer()
+
+                        Button(action: { signOutFromPi() }) {
+                            Text("Disconnect")
+                                .foregroundColor(.secondary)
+                        }
+                        .buttonStyle(CustomButtonStyle())
+                    }
+
+                    Text(piModelSummary)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Text("RepoPrompt-managed pi runs add a generated RepoPrompt bridge extension at launch. RepoPrompt permissions apply to bridge tools; pi built-in tools continue to use pi's own runtime and configuration.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    permissionSummaryLinkRow(for: .pi)
+                } else {
+                    HStack(spacing: 10) {
+                        Button(action: { testPiConnection() }) {
+                            if isLoadingPi {
+                                ProgressView()
+                                    .scaleEffect(0.6)
+                                    .frame(height: 16)
+                            } else {
+                                Label("Connect", systemImage: "link")
+                            }
+                        }
+                        .disabled(isLoadingPi)
+                        .buttonStyle(CustomButtonStyle())
+
+                        if let error = viewModel.piError, !error.isEmpty {
+                            Text(error)
+                                .font(.caption)
+                                .foregroundColor(.red)
+                                .fixedSize(horizontal: false, vertical: true)
+                        } else {
+                            Text("Install pi, complete pi's normal authentication flow, then connect. RepoPrompt probes `pi --mode rpc` and discovers models dynamically.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var piModelSummary: String {
+        let options = viewModel.availablePiModelOptions
+        let count = options.count
+        if count == 0 {
+            return "Model discovery will refresh in the background."
+        }
+        let providerCount = AgentModelCatalog.piMenu(for: options).providerGroups.count
+        if providerCount > 1 {
+            return "\(count) models discovered across \(providerCount) providers."
+        }
+        return count == 1 ? "1 model discovered." : "\(count) models discovered."
+    }
+
     // MARK: - Actions
 
     private func validateAndSaveZAIKey() {
@@ -2248,6 +2365,58 @@ struct CLIProvidersSettingsView: View {
         viewModel.disconnectCursor()
         alertMessage = "Signed out from Cursor CLI"
         showCursorTraceDump = false
+        showAlert = true
+        onAPIKeyUpdated?()
+    }
+
+    private func testPiConnection() {
+        isLoadingPi = true
+        Task {
+            do {
+                let ok = try await viewModel.testPiConnection()
+                await MainActor.run {
+                    isLoadingPi = false
+                    if ok {
+                        let modelSummary = piModelSummary.lowercased()
+                        alertMessage = "pi connected. \(modelSummary)"
+                        showPiTraceDump = false
+                    }
+                    showAlert = true
+                    onAPIKeyUpdated?()
+                }
+            } catch {
+                await MainActor.run {
+                    isLoadingPi = false
+                    alertMessage = viewModel.piError ?? error.asFriendlyString()
+                    showPiTraceDump = viewModel.hasPiTrace()
+                    showAlert = true
+                }
+            }
+        }
+    }
+
+    private func dumpPiTrace() {
+        do {
+            let url = try viewModel.dumpPiTrace()
+            alertMessage = "Trace saved to Downloads/\(url.lastPathComponent)."
+        } catch let error as CLIProcessLogCollectorError {
+            switch error {
+            case .noEntries:
+                alertMessage = "No trace data is available to export yet."
+            case .downloadsDirectoryUnavailable:
+                alertMessage = "Unable to locate the Downloads folder."
+            }
+        } catch {
+            alertMessage = "Failed to export trace: \(error.localizedDescription)"
+        }
+        showPiTraceDump = false
+        showAlert = true
+    }
+
+    private func signOutFromPi() {
+        viewModel.disconnectPi()
+        alertMessage = "Disconnected pi"
+        showPiTraceDump = false
         showAlert = true
         onAPIKeyUpdated?()
     }
