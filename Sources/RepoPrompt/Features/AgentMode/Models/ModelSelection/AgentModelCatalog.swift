@@ -182,6 +182,31 @@ enum AgentModelCatalog {
         let groups: [OpenCodeMenuGroup]
     }
 
+    struct PiMenuOption: Identifiable, Hashable {
+        let option: AgentModelOption
+        let displayName: String
+
+        var id: String {
+            option.rawValue
+        }
+    }
+
+    struct PiProviderMenuGroup: Identifiable, Hashable {
+        let providerID: String?
+        let displayName: String
+        let options: [PiMenuOption]
+        let sortIndex: Int
+
+        var id: String {
+            providerID?.lowercased() ?? "_default"
+        }
+    }
+
+    struct PiMenu: Hashable {
+        let defaultOption: AgentModelOption?
+        let providerGroups: [PiProviderMenuGroup]
+    }
+
     static let supportedCLIProviderAgents: [AgentProviderKind] = [
         .codexExec,
         .claudeCode,
@@ -338,6 +363,12 @@ enum AgentModelCatalog {
             }
             return fallbacks
         }
+        if agentKind == .pi,
+           let discoveredOptions = resolvedPiDiscoveredModels()?.options,
+           !discoveredOptions.isEmpty
+        {
+            return discoveredOptions
+        }
         if let discoveredOptions = resolvedACPDiscoveredModels(for: agentKind)?.options,
            !discoveredOptions.isEmpty
         {
@@ -383,6 +414,15 @@ enum AgentModelCatalog {
         {
             return true
         }
+        if agentKind == .pi {
+            if let discoveredModels = resolvedPiDiscoveredModels() {
+                return discoveredModels.contains(rawModel: normalized)
+            }
+            if normalized.caseInsensitiveCompare(AgentModel.defaultModel.rawValue) == .orderedSame {
+                return true
+            }
+            return PiModelSpecifier(raw: normalized) != nil
+        }
         if let discoveredModels = resolvedACPDiscoveredModels(for: agentKind) {
             if agentKind == .cursor {
                 return cursorSnapshotContains(rawModel: normalized, snapshot: discoveredModels)
@@ -422,6 +462,11 @@ enum AgentModelCatalog {
         func baseDisplayName(for raw: String) -> String {
             if let compatibleDisplayName = ClaudeCompatibleModelCatalogAdapter.compatibleBackendDisplayName(forRequestedModelRaw: raw, agentKind: agentKind) {
                 return compatibleDisplayName
+            }
+            if agentKind == .pi,
+               let discoveredOption = resolvedPiDiscoveredModels()?.option(matching: raw)
+            {
+                return discoveredOption.displayName
             }
             if let discoveredOption = resolvedACPDiscoveredModels(for: agentKind)?.option(matching: raw) {
                 return discoveredOption.displayName
@@ -590,6 +635,56 @@ enum AgentModelCatalog {
         }
 
         return OpenCodeMenu(providerGroups: providerGroups, groups: groups)
+    }
+
+    static func piMenu(for options: [AgentModelOption]) -> PiMenu {
+        let defaultOption = options.first { $0.isPlaceholderDefault }
+        struct Entry {
+            let option: AgentModelOption
+            let providerID: String?
+            let providerDisplayName: String
+            let modelDisplayName: String
+            let index: Int
+        }
+
+        let entries = options.enumerated().compactMap { index, option -> Entry? in
+            guard !option.isPlaceholderDefault else { return nil }
+            let normalized = normalizedPiProviderModel(option: option)
+            return Entry(
+                option: option,
+                providerID: normalized.providerID,
+                providerDisplayName: normalized.providerDisplayName,
+                modelDisplayName: normalized.modelDisplayName,
+                index: index
+            )
+        }
+        let grouped = Dictionary(grouping: entries, by: { $0.providerID?.lowercased() ?? "_unknown" })
+        let providerGroups = grouped.values.compactMap { groupEntries -> PiProviderMenuGroup? in
+            guard let representative = groupEntries.min(by: { $0.index < $1.index }) else { return nil }
+            let sortedOptions = groupEntries.sorted { lhs, rhs in
+                if lhs.option.isProviderDefault != rhs.option.isProviderDefault {
+                    return lhs.option.isProviderDefault && !rhs.option.isProviderDefault
+                }
+                if lhs.modelDisplayName != rhs.modelDisplayName {
+                    return lhs.modelDisplayName.localizedCaseInsensitiveCompare(rhs.modelDisplayName) == .orderedAscending
+                }
+                return lhs.index < rhs.index
+            }.map { entry in
+                PiMenuOption(option: entry.option, displayName: entry.modelDisplayName)
+            }
+            return PiProviderMenuGroup(
+                providerID: representative.providerID,
+                displayName: representative.providerDisplayName,
+                options: sortedOptions,
+                sortIndex: representative.index
+            )
+        }.sorted { lhs, rhs in
+            if lhs.sortIndex != rhs.sortIndex {
+                return lhs.sortIndex < rhs.sortIndex
+            }
+            return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
+        }
+        return PiMenu(defaultOption: defaultOption, providerGroups: providerGroups)
     }
 
     static func codexMenu(for options: [AgentModelOption]) -> CodexMenu {
@@ -1085,6 +1180,63 @@ enum AgentModelCatalog {
         return CodexModelSpecifier(raw: modelRaw).baseModel != nil
     }
 
+    private static func normalizedPiProviderModel(
+        option: AgentModelOption
+    ) -> (
+        providerID: String?,
+        providerDisplayName: String,
+        modelDisplayName: String
+    ) {
+        let rawValue = option.rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let displayName = option.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parts = rawValue.split(separator: "/", maxSplits: 1).map(String.init)
+        let providerID = parts.count == 2 ? parts[0].trimmingCharacters(in: .whitespacesAndNewlines) : nil
+        let modelID = parts.count == 2 ? parts[1].trimmingCharacters(in: .whitespacesAndNewlines) : rawValue
+        let providerDisplayName = providerID.map(humanizedPiProviderName) ?? "pi"
+        let modelDisplayName = displayName.isEmpty || displayName == rawValue
+            ? humanizedPiModelName(modelID)
+            : displayName
+        return (providerID?.isEmpty == false ? providerID : nil, providerDisplayName, modelDisplayName)
+    }
+
+    private static func humanizedPiProviderName(_ providerID: String) -> String {
+        let normalized = providerID
+            .replacingOccurrences(of: "_", with: " ")
+            .replacingOccurrences(of: "-", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return "pi" }
+        switch normalized.lowercased() {
+        case "zai", "z ai", "z.ai": return "Z.ai"
+        case "openai": return "OpenAI"
+        case "anthropic": return "Anthropic"
+        case "google": return "Google"
+        case "cursor": return "Cursor"
+        default: return normalized.capitalized
+        }
+    }
+
+    private static func humanizedPiModelName(_ modelID: String) -> String {
+        let normalized = modelID
+            .replacingOccurrences(of: "_", with: " ")
+            .replacingOccurrences(of: "-", with: " ")
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return modelID }
+        return normalized
+            .split(separator: " ")
+            .map { token -> String in
+                let lower = token.lowercased()
+                if lower == "gpt" { return "GPT" }
+                if lower == "glm" { return "GLM" }
+                if lower == "claude" { return "Claude" }
+                if lower.range(of: "^[0-9]+(\\.[0-9]+)*$", options: .regularExpression) != nil {
+                    return String(token)
+                }
+                return lower.capitalized
+            }
+            .joined(separator: " ")
+    }
+
     private enum OpenCodeVariant: String {
         case none
         case minimal
@@ -1322,6 +1474,15 @@ enum AgentModelCatalog {
         case .max: return 5
         case .xhigh: return 6
         }
+    }
+
+    private static func resolvedPiDiscoveredModels() -> PiDiscoveredModels? {
+        guard let snapshot = AgentPiModelRegistry.shared.resolvedSnapshot(),
+              !snapshot.options.isEmpty
+        else {
+            return nil
+        }
+        return snapshot
     }
 
     private static func resolvedACPDiscoveredModels(

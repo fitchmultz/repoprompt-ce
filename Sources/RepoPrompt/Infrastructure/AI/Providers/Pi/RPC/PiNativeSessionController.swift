@@ -140,6 +140,7 @@ actor PiNativeSessionController {
 
         try await applyModelAndThinking(model: model ?? options.modelRaw, thinkingLevel: thinkingLevel)
         let state = try await client.getState()
+        await refreshModelRegistry(currentModel: state.model)
         let ref = SessionRef(
             sessionID: state.sessionID,
             sessionFile: state.sessionFile,
@@ -215,6 +216,15 @@ actor PiNativeSessionController {
 
     func respondToExtensionUIRequest(_ response: PiExtensionUIResponse) async throws {
         _ = try await client.respondToExtensionUIRequest(response)
+    }
+
+    private func refreshModelRegistry(currentModel: PiRPCClient.RemoteModel?) async {
+        guard let remoteModels = try? await client.getAvailableModels(),
+              let snapshot = AgentPiModelRegistry.discoveredModels(from: remoteModels, currentModel: currentModel)
+        else {
+            return
+        }
+        AgentPiModelRegistry.shared.updateDiscoveredModels(snapshot)
     }
 
     private func startForwardingEventsIfNeeded() {
