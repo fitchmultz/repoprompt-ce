@@ -84,6 +84,45 @@ final class PiNativeSessionControllerTests: XCTestCase {
         })
     }
 
+    func testAgentEndRefreshesSessionStateForProviderSideSessionChanges() async throws {
+        let directory = try makeTemporaryDirectory()
+        let recordURL = directory.appendingPathComponent("commands.jsonl")
+        let scriptURL = try makeFakePiControllerScript(recordURL: recordURL)
+        let client = PiRPCClient(config: .init(
+            commandName: scriptURL.path,
+            additionalPathHints: [],
+            requestTimeout: 2,
+            launchArguments: []
+        ))
+        let controller = PiNativeSessionController(client: client, options: .init(requestTimeout: 2))
+        defer { Task { await controller.shutdown() } }
+        _ = try await controller.startOrResume(existing: nil)
+
+        let stream = await controller.events
+        let collector = Task { () -> [PiNativeSessionController.Event] in
+            var events: [PiNativeSessionController.Event] = []
+            for await event in stream {
+                events.append(event)
+                if case .turnCompleted = event { break }
+            }
+            return events
+        }
+
+        _ = try await controller.sendUserMessage("state-change")
+        let events = await collector.value
+        let states = events.compactMap { event -> PiRPCClient.SessionState? in
+            if case let .sessionState(state) = event { return state }
+            return nil
+        }
+
+        XCTAssertGreaterThanOrEqual(recordedCommands(at: recordURL).map(\.type).count(where: { $0 == "get_state" }), 2)
+        XCTAssertEqual(states.last?.sessionID, "pi-session-id-updated")
+        XCTAssertEqual(states.last?.sessionFile, "/tmp/pi-session-updated.jsonl")
+        let currentRef = await controller.currentSessionRef()
+        XCTAssertEqual(currentRef?.sessionID, "pi-session-id-updated")
+        XCTAssertEqual(currentRef?.sessionFile, "/tmp/pi-session-updated.jsonl")
+    }
+
     func testBridgeToolResultUsesInnerRawJSONForTranscriptPayload() async throws {
         let directory = try makeTemporaryDirectory()
         let scriptURL = try makeFakePiControllerScript(recordURL: directory.appendingPathComponent("commands.jsonl"))
@@ -199,6 +238,9 @@ final class PiNativeSessionControllerTests: XCTestCase {
         def emit(payload):
             print(json.dumps(payload), flush=True)
 
+        SESSION_ID = "pi-session-id"
+        SESSION_FILE = "/tmp/pi-session.jsonl"
+
         def state(request_id):
             emit({
                 "type": "response",
@@ -206,8 +248,8 @@ final class PiNativeSessionControllerTests: XCTestCase {
                 "command": "get_state",
                 "success": True,
                 "data": {
-                    "sessionId": "pi-session-id",
-                    "sessionFile": "/tmp/pi-session.jsonl",
+                    "sessionId": SESSION_ID,
+                    "sessionFile": SESSION_FILE,
                     "thinkingLevel": "high",
                     "isStreaming": False,
                     "isCompacting": False,
@@ -233,7 +275,11 @@ final class PiNativeSessionControllerTests: XCTestCase {
                 state(request_id)
             elif command == "prompt":
                 emit({"type": "turn_start"})
-                if request.get("message") == "bridge-result":
+                if request.get("message") == "state-change":
+                    SESSION_ID = "pi-session-id-updated"
+                    SESSION_FILE = "/tmp/pi-session-updated.jsonl"
+                    emit({"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": "state changed"}})
+                elif request.get("message") == "bridge-result":
                     inner = '{"roots_count":1,"tree":"repoprompt-ce","uses_legend":false}'
                     emit({"type": "tool_execution_start", "toolCallId": "call-1", "toolName": "get_file_tree", "args": {"type": "roots"}})
                     emit({"type": "tool_execution_end", "toolCallId": "call-1", "toolName": "get_file_tree", "result": {"content": [{"type": "text", "text": inner}], "details": {"bridgeVersion": "2", "tool": "get_file_tree", "exitCode": 0}}, "isError": False})

@@ -285,6 +285,7 @@ actor PiNativeSessionController {
         case .turnEnd:
             emit(.stream(AIStreamResult(type: "message_stop", text: nil, stopReason: "end_turn")))
         case .agentEnd:
+            await refreshCurrentSessionState()
             if hasTurnInFlight {
                 completeTurnIfNeeded(status: .completed)
             }
@@ -300,6 +301,17 @@ actor PiNativeSessionController {
         case .messageStart, .messageEnd, .queueUpdate, .compactionStart, .compactionEnd, .unhandled:
             break
         }
+    }
+
+    private func refreshCurrentSessionState() async {
+        guard let state = try? await client.getState() else { return }
+        currentRef = SessionRef(
+            sessionID: state.sessionID,
+            sessionFile: state.sessionFile,
+            model: state.model.map { modelDisplayRaw($0) },
+            thinkingLevel: state.thinkingLevel
+        )
+        emit(.sessionState(state))
     }
 
     private func completeTurnIfNeeded(status: TurnStatus) {
