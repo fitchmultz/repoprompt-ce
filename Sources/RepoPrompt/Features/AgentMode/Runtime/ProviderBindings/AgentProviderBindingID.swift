@@ -31,6 +31,8 @@ extension AgentProviderKind {
             .openCode
         case .cursor:
             .cursor
+        case .pi:
+            .codex
         }
     }
 }

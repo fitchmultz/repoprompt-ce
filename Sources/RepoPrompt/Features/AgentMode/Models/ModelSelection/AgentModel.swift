@@ -222,6 +222,8 @@ enum AgentModel: String, CaseIterable, Codable {
             [.kimiCode]
         case .customClaudeCompatible:
             [.customClaudeCompatible]
+        case .pi:
+            [.defaultModel]
         }
         return models.filter(\.isAvailable)
     }

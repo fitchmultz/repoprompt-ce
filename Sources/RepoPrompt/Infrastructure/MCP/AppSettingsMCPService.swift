@@ -1332,6 +1332,8 @@ private enum AppSettingsMCPRegistry {
             .openCode
         case .cursor:
             .cursor
+        case .pi:
+            nil
         }
     }
 

@@ -43,11 +43,13 @@ enum AgentProviderKind: String, CaseIterable, Hashable {
     case claudeCodeGLM
     case kimiCode
     case customClaudeCompatible
+    case pi
 
     static let claudeMCPClientID = "claude-code"
     static let codexMCPClientID = "codex-mcp-client"
     static let openCodeMCPClientID = "opencode"
     static let cursorMCPClientID = "cursor"
+    static let piMCPClientID = "pi"
 
     var commandName: String {
         switch self {
@@ -59,6 +61,8 @@ enum AgentProviderKind: String, CaseIterable, Hashable {
             "opencode"
         case .cursor:
             "cursor-agent"
+        case .pi:
+            "pi"
         }
     }
 
@@ -78,6 +82,8 @@ enum AgentProviderKind: String, CaseIterable, Hashable {
             ClaudeCodeCompatibleBackendStore.shared.config(for: .kimi).normalizedDisplayName
         case .customClaudeCompatible:
             ClaudeCodeCompatibleBackendStore.shared.config(for: .custom).normalizedDisplayName
+        case .pi:
+            "pi"
         }
     }
 
@@ -91,6 +97,8 @@ enum AgentProviderKind: String, CaseIterable, Hashable {
             Self.openCodeMCPClientID
         case .cursor:
             Self.cursorMCPClientID
+        case .pi:
+            Self.piMCPClientID
         }
     }
 
@@ -100,7 +108,7 @@ enum AgentProviderKind: String, CaseIterable, Hashable {
             .openCode
         case .cursor:
             .cursor
-        case .claudeCode, .codexExec, .claudeCodeGLM, .kimiCode, .customClaudeCompatible:
+        case .claudeCode, .codexExec, .claudeCodeGLM, .kimiCode, .customClaudeCompatible, .pi:
             nil
         }
     }
@@ -109,7 +117,7 @@ enum AgentProviderKind: String, CaseIterable, Hashable {
         switch self {
         case .claudeCode, .claudeCodeGLM, .kimiCode, .customClaudeCompatible:
             true
-        case .codexExec, .openCode, .cursor:
+        case .codexExec, .openCode, .cursor, .pi:
             false
         }
     }
@@ -120,7 +128,7 @@ enum AgentProviderKind: String, CaseIterable, Hashable {
 
     var requiresExpectedPIDOwnedAgentModeMCPRouting: Bool {
         switch self {
-        case .claudeCode, .codexExec, .openCode, .cursor, .claudeCodeGLM, .kimiCode, .customClaudeCompatible:
+        case .claudeCode, .codexExec, .openCode, .cursor, .claudeCodeGLM, .kimiCode, .customClaudeCompatible, .pi:
             true
         }
     }
@@ -163,6 +171,8 @@ enum AgentProviderKind: String, CaseIterable, Hashable {
                 let normalized = mapping.normalized
                 return "Claude Code routed through a custom Claude-compatible backend. Slots: Haiku → \(normalized.haiku), Sonnet → \(normalized.sonnet), Opus → \(normalized.opus)."
             }
+        case .pi:
+            return "pi coding agent via native RPC. Preserves pi sessions, models, thinking levels, extensions, skills, and built-in tools while allowing RepoPrompt bridge tools when managed by Agent Mode."
         }
     }
 
@@ -177,6 +187,8 @@ enum AgentProviderKind: String, CaseIterable, Hashable {
             "opencode_acp"
         case .cursor:
             "cursor_acp"
+        case .pi:
+            "pi_rpc"
         }
     }
 
@@ -190,7 +202,7 @@ enum AgentProviderKind: String, CaseIterable, Hashable {
             .kimi
         case .customClaudeCompatible:
             .customCompatible
-        case .codexExec, .openCode, .cursor:
+        case .codexExec, .openCode, .cursor, .pi:
             nil
         }
     }
@@ -278,6 +290,8 @@ final class AgentRuntimeProviderService {
                 Self.logger.debug("Created OpenCodeACPHeadlessAgentProvider")
             }
             return OpenCodeACPHeadlessAgentProvider(config: config, workspacePath: workspacePath)
+        case .pi:
+            return UnsupportedHeadlessAgentProvider(reason: "pi Agent Mode uses the native RPC runtime and is not available for headless provider factory runs yet.")
         case .cursor:
             let config = CursorAgentConfig(
                 commandName: agent.commandName,

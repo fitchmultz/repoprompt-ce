@@ -69,6 +69,16 @@ enum AgentModeMCPToolPolicy {
 
     static let cursorGrantedTools: Set<String> = MCPToolCapabilities.toolNames(for: cursorGrantedCapabilities)
 
+    /// pi RPC uses the same Agent Mode app/session control surface while bridge tooling is hidden behind managed-run policy.
+    static let piGrantedCapabilities: Set<MCPToolCapability> = [
+        .userInteraction,
+        .agentSessionControl,
+        .agentConversationSend,
+        .conversationLog
+    ]
+
+    static let piGrantedTools: Set<String> = MCPToolCapabilities.toolNames(for: piGrantedCapabilities)
+
     static func grantedTools(forAgent agent: AgentProviderKind) -> Set<String> {
         switch agent {
         case .codexExec:
@@ -79,6 +89,8 @@ enum AgentModeMCPToolPolicy {
             openCodeGrantedTools
         case .cursor:
             cursorGrantedTools
+        case .pi:
+            piGrantedTools
         }
     }
 }
