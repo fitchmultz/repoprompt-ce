@@ -2,13 +2,16 @@ import Foundation
 
 @MainActor
 final class PiIntegratedAgentModeRunner {
+    private let windowID: Int
     private let hooks: AgentModeRunService.Hooks
     private let terminalCommitBarrier: AgentRunTerminalCommitBarrier
 
     init(
+        windowID: Int,
         hooks: AgentModeRunService.Hooks,
         terminalCommitBarrier: AgentRunTerminalCommitBarrier
     ) {
+        self.windowID = windowID
         self.hooks = hooks
         self.terminalCommitBarrier = terminalCommitBarrier
     }
@@ -42,9 +45,37 @@ final class PiIntegratedAgentModeRunner {
         hooks.setAgentRunActive(tabID, true)
         hooks.updateBindings(session)
 
+        let bridgeExtensionURL: URL
+        do {
+            bridgeExtensionURL = try PiRepoPromptBridgeExtensionInstaller.install(windowID: windowID)
+        } catch {
+            await terminalCommitBarrier.commit(.init(
+                session: session,
+                ownership: ownership,
+                expectedRunID: runID,
+                terminalState: .failed,
+                source: "pi.bridgeExtensionInstallFailed",
+                errorText: error.localizedDescription,
+                attachmentReservationID: attachmentReservationID,
+                attachmentDisposition: .deleteFiles,
+                finalizeNonCodexUsage: true,
+                supportsFollowUp: false,
+                notifyTurnComplete: false,
+                prepareProviderState: {
+                    session.runID = nil
+                    AgentModeProcessRunIdentity.clearProcessRunID(for: session)
+                    return nil
+                }
+            ))
+            return
+        }
+
         let controller = PiNativeSessionController(
             workspacePath: workspacePath,
-            options: .init(modelRaw: session.selectedModelRaw)
+            options: .init(
+                modelRaw: session.selectedModelRaw,
+                launchArguments: ["--mode", "rpc", "--extension", bridgeExtensionURL.path]
+            )
         )
         session.piController = controller
         session.installRunAttemptTerminalResources(ownership: ownership) { terminalState in

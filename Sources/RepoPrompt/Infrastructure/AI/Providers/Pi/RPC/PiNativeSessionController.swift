@@ -32,15 +32,18 @@ actor PiNativeSessionController {
         var modelRaw: String?
         var requestTimeout: TimeInterval?
         var enableDebugLogging: Bool
+        var launchArguments: [String]
 
         init(
             modelRaw: String? = nil,
             requestTimeout: TimeInterval? = 30,
-            enableDebugLogging: Bool = false
+            enableDebugLogging: Bool = false,
+            launchArguments: [String] = ["--mode", "rpc"]
         ) {
             self.modelRaw = modelRaw
             self.requestTimeout = requestTimeout
             self.enableDebugLogging = enableDebugLogging
+            self.launchArguments = launchArguments
         }
     }
 
@@ -88,7 +91,8 @@ actor PiNativeSessionController {
         let client = PiRPCClient(config: .init(
             enableDebugLogging: options.enableDebugLogging,
             requestTimeout: options.requestTimeout,
-            workingDirectory: workspacePath
+            workingDirectory: workspacePath,
+            launchArguments: options.launchArguments
         ))
         self.init(client: client, options: options)
     }

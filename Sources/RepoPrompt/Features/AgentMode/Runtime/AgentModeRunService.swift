@@ -145,6 +145,7 @@ final class AgentModeRunService {
             terminalCommitBarrier: terminalCommitBarrier
         )
         piRunner = PiIntegratedAgentModeRunner(
+            windowID: dependencies.windowID,
             hooks: hooks,
             terminalCommitBarrier: terminalCommitBarrier
         )
