@@ -4,6 +4,8 @@ enum PiRepoPromptBridgeExtensionInstaller {
     enum InstallerError: Error, LocalizedError, Equatable {
         case applicationSupportUnavailable
         case cliHelperUnavailable
+        case globalBridgeAlreadyExists(URL)
+        case globalBridgeNotManaged(URL)
 
         var errorDescription: String? {
             switch self {
@@ -11,11 +13,34 @@ enum PiRepoPromptBridgeExtensionInstaller {
                 "Application Support is unavailable; cannot prepare RepoPrompt pi bridge extension."
             case .cliHelperUnavailable:
                 "RepoPrompt MCP CLI helper is unavailable; cannot prepare RepoPrompt pi bridge extension."
+            case let .globalBridgeAlreadyExists(url):
+                "A pi extension already exists at \(url.path), but it is not managed by RepoPrompt."
+            case let .globalBridgeNotManaged(url):
+                "The pi extension at \(url.path) is not managed by RepoPrompt and was not removed."
             }
         }
     }
 
+    enum GlobalInstallationStatus: Equatable {
+        case notInstalled
+        case installed
+        case installedButStale
+        case installedByOther
+    }
+
+    struct GlobalInstallResult: Equatable {
+        let statusBeforeInstall: GlobalInstallationStatus
+        let extensionURL: URL
+
+        var wasAlreadyInstalled: Bool {
+            statusBeforeInstall == .installed
+        }
+    }
+
     static let extensionVersion = "2"
+
+    private static let managedMarker = "// RepoPrompt CE managed pi bridge extension"
+    private static let globalExtensionFileName = "repoprompt-bridge.ts"
 
     static func install(
         windowID: Int,
@@ -42,15 +67,88 @@ enum PiRepoPromptBridgeExtensionInstaller {
         return extensionURL
     }
 
-    static func extensionSource(windowID: Int, cliPath: String) -> String {
+    static func globalExtensionURL(homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
+        homeDirectory
+            .appendingPathComponent(".pi", isDirectory: true)
+            .appendingPathComponent("agent", isDirectory: true)
+            .appendingPathComponent("extensions", isDirectory: true)
+            .appendingPathComponent(globalExtensionFileName, isDirectory: false)
+    }
+
+    static func globalInstallStatus(
+        fileManager: FileManager = .default,
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        cliPath: String? = Bundle.main.url(forAuxiliaryExecutable: "repoprompt-mcp")?.path
+    ) -> GlobalInstallationStatus {
+        let extensionURL = globalExtensionURL(homeDirectory: homeDirectory)
+        guard fileManager.fileExists(atPath: extensionURL.path),
+              let existing = try? String(contentsOf: extensionURL, encoding: .utf8)
+        else {
+            return .notInstalled
+        }
+        guard existing.contains(managedMarker) else {
+            return .installedByOther
+        }
+        guard let cliPath, !cliPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return .installedButStale
+        }
+        let expected = extensionSource(windowID: nil, cliPath: cliPath)
+        return existing == expected ? .installed : .installedButStale
+    }
+
+    @discardableResult
+    static func installGlobal(
+        fileManager: FileManager = .default,
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        cliPath: String? = Bundle.main.url(forAuxiliaryExecutable: "repoprompt-mcp")?.path
+    ) throws -> GlobalInstallResult {
+        guard let cliPath, !cliPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw InstallerError.cliHelperUnavailable
+        }
+        let extensionURL = globalExtensionURL(homeDirectory: homeDirectory)
+        let status = globalInstallStatus(fileManager: fileManager, homeDirectory: homeDirectory, cliPath: cliPath)
+        guard status != .installedByOther else {
+            throw InstallerError.globalBridgeAlreadyExists(extensionURL)
+        }
+        let directory = extensionURL.deletingLastPathComponent()
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        let source = extensionSource(windowID: nil, cliPath: cliPath)
+        if status != .installed {
+            try source.write(to: extensionURL, atomically: true, encoding: .utf8)
+        }
+        return GlobalInstallResult(statusBeforeInstall: status, extensionURL: extensionURL)
+    }
+
+    @discardableResult
+    static func uninstallGlobal(
+        fileManager: FileManager = .default,
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        cliPath: String? = Bundle.main.url(forAuxiliaryExecutable: "repoprompt-mcp")?.path
+    ) throws -> Bool {
+        let extensionURL = globalExtensionURL(homeDirectory: homeDirectory)
+        let status = globalInstallStatus(fileManager: fileManager, homeDirectory: homeDirectory, cliPath: cliPath)
+        switch status {
+        case .notInstalled:
+            return false
+        case .installed, .installedButStale:
+            try fileManager.removeItem(at: extensionURL)
+            return true
+        case .installedByOther:
+            throw InstallerError.globalBridgeNotManaged(extensionURL)
+        }
+    }
+
+    static func extensionSource(windowID: Int?, cliPath: String) -> String {
         let escapedCLIPath = jsonStringLiteral(cliPath)
+        let escapedWindowID = windowID.map { jsonStringLiteral(String($0)) } ?? "undefined"
         return """
+        \(managedMarker)
         import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
         const BRIDGE_VERSION = "\(extensionVersion)";
         const REPOPROMPT_CLI = \(escapedCLIPath);
         const REPOPROMPT_CLIENT_NAME = "pi";
-        const REPOPROMPT_WINDOW_ID = "\(windowID)";
+        const REPOPROMPT_WINDOW_ID: string | undefined = \(escapedWindowID);
         const SCHEMA_LOAD_TIMEOUT_MS = 60_000;
         const TOOL_EXEC_TIMEOUT_MS = 600_000;
         const MAX_RESULT_CHARS = 50 * 1024;
@@ -123,6 +221,15 @@ enum PiRepoPromptBridgeExtensionInstaller {
           return parseToolsSchema(stdout);
         }
 
+        function repoPromptToolArgs(toolName: string, params: JSONRecord): string[] {
+          const args = ["--client-name", REPOPROMPT_CLIENT_NAME, "--raw-json"];
+          if (REPOPROMPT_WINDOW_ID) {
+            args.push("-w", REPOPROMPT_WINDOW_ID);
+          }
+          args.push("-c", toolName, "-j", JSON.stringify(params ?? {}));
+          return args;
+        }
+
         async function callRepoPromptTool(
           pi: ExtensionAPI,
           toolName: string,
@@ -131,7 +238,7 @@ enum PiRepoPromptBridgeExtensionInstaller {
         ) {
           const result = await pi.exec(
             REPOPROMPT_CLI,
-            ["--client-name", REPOPROMPT_CLIENT_NAME, "--raw-json", "-w", REPOPROMPT_WINDOW_ID, "-c", toolName, "-j", JSON.stringify(params ?? {})],
+            repoPromptToolArgs(toolName, params),
             { signal, timeout: TOOL_EXEC_TIMEOUT_MS },
           );
           const stdout = result.stdout.trim();

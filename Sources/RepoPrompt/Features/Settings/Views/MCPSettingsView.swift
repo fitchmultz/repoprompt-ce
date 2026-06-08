@@ -52,6 +52,7 @@ struct MCPSettingsView: View {
     // CLI Installation state
     @State private var cliInstallStatus: CLIPathInstaller.InstallationStatus = .notInstalled
     @State private var claudeRPInstallStatus: CLIPathInstaller.ClaudeRPInstallationStatus = .notInstalled
+    @State private var piBridgeInstallStatus: PiRepoPromptBridgeExtensionInstaller.GlobalInstallationStatus = .notInstalled
 
     // Inline feedback
     @State private var feedbackMessage: String?
@@ -90,6 +91,8 @@ struct MCPSettingsView: View {
                 contextBuilderSection
                 Divider()
                 quickSetupSection
+                Divider()
+                piBridgeSection
                 Divider()
                 cliSection
                 Divider()
@@ -612,6 +615,36 @@ struct MCPSettingsView: View {
         }
     }
 
+    // MARK: - pi Bridge Extension
+
+    private var piBridgeSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("pi Bridge Extension")
+                .font(fontPreset.subHeadlineBoldFont)
+
+            HStack(alignment: .top, spacing: 10) {
+                piBridgeStatusIcon(for: piBridgeInstallStatus)
+                    .padding(.top, 2)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("~/.pi/agent/extensions/repoprompt-bridge.ts")
+                        .font(.system(size: fontPreset.rawValue, design: .monospaced))
+                        .fontWeight(.medium)
+                    Text(piBridgeStatusText(for: piBridgeInstallStatus))
+                        .font(fontPreset.captionFont)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                piBridgeActionButton(for: piBridgeInstallStatus, install: installPiBridgeExtension, uninstall: uninstallPiBridgeExtension)
+            }
+
+            Text("Optional for pi chats started outside RepoPrompt. RepoPrompt-managed Agent Mode runs inject this bridge automatically. The global extension exposes RepoPrompt MCP tools to pi and leaves pi built-in tools under pi's own config.")
+                .font(fontPreset.captionFont)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
     // MARK: - CLI Section
 
     private var cliSection: some View {
@@ -787,6 +820,7 @@ struct MCPSettingsView: View {
     private func refreshInstallStatuses() {
         cliInstallStatus = MCPIntegrationHelper.cliPathInstallStatus()
         claudeRPInstallStatus = CLIPathInstaller.checkClaudeRPStatus()
+        piBridgeInstallStatus = PiRepoPromptBridgeExtensionInstaller.globalInstallStatus()
     }
 
     private func showFeedback(_ message: String, isError: Bool = false) {
@@ -840,6 +874,50 @@ struct MCPSettingsView: View {
     }
 
     @ViewBuilder
+    private func piBridgeStatusIcon(for status: PiRepoPromptBridgeExtensionInstaller.GlobalInstallationStatus) -> some View {
+        switch status {
+        case .installed: Image(systemName: "checkmark.circle.fill").foregroundColor(.green)
+        case .installedButStale: Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.orange)
+        case .notInstalled: Image(systemName: "circle").foregroundColor(.secondary)
+        case .installedByOther: Image(systemName: "xmark.circle.fill").foregroundColor(.red)
+        }
+    }
+
+    private func piBridgeStatusText(for status: PiRepoPromptBridgeExtensionInstaller.GlobalInstallationStatus) -> String {
+        switch status {
+        case .installed:
+            "Installed globally for pi"
+        case .installedButStale:
+            "Needs update"
+        case .notInstalled:
+            "Not installed"
+        case .installedByOther:
+            "A pi extension with the same name exists but is not managed by RepoPrompt"
+        }
+    }
+
+    @ViewBuilder
+    private func piBridgeActionButton(
+        for status: PiRepoPromptBridgeExtensionInstaller.GlobalInstallationStatus,
+        install: @escaping () -> Void,
+        uninstall: @escaping () -> Void
+    ) -> some View {
+        switch status {
+        case .notInstalled:
+            Button("Install") { install() }.buttonStyle(CustomButtonStyle())
+        case .installed:
+            Button("Uninstall") { uninstall() }.buttonStyle(CustomButtonStyle())
+        case .installedButStale:
+            HStack(spacing: 6) {
+                Button("Update") { install() }.buttonStyle(CustomButtonStyle())
+                Button("Uninstall") { uninstall() }.buttonStyle(CustomButtonStyle())
+            }
+        case .installedByOther:
+            EmptyView()
+        }
+    }
+
+    @ViewBuilder
     private func claudeRPStatusIcon(for status: CLIPathInstaller.ClaudeRPInstallationStatus) -> some View {
         switch status {
         case .installed: Image(systemName: "checkmark.circle.fill").foregroundColor(.green)
@@ -874,6 +952,29 @@ struct MCPSettingsView: View {
             }
         case .installedByOther:
             EmptyView()
+        }
+    }
+
+    private func installPiBridgeExtension() {
+        do {
+            let result = try PiRepoPromptBridgeExtensionInstaller.installGlobal()
+            refreshInstallStatuses()
+            let message = result.wasAlreadyInstalled ? "pi bridge already installed" : "pi bridge installed"
+            showFeedback(message)
+        } catch {
+            refreshInstallStatuses()
+            showFeedback("Install failed: \(error.localizedDescription)", isError: true)
+        }
+    }
+
+    private func uninstallPiBridgeExtension() {
+        do {
+            let removed = try PiRepoPromptBridgeExtensionInstaller.uninstallGlobal()
+            refreshInstallStatuses()
+            showFeedback(removed ? "pi bridge removed" : "pi bridge was not installed")
+        } catch {
+            refreshInstallStatuses()
+            showFeedback("Uninstall failed: \(error.localizedDescription)", isError: true)
         }
     }
 
