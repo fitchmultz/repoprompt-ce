@@ -112,7 +112,7 @@ enum PiRepoPromptBridgeExtensionInstaller {
         async function loadRepoPromptTools(pi: ExtensionAPI): Promise<RepoPromptToolEntry[]> {
           const result = await pi.exec(
             REPOPROMPT_CLI,
-            ["--client-name", REPOPROMPT_CLIENT_NAME, "--tools-schema", "--compact"],
+            ["--tools-schema", "--compact"],
             { timeout: SCHEMA_LOAD_TIMEOUT_MS },
           );
           const stdout = result.stdout.trim();

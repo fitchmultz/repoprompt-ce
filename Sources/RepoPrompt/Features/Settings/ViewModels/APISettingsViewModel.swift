@@ -300,6 +300,12 @@ public class APISettingsViewModel: ObservableObject {
     @Published private(set) var availableCursorModelOptions: [AgentModelOption] = []
     private var cursorLogCollector: CLIProcessLogCollector?
 
+    // pi RPC
+    @Published var isPiConnected: Bool = false
+    @Published var piError: String? = nil
+    @Published private(set) var availablePiModelOptions: [AgentModelOption] = []
+    private var piLogCollector: CLIProcessLogCollector?
+
     /// CLI connection flags are persisted configuration hints, not proof that the provider is
     /// usable in the current process. Context Builder restoration waits for this validation pass
     /// before accepting or replacing a saved provider/model selection.
@@ -348,6 +354,8 @@ public class APISettingsViewModel: ObservableObject {
     private var codexModelsTask: Task<Void, Never>?
     private var openCodeModelsTask: Task<Void, Never>?
     private var cursorModelsTask: Task<Void, Never>?
+    private var piPreflightTask: Task<Void, Never>?
+    private var piModelsTask: Task<Void, Never>?
     private var openRouterModelsTask: Task<Void, Never>?
     private var cliConnectionCancellables = Set<AnyCancellable>()
     private var hasLoadedStoredData = false
@@ -376,6 +384,7 @@ public class APISettingsViewModel: ObservableObject {
             codexAvailable: isCodexConnected,
             openCodeAvailable: isOpenCodeConnected,
             cursorAvailable: isCursorConnected,
+            piAvailable: isPiConnected,
             zaiConfigured: compatibleBackendIsActive(.glmZAI),
             kimiConfigured: compatibleBackendIsActive(.kimi),
             customClaudeCompatibleConfigured: compatibleBackendIsActive(.custom)
@@ -948,10 +957,17 @@ public class APISettingsViewModel: ObservableObject {
 
     private let aiQueriesService: AIQueriesService
     private let keyManager: KeyManager
+    private let piModelPollingService: any PiModelPolling
 
-    init(aiQueriesService: AIQueriesService, keyManager: KeyManager, loadStoredDataOnInit: Bool = true) {
+    init(
+        aiQueriesService: AIQueriesService,
+        keyManager: KeyManager,
+        loadStoredDataOnInit: Bool = true,
+        piModelPollingService: any PiModelPolling = PiModelPollingService.shared
+    ) {
         self.aiQueriesService = aiQueriesService
         self.keyManager = keyManager
+        self.piModelPollingService = piModelPollingService
         installCLIConnectionObservers()
         if loadStoredDataOnInit {
             Task {
@@ -970,6 +986,8 @@ public class APISettingsViewModel: ObservableObject {
         codexModelsTask?.cancel()
         openCodeModelsTask?.cancel()
         cursorModelsTask?.cancel()
+        piPreflightTask?.cancel()
+        piModelsTask?.cancel()
         openRouterModelsTask?.cancel()
         contextBuilderProviderValidationTask?.cancel()
     }
@@ -1248,6 +1266,10 @@ public class APISettingsViewModel: ObservableObject {
         openCodeModelsTask = nil
         cursorModelsTask?.cancel()
         cursorModelsTask = nil
+        piPreflightTask?.cancel()
+        piPreflightTask = nil
+        piModelsTask?.cancel()
+        piModelsTask = nil
         openRouterModelsTask?.cancel()
         openRouterModelsTask = nil
 
@@ -1398,6 +1420,7 @@ public class APISettingsViewModel: ObservableObject {
         }
         if isOpenCodeConnected { startOpenCodeModelsSubscriptionIfNeeded(workspacePath: nil) } else { stopOpenCodeModelsSubscription(clearModels: true) }
         if isCursorConnected { startCursorModelsSubscriptionIfNeeded(workspacePath: nil) } else { stopCursorModelsSubscription(clearModels: true) }
+        startPiAvailabilityPreflightIfNeeded(workspacePath: nil)
         if isOpenRouterKeyValid { openRouterModelsTask = Task { await self.fetchOpenRouterModels() } }
         if isCustomProviderValid { Task { await self.fetchCustomModels() } }
 
@@ -1923,6 +1946,11 @@ public class APISettingsViewModel: ObservableObject {
             let previousStatus = claudeCodeCLIStatus
             claudeCodeCLIStatus = status
             notifyClaudeCompatibleBackendRuntimeAvailabilityIfNeeded(previousStatus: previousStatus)
+        }
+
+
+        func test_startPiAvailabilityPreflightIfNeeded(workspacePath: String? = nil) {
+            startPiAvailabilityPreflightIfNeeded(workspacePath: workspacePath)
         }
 
         func test_completeContextBuilderProviderValidation(
@@ -3325,6 +3353,215 @@ public class APISettingsViewModel: ObservableObject {
         if clearModels {
             availableCursorModelOptions = []
         }
+    }
+
+    // MARK: - pi RPC
+
+    @discardableResult
+    func testPiConnection() async throws -> Bool {
+        let collector = CLIProcessLogCollector()
+        collector.append("pi RPC connection test started")
+        piLogCollector = collector
+
+        collector.append("Refreshing login-shell environment cache")
+        await CLIEnvironmentCache.shared.invalidate()
+        collector.append("Starting pi RPC model discovery preflight")
+
+        do {
+            let didConnect = try await refreshPiAvailabilityFromModelDiscovery(
+                workspacePath: nil,
+                collector: collector
+            )
+            guard didConnect else {
+                throw AIProviderError.invalidConfiguration(detail: "pi RPC preflight completed but no model metadata was discovered.")
+            }
+            collector.append("pi RPC marked as connected")
+            piLogCollector = nil
+            startPiModelsSubscriptionIfNeeded(workspacePath: nil)
+            return true
+        } catch {
+            collector.append("Connection test threw error: \(error.localizedDescription)")
+            let finalMessage = friendlyPiMessage(for: error)
+            stopPiModelsSubscription(clearModels: true)
+            applyPiDisconnected(errorMessage: finalMessage)
+            collector.append("User guidance: \(finalMessage)")
+            throw error
+        }
+    }
+
+    func disconnectPi() {
+        stopPiModelsSubscription(clearModels: true)
+        piPreflightTask?.cancel()
+        piPreflightTask = nil
+        applyPiDisconnected(errorMessage: nil)
+    }
+
+    func hasPiTrace() -> Bool {
+        piLogCollector?.isEmpty == false
+    }
+
+    func dumpPiTrace() throws -> URL {
+        guard let collector = piLogCollector else {
+            throw CLIProcessLogCollectorError.noEntries
+        }
+        collector.append("Exporting trace to Downloads folder")
+        let exportDate = Date()
+        let url = try collector.writeMarkdownToDownloads(
+            baseFilename: "RepoPrompt-PiTrace",
+            title: "pi RPC Connection Trace",
+            timestamp: exportDate
+        )
+        collector.append("Trace exported to \(url.lastPathComponent)")
+        return url
+    }
+
+    private func startPiAvailabilityPreflightIfNeeded(workspacePath: String?) {
+        guard piPreflightTask == nil else { return }
+        piPreflightTask = Task { [weak self, workspacePath] in
+            guard let self else { return }
+            let didConnect: Bool
+            do {
+                didConnect = try await refreshPiAvailabilityFromModelDiscovery(
+                    workspacePath: workspacePath,
+                    collector: nil
+                )
+            } catch {
+                didConnect = false
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    stopPiModelsSubscription(clearModels: true)
+                    applyPiDisconnected(errorMessage: friendlyPiMessage(for: error))
+                }
+            }
+            guard !Task.isCancelled else {
+                await MainActor.run { [weak self] in self?.piPreflightTask = nil }
+                return
+            }
+            if didConnect {
+                await startPiModelsSubscriptionIfNeeded(workspacePath: workspacePath)
+            }
+            await MainActor.run { [weak self] in self?.piPreflightTask = nil }
+        }
+    }
+
+    @discardableResult
+    private func refreshPiAvailabilityFromModelDiscovery(
+        workspacePath: String?,
+        collector: CLIProcessLogCollector?
+    ) async throws -> Bool {
+        let snapshot = try await piModelPollingService.discoverOnce(workspacePath: workspacePath)
+        guard let snapshot else {
+            applyPiDisconnected(errorMessage: "pi RPC did not return model metadata.")
+            return false
+        }
+        collector?.append("Discovered \(snapshot.models.options.count) pi model option(s)")
+        applyPiModelSnapshot(snapshot)
+        piError = nil
+        let wasConnected = isPiConnected
+        isPiConnected = true
+        if !wasConnected {
+            NotificationCenter.default.post(
+                name: .piConnectionChanged,
+                object: nil,
+                userInfo: ["windowID": 0]
+            )
+        }
+        return true
+    }
+
+    private func startPiModelsSubscriptionIfNeeded(workspacePath: String?) {
+        guard piModelsTask == nil else { return }
+        let pollingService = piModelPollingService
+        piModelsTask = Task { [weak self, pollingService, workspacePath] in
+            let stream = await pollingService.subscribe(workspacePath: workspacePath)
+            for await snapshot in stream {
+                guard !Task.isCancelled else { return }
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    let wasConnected = isPiConnected
+                    applyPiModelSnapshot(snapshot)
+                    piError = nil
+                    isPiConnected = true
+                    if !wasConnected {
+                        NotificationCenter.default.post(
+                            name: .piConnectionChanged,
+                            object: nil,
+                            userInfo: ["windowID": 0]
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private func stopPiModelsSubscription(clearModels: Bool = false) {
+        piModelsTask?.cancel()
+        piModelsTask = nil
+        if clearModels {
+            availablePiModelOptions = []
+        }
+    }
+
+    private func applyPiModelSnapshot(_ snapshot: PiModelPollingService.Snapshot) {
+        availablePiModelOptions = snapshot.models.options
+    }
+
+    private func applyPiDisconnected(errorMessage: String?) {
+        let wasConnected = isPiConnected
+        piError = errorMessage
+        isPiConnected = false
+        availablePiModelOptions = []
+        if wasConnected {
+            NotificationCenter.default.post(
+                name: .piConnectionChanged,
+                object: nil,
+                userInfo: ["windowID": 0]
+            )
+        }
+    }
+
+    private func friendlyPiMessage(for error: Error) -> String {
+        if let providerError = error as? AIProviderError {
+            switch providerError {
+            case let .invalidConfiguration(detail):
+                return detail
+            case let .apiError(source):
+                return source?.localizedDescription ?? "Unknown pi RPC error"
+            default:
+                return error.localizedDescription
+            }
+        }
+        if let clientError = error as? PiRPCClient.ClientError {
+            switch clientError {
+            case let .executableUnavailable(message):
+                return message
+            case let .requestTimedOut(_, command):
+                return "pi RPC timed out while handling `\(command)`. Check that `pi --mode rpc` can start and that pi is authenticated."
+            case let .invalidResponse(message),
+                 let .requestFailed(message),
+                 let .transportClosed(message),
+                 let .inputWriteFailed(message),
+                 let .readerSetupFailed(message):
+                return message
+            case .processNotRunning:
+                return "pi RPC process is not running."
+            }
+        }
+        let message = error.localizedDescription
+        let lowered = message.lowercased()
+        if lowered.contains("not installed") || lowered.contains("no such file") || lowered.contains("command not found") || lowered.contains("not found") {
+            return "pi executable was not found. Install pi and ensure `pi` is available on PATH."
+        }
+        if lowered.contains("permission denied") || lowered.contains("not runnable") || lowered.contains("not executable") {
+            return "Permission denied. Ensure the `pi` executable is runnable."
+        }
+        if lowered.contains("unauthorized") || lowered.contains("not authenticated") || lowered.contains("login") || lowered.contains("auth") {
+            return "pi is not authenticated. Complete pi's normal authentication flow, then try again."
+        }
+        if lowered.contains("timed out") || lowered.contains("timeout") {
+            return "pi RPC did not respond before the timeout. Check that `pi --mode rpc` can start from Terminal."
+        }
+        return message
     }
 
     func isCustomModelEnabled(_ modelName: String) -> Bool {

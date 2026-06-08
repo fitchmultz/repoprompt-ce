@@ -4,6 +4,12 @@ protocol PiModelDiscoveryClient: Sendable {
     func discoverModels(workspacePath: String?) async throws -> PiDiscoveredModels?
 }
 
+protocol PiModelPolling: Sendable {
+    func latestSnapshot() async -> PiModelPollingService.Snapshot?
+    func discoverOnce(workspacePath: String?) async throws -> PiModelPollingService.Snapshot?
+    func subscribe(workspacePath: String?) async -> AsyncStream<PiModelPollingService.Snapshot>
+}
+
 struct PiRPCModelDiscoveryClient: PiModelDiscoveryClient {
     typealias ClientFactory = @Sendable (_ workspacePath: String?) -> PiRPCClient
 
@@ -38,7 +44,7 @@ struct PiRPCModelDiscoveryClient: PiModelDiscoveryClient {
 /// pi owns provider/model configuration. RepoPrompt only asks pi for its current model list,
 /// caches the result for picker/settings surfaces, and keeps the plain `default` option so a
 /// managed run can preserve pi's configured default model without sending `set_model`.
-actor PiModelPollingService {
+actor PiModelPollingService: PiModelPolling {
     static let shared = PiModelPollingService(client: PiRPCModelDiscoveryClient())
 
     struct Snapshot: Equatable {
