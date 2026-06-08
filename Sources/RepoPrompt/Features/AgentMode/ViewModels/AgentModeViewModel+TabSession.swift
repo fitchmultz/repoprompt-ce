@@ -492,6 +492,8 @@ extension AgentModeViewModel {
 
         var claudeController: (any NativeAgentRuntimeControlling)?
         var acpController: ACPAgentSessionController?
+        var piController: PiNativeSessionController?
+        var piSessionFile: String?
         /// The Claude runtime variant the current controller was created with.
         /// Used to prevent reusing a standard Claude process after switching to a
         /// compatible backend such as CC Zai, CC Moonshot, or CC Custom.

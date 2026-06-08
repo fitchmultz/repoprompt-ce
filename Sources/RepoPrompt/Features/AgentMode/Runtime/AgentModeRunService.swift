@@ -106,6 +106,7 @@ final class AgentModeRunService {
     private let headlessRunner: HeadlessAgentModeRunner
     private let codexRunner: CodexIntegratedAgentModeRunner
     private let claudeRunner: ClaudeIntegratedAgentModeRunner
+    private let piRunner: PiIntegratedAgentModeRunner
     private let acpRunner: ACPIntegratedAgentModeRunner
     private let terminalCommitBarrier: AgentRunTerminalCommitBarrier
 
@@ -140,6 +141,10 @@ final class AgentModeRunService {
         )
         claudeRunner = ClaudeIntegratedAgentModeRunner(
             claudeCoordinator: dependencies.claudeCoordinator,
+            hooks: hooks,
+            terminalCommitBarrier: terminalCommitBarrier
+        )
+        piRunner = PiIntegratedAgentModeRunner(
             hooks: hooks,
             terminalCommitBarrier: terminalCommitBarrier
         )
@@ -230,6 +235,17 @@ final class AgentModeRunService {
                 initialMessageForRun: initialMessageForRun,
                 attachments: attachments,
                 makeLease: makeLease
+            )
+            return nil
+        }
+        if selectedAgent == .pi {
+            await piRunner.startRun(
+                tabID: tabID,
+                session: session,
+                initialUserMessage: initialUserMessage,
+                initialMessageForRun: initialMessageForRun,
+                attachments: attachments,
+                workspacePath: workspacePath
             )
             return nil
         }
@@ -1015,6 +1031,7 @@ final class AgentModeRunService {
         let expectedRunID = session.runID
         let provider = session.provider
         let acpController = session.acpController
+        let piController = session.piController
         let hasAttemptTerminalResources = session.runAttemptTerminalResources?.ownership == ownership
         let codexCancellationTarget = session.selectedAgent == .codexExec
             ? dependencies.codexCoordinator.captureCodexCancellationTarget(
@@ -1061,6 +1078,17 @@ final class AgentModeRunService {
                             oldController: oldController
                         )
                         await dependencies.claudeCoordinator.awaitPendingClaudeResumeTransferIfNeeded(for: session)
+                    }
+                }
+                if let piController {
+                    if session.piController === piController {
+                        session.piController = nil
+                    }
+                    AgentModeProcessRunIdentity.clearProcessRunID(for: session)
+                    session.provider = nil
+                    return {
+                        _ = await piController.interruptTurn(reason: "cancel")
+                        await piController.shutdown()
                     }
                 }
                 if let acpController {

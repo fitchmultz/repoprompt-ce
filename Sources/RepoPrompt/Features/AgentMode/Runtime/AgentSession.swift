@@ -177,6 +177,9 @@ struct AgentSession: Codable, Identifiable {
     var codexConversationID: String?
     var codexRolloutPath: String?
 
+    /// pi native RPC session file used by switch_session for durable resume.
+    var piSessionFile: String?
+
     /// Codex native session metadata
     var codexModel: String?
     var codexReasoningEffort: String?
@@ -229,6 +232,7 @@ struct AgentSession: Codable, Identifiable {
         providerTokenUsageByTurn: [AgentTokenUsagePersist] = [],
         codexConversationID: String? = nil,
         codexRolloutPath: String? = nil,
+        piSessionFile: String? = nil,
         codexModel: String? = nil,
         codexReasoningEffort: String? = nil,
         codexContextWindow: Int? = nil,
@@ -265,6 +269,7 @@ struct AgentSession: Codable, Identifiable {
         self.providerTokenUsageByTurn = providerTokenUsageByTurn
         self.codexConversationID = codexConversationID
         self.codexRolloutPath = codexRolloutPath
+        self.piSessionFile = piSessionFile
         self.codexModel = codexModel
         self.codexReasoningEffort = codexReasoningEffort
         self.codexContextWindow = codexContextWindow
@@ -303,6 +308,7 @@ struct AgentSession: Codable, Identifiable {
         case providerTokenUsageByTurn
         case codexConversationID
         case codexRolloutPath
+        case piSessionFile
         case codexModel
         case codexReasoningEffort
         case codexContextWindow
@@ -344,6 +350,7 @@ struct AgentSession: Codable, Identifiable {
         providerTokenUsageByTurn = try container.decodeIfPresent([AgentTokenUsagePersist].self, forKey: .providerTokenUsageByTurn) ?? []
         codexConversationID = try container.decodeIfPresent(String.self, forKey: .codexConversationID)
         codexRolloutPath = try container.decodeIfPresent(String.self, forKey: .codexRolloutPath)
+        piSessionFile = try container.decodeIfPresent(String.self, forKey: .piSessionFile)
         codexModel = try container.decodeIfPresent(String.self, forKey: .codexModel)
         codexReasoningEffort = try container.decodeIfPresent(String.self, forKey: .codexReasoningEffort)
         codexContextWindow = try container.decodeIfPresent(Int.self, forKey: .codexContextWindow)

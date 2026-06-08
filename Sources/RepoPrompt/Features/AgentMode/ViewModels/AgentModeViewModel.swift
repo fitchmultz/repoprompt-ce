@@ -314,7 +314,14 @@ final class AgentModeViewModel: ObservableObject {
                        !selectedAgent.usesClaudeNativeRuntime || previousAgent != selectedAgent
                     {
                         session.providerSessionID = nil
+                        session.piSessionFile = nil
                         Task { await claudeCoordinator.shutdownClaudeSession(session) }
+                    }
+                    if previousAgent == .pi {
+                        session.providerSessionID = nil
+                        session.piSessionFile = nil
+                        Task { await session.piController?.shutdown() }
+                        session.piController = nil
                     }
                 }
                 session.selectedAgent = selectedAgent
@@ -3719,6 +3726,7 @@ final class AgentModeViewModel: ObservableObject {
 
         session.runState = payload.normalizedRunState
         session.providerSessionID = agentSession.providerSessionID
+        session.piSessionFile = agentSession.piSessionFile
         session.providerTokenUsageByTurn = agentSession.providerTokenUsageByTurn
         session.pendingHandoff = PendingHandoffState(
             payload: agentSession.pendingHandoffPayload,
@@ -3967,6 +3975,7 @@ final class AgentModeViewModel: ObservableObject {
         session.pendingTurnRuntimeAnchors.removeAll()
         session.agentMessageRuntimeFootersByItemID.removeAll()
         session.providerSessionID = nil
+        session.piSessionFile = nil
         session.providerTokenUsageByTurn.removeAll()
         session.lastUserMessageAt = nil
         session.isDirty = false
@@ -5475,7 +5484,12 @@ final class AgentModeViewModel: ObservableObject {
         if session.claudeController != nil || session.pendingClaudeResumeTransferTask != nil || session.selectedAgent.usesClaudeNativeRuntime {
             await claudeCoordinator.shutdownClaudeSession(session)
         }
+        if let piController = session.piController {
+            await piController.shutdown()
+            session.piController = nil
+        }
         session.providerSessionID = nil
+        session.piSessionFile = nil
         session.contextUsageSnapshot = nil
         session.activeNonCodexTurnTokenAccumulator = nil
         AgentModeProcessRunIdentity.clearProcessRunID(for: session)
@@ -5691,7 +5705,14 @@ final class AgentModeViewModel: ObservableObject {
                !normalized.agent.usesClaudeNativeRuntime || previousAgent != normalized.agent
             {
                 session.providerSessionID = nil
+                session.piSessionFile = nil
                 await claudeCoordinator.shutdownClaudeSession(session)
+            }
+            if previousAgent == .pi {
+                session.providerSessionID = nil
+                session.piSessionFile = nil
+                await session.piController?.shutdown()
+                session.piController = nil
             }
         }
 
@@ -9965,6 +9986,7 @@ final class AgentModeViewModel: ObservableObject {
             providerSessionID: session.providerSessionID,
             autoEditEnabled: session.autoEditEnabled,
             providerTokenUsageByTurn: session.providerTokenUsageByTurn,
+            piSessionFile: session.piSessionFile,
             parentSessionID: session.parentSessionID,
             pendingHandoffPayload: session.pendingHandoff.payload,
             pendingHandoffCreatedAt: session.pendingHandoff.createdAt,
@@ -14346,6 +14368,7 @@ final class AgentModeViewModel: ObservableObject {
 
         // Clear provider session ID so new conversation doesn't resume old CLI session
         session.providerSessionID = nil
+        session.piSessionFile = nil
         session.providerTokenUsageByTurn.removeAll()
         session.pendingNonCodexUserInputTokenQueue.removeAll()
         session.activeNonCodexTurnTokenAccumulator = nil
