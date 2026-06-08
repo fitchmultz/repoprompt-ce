@@ -178,7 +178,7 @@ final class PiIntegratedAgentModeRunner {
                 attachmentReservationID: attachmentReservationID,
                 attachmentDisposition: .deleteFiles,
                 finalizeNonCodexUsage: true,
-                supportsFollowUp: false,
+                supportsFollowUp: state == .completed,
                 notifyTurnComplete: notifyTurnComplete,
                 prepareProviderState: {
                     if session.piController === controller {
