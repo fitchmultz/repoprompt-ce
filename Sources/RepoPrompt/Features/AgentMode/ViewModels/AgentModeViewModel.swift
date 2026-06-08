@@ -12708,15 +12708,21 @@ final class AgentModeViewModel: ObservableObject {
             var shouldUpdateBindings = false
             switch result.type {
             case "content":
+                if let reasoning = result.reasoning, !reasoning.isEmpty {
+                    applyReasoningDelta(reasoning, groupID: result.contentMessageID, session: session)
+                    shouldUpdateBindings = true
+                }
                 // Normal content text
                 guard let content = result.text, !content.isEmpty else { break }
                 shouldUpdateBindings = clearClaudeReasoningStatus(session) || shouldUpdateBindings
+                endActiveReasoningSegment(session)
                 enqueueAssistantDelta(content, session: session)
 
             case "final_content":
                 // Final authoritative message content for the turn.
                 guard let content = result.text else { break }
                 shouldUpdateBindings = clearClaudeReasoningStatus(session) || shouldUpdateBindings
+                endActiveReasoningSegment(session)
                 // Materialize any pending content delta first so we preserve ordering.
                 flushPendingAssistantDelta(session)
                 guard AgentDisplayableText.hasDisplayableBody(content) else { break }
@@ -12989,6 +12995,7 @@ final class AgentModeViewModel: ObservableObject {
                 shouldUpdateBindings = session.setRunningStatus(nil, source: nil) || shouldUpdateBindings
                 flushPendingAssistantDelta(session)
                 endActiveAssistantSegment(session)
+                endActiveReasoningSegment(session)
                 // Stream completed - assistant streaming segments already finalized above.
 
                 // Store provider session ID for resumption (native Claude or ACP runtimes).
