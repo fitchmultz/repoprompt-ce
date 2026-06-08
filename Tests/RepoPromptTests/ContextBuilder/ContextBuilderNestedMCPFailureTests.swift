@@ -210,10 +210,12 @@ import XCTest
         func makeProvider(
             agent: AgentProviderKind,
             modelString: String?,
-            workspacePath: String?
+            workspacePath: String?,
+            windowID: Int
         ) -> HeadlessAgentProvider {
             _ = modelString
             _ = workspacePath
+            _ = windowID
             guard let configuration else {
                 preconditionFailure("Nested Context Builder provider factory used before fixture configuration")
             }

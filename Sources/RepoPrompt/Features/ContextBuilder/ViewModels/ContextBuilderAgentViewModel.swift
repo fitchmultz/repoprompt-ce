@@ -113,7 +113,8 @@ final class ContextBuilderAgentViewModel: ObservableObject {
     typealias ProviderFactory = (
         _ agent: AgentProviderKind,
         _ modelString: String?,
-        _ workspacePath: String?
+        _ workspacePath: String?,
+        _ windowID: Int
     ) -> HeadlessAgentProvider
 
     private func debugLog(_ message: @autoclosure () -> String) {
@@ -858,11 +859,12 @@ final class ContextBuilderAgentViewModel: ObservableObject {
         self.workspaceManager = workspaceManager
         self.mcpServer = mcpServer
         self.oracleViewModel = oracleViewModel
-        self.providerFactory = providerFactory ?? { agent, modelString, workspacePath in
+        self.providerFactory = providerFactory ?? { agent, modelString, workspacePath, windowID in
             AgentRuntimeProviderService.shared.makeProvider(
                 for: agent,
                 modelString: modelString,
-                workspacePath: workspacePath
+                workspacePath: workspacePath,
+                windowID: windowID
             )
         }
         refreshAvailableAgents()
@@ -909,6 +911,7 @@ final class ContextBuilderAgentViewModel: ObservableObject {
                 apiSettingsViewModel.$isCodexConnected.dropFirst().map { _ in () }.eraseToAnyPublisher(),
                 apiSettingsViewModel.$isOpenCodeConnected.dropFirst().map { _ in () }.eraseToAnyPublisher(),
                 apiSettingsViewModel.$isCursorConnected.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+                apiSettingsViewModel.$isPiConnected.dropFirst().map { _ in () }.eraseToAnyPublisher(),
                 apiSettingsViewModel.$isContextBuilderProviderValidationComplete.dropFirst().map { _ in () }.eraseToAnyPublisher(),
                 apiSettingsViewModel.$contextBuilderVerifiedCLIProviders.dropFirst().map { _ in () }.eraseToAnyPublisher()
             ])
@@ -2172,7 +2175,10 @@ final class ContextBuilderAgentViewModel: ObservableObject {
                 modelString: nil,
                 windowID: windowID,
                 restrictedTools: DiscoverMCPToolPolicy.restrictedTools,
-                connectionTTL: ContextBuilderDefaults.mcpBootstrapConnectionTTL
+                connectionPolicyProfile: .headless(
+                    agent: record.agentKind,
+                    requestedTTL: ContextBuilderDefaults.mcpBootstrapConnectionTTL
+                )
             )
 
             let lease: MCPBootstrapLease
@@ -2218,7 +2224,7 @@ final class ContextBuilderAgentViewModel: ObservableObject {
 
             let modelString = record.modelRaw == AgentModel.defaultModel.rawValue ? nil : record.modelRaw
             let providerWorkspacePath = record.workspaceContext?.providerWorkspacePath ?? currentWorkspacePath
-            let provider = providerFactory(record.agentKind, modelString, providerWorkspacePath)
+            let provider = providerFactory(record.agentKind, modelString, providerWorkspacePath, windowID)
             guard record.installProvider(provider) else {
                 await provider.dispose()
                 await lease.failAndCleanup()

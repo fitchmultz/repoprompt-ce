@@ -316,6 +316,26 @@ final class SettingsJSONOnlyPersistenceTests: XCTestCase {
         XCTAssertEqual(try fileStore.load().scalarPreferences?.ui?.fileMentionPickerStyle, "wide")
     }
 
+    func testRecommendationSchemaMigrationTreatsPrePiAllProviderFilterAsCurrentAll() throws {
+        let temp = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let fileURL = temp.appendingPathComponent("Settings/globalSettings.json")
+        let fileStore = GlobalSettingsFileStore(fileURL: fileURL)
+        var globalDefaults = GlobalDefaults(discoverAgentRaw: nil, discoverModelsByAgent: nil)
+        globalDefaults.recommendationSchemaVersion = 202_606
+        globalDefaults.recommendationProviderFilterRaw = ["claudeCode", "codex", "cursor", "openAI"]
+        try fileStore.save(GlobalSettingsDocument(globalDefaults: globalDefaults))
+
+        let suiteName = "SettingsJSONOnlyPersistenceTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = GlobalSettingsStore(defaults: defaults, fileStore: fileStore)
+
+        XCTAssertEqual(store.globalRecommendationProviderFilter(), Set(RecommendationProviderKind.allCases))
+        XCTAssertNil(try fileStore.load().globalDefaults.recommendationProviderFilterRaw)
+        XCTAssertTrue(store.ensureLatestRecommendationSchema(currentVersion: BestPracticeProfiles.versionCode))
+    }
+
     private func makeTempDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("SettingsJSONOnlyPersistenceTests-\(UUID().uuidString)", isDirectory: true)

@@ -7,7 +7,7 @@ protocol PiModelDiscoveryClient: Sendable {
 protocol PiModelPolling: Sendable {
     func latestSnapshot() async -> PiModelPollingService.Snapshot?
     func discoverOnce(workspacePath: String?) async throws -> PiModelPollingService.Snapshot?
-    func subscribe(workspacePath: String?) async -> AsyncStream<PiModelPollingService.Snapshot>
+    func subscribe(workspacePath: String?) async -> AsyncStream<PiModelPollingService.Event>
 }
 
 struct PiRPCModelDiscoveryClient: PiModelDiscoveryClient {
@@ -52,22 +52,35 @@ actor PiModelPollingService: PiModelPolling {
         let fetchedAt: Date
     }
 
+    struct Failure: Equatable {
+        let message: String
+    }
+
+    enum Event: Equatable {
+        case snapshot(Snapshot)
+        case failure(Failure)
+    }
+
     private let client: any PiModelDiscoveryClient
     private let intervalNanos: UInt64
+    private let startsPollingOnSubscribe: Bool
 
     private var pollingTask: Task<Void, Never>?
     private var inFlightRefresh: Task<Void, Never>?
-    private var continuations: [UUID: AsyncStream<Snapshot>.Continuation] = [:]
+    private var continuations: [UUID: AsyncStream<Event>.Continuation] = [:]
     private var latest: Snapshot?
+    private var shouldPublishNextSuccessfulRefresh = false
     private var preferredWorkspacePath: String?
     private var isShutdown = false
 
     init(
         client: any PiModelDiscoveryClient,
-        intervalNanos: UInt64 = 300_000_000_000
+        intervalNanos: UInt64 = 300_000_000_000,
+        startsPollingOnSubscribe: Bool = true
     ) {
         self.client = client
         self.intervalNanos = intervalNanos
+        self.startsPollingOnSubscribe = startsPollingOnSubscribe
     }
 
     func latestSnapshot() async -> Snapshot? {
@@ -90,7 +103,7 @@ actor PiModelPollingService: PiModelPolling {
         return await latestSnapshot()
     }
 
-    func subscribe(workspacePath: String?) async -> AsyncStream<Snapshot> {
+    func subscribe(workspacePath: String?) async -> AsyncStream<Event> {
         guard !isShutdown else {
             return AsyncStream { continuation in
                 continuation.finish()
@@ -99,7 +112,7 @@ actor PiModelPollingService: PiModelPolling {
 
         preferredWorkspacePath = normalizedWorkspacePath(workspacePath)
         let id = UUID()
-        let (stream, continuation) = AsyncStream<Snapshot>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let (stream, continuation) = AsyncStream<Event>.makeStream(bufferingPolicy: .bufferingNewest(1))
         continuations[id] = continuation
         continuation.onTermination = { [weak self] _ in
             Task { await self?.removeSubscriber(id) }
@@ -115,11 +128,13 @@ actor PiModelPollingService: PiModelPolling {
             }
         }
         if let latest {
-            continuation.yield(latest)
+            continuation.yield(.snapshot(latest))
         }
 
         guard !isShutdown else { return stream }
-        startPollingIfNeeded()
+        if startsPollingOnSubscribe {
+            startPollingIfNeeded()
+        }
         return stream
     }
 
@@ -190,7 +205,7 @@ actor PiModelPollingService: PiModelPolling {
                 guard !Task.isCancelled else { return }
                 await applyRefreshResult(discovered)
             } catch {
-                // Keep the last registry/cache snapshot when pi discovery fails.
+                await publishFailure(Failure(message: error.localizedDescription))
             }
         }
         inFlightRefresh = task
@@ -203,10 +218,19 @@ actor PiModelPollingService: PiModelPolling {
         _ = AgentPiModelRegistry.shared.updateDiscoveredModels(discovered)
         guard let normalized = AgentPiModelRegistry.shared.resolvedSnapshot() else { return }
         let snapshot = Snapshot(models: normalized, fetchedAt: Date())
-        guard latest?.models != snapshot.models else { return }
+        guard shouldPublishNextSuccessfulRefresh || latest?.models != snapshot.models else { return }
+        shouldPublishNextSuccessfulRefresh = false
         latest = snapshot
         for continuation in continuations.values {
-            continuation.yield(snapshot)
+            continuation.yield(.snapshot(snapshot))
+        }
+    }
+
+    private func publishFailure(_ failure: Failure) {
+        guard !isShutdown else { return }
+        shouldPublishNextSuccessfulRefresh = true
+        for continuation in continuations.values {
+            continuation.yield(.failure(failure))
         }
     }
 

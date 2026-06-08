@@ -1,5 +1,7 @@
 import Foundation
+import MCP
 @testable import RepoPrompt
+@testable import RepoPromptMCP
 import XCTest
 
 final class CECLINamingAndRoutingTests: XCTestCase {
@@ -81,6 +83,39 @@ final class CECLINamingAndRoutingTests: XCTestCase {
         }
     }
 
+    func testInteractiveSingleShotCommandsSelectWindowAndRefreshToolsBeforeExecuting() async throws {
+        let temp = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let rows: [(label: String, configure: (inout InteractiveOptions) -> Void, expectedTail: [String])] = [
+            ("list-tools", { $0.listToolsOnly = true }, ["tools"]),
+            ("tools-schema", { $0.toolsSchemaOnly = true }, ["tools"]),
+            ("describe", { $0.describeTool = "missing_tool" }, ["tool:missing_tool"]),
+            ("call", {
+                $0.callTool = "get_file_tree"
+                $0.callArgs = "{}"
+            }, ["call:get_file_tree"]),
+            ("snapshot", {
+                $0.snapshotPath = temp.appendingPathComponent("tools.json").path
+            }, ["refresh"])
+        ]
+
+        for row in rows {
+            var options = InteractiveOptions(initialWindowID: 7)
+            row.configure(&options)
+            let session = FakeInteractiveMCPClientSession()
+            let repl = InteractiveREPL(session: session, options: options)
+
+            try await repl.run()
+
+            let calls = await session.recordedCalls()
+            XCTAssertGreaterThanOrEqual(calls.count, 2, row.label)
+            XCTAssertEqual(Array(calls.prefix(2)), ["select:7", "refresh"], row.label)
+            if !row.expectedTail.isEmpty {
+                XCTAssertEqual(Array(calls.suffix(row.expectedTail.count)), row.expectedTail, row.label)
+            }
+        }
+    }
+
     func testManageWorktreeIsExposedInCECLISurfaces() throws {
         let root = try RepoRoot.url()
 
@@ -128,5 +163,76 @@ final class CECLINamingAndRoutingTests: XCTestCase {
             let text = try String(contentsOf: fileURL, encoding: .utf8)
             XCTAssertFalse(text.contains("Claude" + "CodeCommands"), "\(fileURL.path) still references legacy workflow prompt namespace")
         }
+    }
+
+    private func makeTempDirectory() throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CECLINamingAndRoutingTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+}
+
+private actor FakeInteractiveMCPClientSession: InteractiveMCPClientSessioning {
+    private var calls: [String] = []
+
+    var toolsDirty = false
+    var serverName: String? = "Fake MCP"
+    var serverVersion: String? = "1"
+    var selectedWindowID: Int?
+
+    func recordedCalls() -> [String] {
+        calls
+    }
+
+    func acknowledgeToolsChanged() async {
+        toolsDirty = false
+    }
+
+    func syncBindingFromServer() async {}
+
+    func tools() async -> [MCP.Tool] {
+        calls.append("tools")
+        return []
+    }
+
+    func tool(named name: String) async -> MCP.Tool? {
+        calls.append("tool:\(name)")
+        return nil
+    }
+
+    func refreshTools() async throws -> [MCP.Tool] {
+        calls.append("refresh")
+        return []
+    }
+
+    func callTool(name: String, arguments: [String: Value]?, timeout: ToolCallTimeoutPolicy) async throws -> CallTool.Result {
+        calls.append("call:\(name)")
+        return CallTool.Result(content: [.text("ok")], isError: false)
+    }
+
+    func listWindows() async throws -> CallTool.Result {
+        calls.append("listWindows")
+        return CallTool.Result(content: [.text("ok")], isError: false)
+    }
+
+    func selectWindow(windowID: Int) async throws -> CallTool.Result {
+        calls.append("select:\(windowID)")
+        selectedWindowID = windowID
+        return CallTool.Result(content: [.text("ok")], isError: false)
+    }
+
+    func clearWindowSelection() async throws -> CallTool.Result {
+        calls.append("clearWindow")
+        selectedWindowID = nil
+        return CallTool.Result(content: [.text("ok")], isError: false)
+    }
+
+    func bindingStatus() async throws -> BindContextBinding {
+        BindContextBinding(bindingKind: "none", windowID: nil, contextID: nil, workspaceName: nil)
+    }
+
+    func isMultiWindowModeAvailable() async -> Bool {
+        true
     }
 }

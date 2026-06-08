@@ -3457,15 +3457,7 @@ public class APISettingsViewModel: ObservableObject {
         collector?.append("Discovered \(snapshot.models.options.count) pi model option(s)")
         applyPiModelSnapshot(snapshot)
         piError = nil
-        let wasConnected = isPiConnected
         isPiConnected = true
-        if !wasConnected {
-            NotificationCenter.default.post(
-                name: .piConnectionChanged,
-                object: nil,
-                userInfo: ["windowID": 0]
-            )
-        }
         return true
     }
 
@@ -3474,22 +3466,22 @@ public class APISettingsViewModel: ObservableObject {
         let pollingService = piModelPollingService
         piModelsTask = Task { [weak self, pollingService, workspacePath] in
             let stream = await pollingService.subscribe(workspacePath: workspacePath)
-            for await snapshot in stream {
-                guard !Task.isCancelled else { return }
+            for await event in stream {
+                guard !Task.isCancelled else { break }
                 await MainActor.run { [weak self] in
                     guard let self else { return }
-                    let wasConnected = isPiConnected
-                    applyPiModelSnapshot(snapshot)
-                    piError = nil
-                    isPiConnected = true
-                    if !wasConnected {
-                        NotificationCenter.default.post(
-                            name: .piConnectionChanged,
-                            object: nil,
-                            userInfo: ["windowID": 0]
-                        )
+                    switch event {
+                    case let .snapshot(snapshot):
+                        applyPiModelSnapshot(snapshot)
+                        piError = nil
+                        isPiConnected = true
+                    case let .failure(failure):
+                        applyPiDisconnected(errorMessage: failure.message)
                     }
                 }
+            }
+            await MainActor.run { [weak self] in
+                self?.piModelsTask = nil
             }
         }
     }
@@ -3507,17 +3499,9 @@ public class APISettingsViewModel: ObservableObject {
     }
 
     private func applyPiDisconnected(errorMessage: String?) {
-        let wasConnected = isPiConnected
         piError = errorMessage
         isPiConnected = false
         availablePiModelOptions = []
-        if wasConnected {
-            NotificationCenter.default.post(
-                name: .piConnectionChanged,
-                object: nil,
-                userInfo: ["windowID": 0]
-            )
-        }
     }
 
     private func friendlyPiMessage(for error: Error) -> String {
@@ -3787,14 +3771,6 @@ public class APISettingsViewModel: ObservableObject {
 
 extension APISettingsViewModel {
     /// Helper struct to expose provider status for the recommendation engine.
-    struct ProviderFlags {
-        let hasOpenAIKey: Bool
-        let openAIValid: Bool
-        let claudeCodeConnected: Bool
-        let codexConnected: Bool
-        let cursorConnected: Bool
-    }
-
     /// Get a snapshot of all provider flags for use by other services.
     var providerFlags: ProviderFlags {
         ProviderFlags(
@@ -3802,7 +3778,8 @@ extension APISettingsViewModel {
             openAIValid: isOpenAIKeyValid,
             claudeCodeConnected: isClaudeCodeConnected,
             codexConnected: isCodexConnected,
-            cursorConnected: isCursorConnected
+            cursorConnected: isCursorConnected,
+            piConnected: isPiConnected
         )
     }
 }

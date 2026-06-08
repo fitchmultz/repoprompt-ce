@@ -40,7 +40,7 @@ struct REPLSettings {
 
 /// Interactive REPL for MCP tool exploration
 actor InteractiveREPL {
-    private let session: InteractiveMCPClientSession
+    private let session: any InteractiveMCPClientSessioning
     private let options: InteractiveOptions
     private var isRunning = false
 
@@ -58,7 +58,7 @@ actor InteractiveREPL {
     /// Command runner (created on demand)
     private var runner: MCPCommandRunner?
 
-    init(session: InteractiveMCPClientSession, options: InteractiveOptions) {
+    init(session: any InteractiveMCPClientSessioning, options: InteractiveOptions) {
         self.session = session
         self.options = options
         settings = REPLSettings(prettyJSON: options.prettyJSON, verbose: options.verbose)
@@ -67,28 +67,37 @@ actor InteractiveREPL {
 
     /// Runs the interactive loop or single-shot command
     func run() async throws {
-        // Handle single-shot commands first
+        // Handle single-shot commands first.
+        // Window selection must happen before listing schemas or calling tools so
+        // non-REPL invocations such as `repoprompt-mcp -w 1 --tools-schema` see
+        // the same routed tool surface as an interactive session. Keep this
+        // silent so JSON/schema stdout remains machine-readable.
         if options.listToolsOnly {
+            try await applyInitialWindowSelection(announce: false)
             try await printToolListSingleShot(mode: options.listToolsMode)
             return
         }
 
         if options.toolsSchemaOnly {
+            try await applyInitialWindowSelection(announce: false)
             try await toolsSchemaSingleShot(mode: options.toolsSchemaMode)
             return
         }
 
         if let toolName = options.describeTool {
+            try await applyInitialWindowSelection(announce: false)
             try await describeToolSingleShot(toolName)
             return
         }
 
         if let toolName = options.callTool {
+            try await applyInitialWindowSelection(announce: false)
             try await callToolSingleShot(name: toolName, argsJSON: options.callArgs)
             return
         }
 
         if let snapshotPath = options.snapshotPath {
+            try await applyInitialWindowSelection(announce: false)
             try await snapshotToolsSingleShot(to: snapshotPath)
             return
         }
@@ -99,18 +108,28 @@ actor InteractiveREPL {
 
     // MARK: - REPL Loop
 
+    private func applyInitialWindowSelection(announce: Bool) async throws {
+        guard let windowID = options.initialWindowID else { return }
+        if announce {
+            print("Selecting window \(windowID)...")
+        }
+        let result = try await session.selectWindow(windowID: windowID)
+        if announce {
+            printCallResult(result)
+        }
+        if result.isError == true {
+            throw ExecError.commandFailed
+        }
+        _ = try await session.refreshTools()
+        workspaceCacheDirty = true
+    }
+
     private func runREPL() async throws {
         isRunning = true
 
         await printWelcome()
 
-        // Apply initial window selection if provided
-        if let windowID = options.initialWindowID {
-            print("Selecting window \(windowID)...")
-            let result = try await session.selectWindow(windowID: windowID)
-            printCallResult(result)
-            workspaceCacheDirty = true
-        }
+        try await applyInitialWindowSelection(announce: true)
 
         // Initial status fetch
         await refreshStatusCache()

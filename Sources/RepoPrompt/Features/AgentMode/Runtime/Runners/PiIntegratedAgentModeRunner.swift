@@ -263,6 +263,9 @@ final class PiIntegratedAgentModeRunner {
         } catch is CancellationError {
             hooks.recordPendingHandoffSendOutcome(session, false)
             await commitTerminal(.cancelled, source: "pi.cancelled", notifyTurnComplete: false)
+        } catch PiNativeSessionController.ControllerError.sessionSwitchCancelled(_) {
+            hooks.recordPendingHandoffSendOutcome(session, false)
+            await commitTerminal(.cancelled, source: "pi.sessionSwitchCancelled", notifyTurnComplete: false)
         } catch {
             hooks.recordPendingHandoffSendOutcome(session, false)
             await commitTerminal(

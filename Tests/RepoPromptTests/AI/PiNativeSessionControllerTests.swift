@@ -41,6 +41,38 @@ final class PiNativeSessionControllerTests: XCTestCase {
         XCTAssertEqual(commands.dropFirst().first?.level, "high")
     }
 
+    func testCancelledSessionSwitchFailsWithoutOverwritingState() async throws {
+        let directory = try makeTemporaryDirectory()
+        let recordURL = directory.appendingPathComponent("commands.jsonl")
+        let scriptURL = try makeFakePiControllerScript(recordURL: recordURL)
+        let client = PiRPCClient(config: .init(
+            commandName: scriptURL.path,
+            additionalPathHints: [],
+            requestTimeout: 2,
+            launchArguments: []
+        ))
+        let controller = PiNativeSessionController(client: client, options: .init(requestTimeout: 2))
+        defer { Task { await controller.shutdown() } }
+
+        do {
+            _ = try await controller.startOrResume(existing: .init(
+                sessionID: "existing-session-id",
+                sessionFile: "/tmp/cancelled.jsonl",
+                model: nil,
+                thinkingLevel: nil
+            ))
+            XCTFail("Expected cancelled pi session switch to throw")
+        } catch let error as PiNativeSessionController.ControllerError {
+            XCTAssertEqual(error, .sessionSwitchCancelled("/tmp/cancelled.jsonl"))
+        }
+
+        let commands = recordedCommands(at: recordURL)
+        XCTAssertEqual(commands.map(\.type), ["switch_session"])
+        XCTAssertEqual(commands.first?.sessionPath, "/tmp/cancelled.jsonl")
+        let currentRef = await controller.currentSessionRef()
+        XCTAssertNil(currentRef)
+    }
+
     func testPromptMapsPiRPCEventsToNativeStreamResultsAndTurnCompletion() async throws {
         let directory = try makeTemporaryDirectory()
         let scriptURL = try makeFakePiControllerScript(recordURL: directory.appendingPathComponent("commands.jsonl"))
@@ -121,6 +153,55 @@ final class PiNativeSessionControllerTests: XCTestCase {
         let currentRef = await controller.currentSessionRef()
         XCTAssertEqual(currentRef?.sessionID, "pi-session-id-updated")
         XCTAssertEqual(currentRef?.sessionFile, "/tmp/pi-session-updated.jsonl")
+    }
+
+    func testToolInvocationIDsTrackInterleavedRepeatedToolNames() async throws {
+        let directory = try makeTemporaryDirectory()
+        let scriptURL = try makeFakePiControllerScript(recordURL: directory.appendingPathComponent("commands.jsonl"))
+        let client = PiRPCClient(config: .init(
+            commandName: scriptURL.path,
+            additionalPathHints: [],
+            requestTimeout: 2,
+            launchArguments: []
+        ))
+        let controller = PiNativeSessionController(client: client, options: .init(requestTimeout: 2))
+        defer { Task { await controller.shutdown() } }
+        _ = try await controller.startOrResume(existing: nil)
+
+        let stream = await controller.events
+        let collector = Task { () -> [PiNativeSessionController.Event] in
+            var events: [PiNativeSessionController.Event] = []
+            for await event in stream {
+                events.append(event)
+                if case .turnCompleted = event { break }
+            }
+            return events
+        }
+
+        _ = try await controller.sendUserMessage("interleaved-tools")
+        let streamResults = await collector.value.compactMap { event -> AIStreamResult? in
+            if case let .stream(result) = event { return result }
+            return nil
+        }
+
+        let firstCall = streamResults.first { $0.type == "tool_call" && $0.toolArgsJSON?.contains("one") == true }
+        let secondCall = streamResults.first { $0.type == "tool_call" && $0.toolArgsJSON?.contains("two") == true }
+        XCTAssertEqual(firstCall?.toolName, "bash")
+        XCTAssertEqual(secondCall?.toolName, "bash")
+        let firstInvocationID = try XCTUnwrap(firstCall?.toolInvocationID)
+        let secondInvocationID = try XCTUnwrap(secondCall?.toolInvocationID)
+        XCTAssertNotEqual(firstInvocationID, secondInvocationID)
+
+        let firstResults = streamResults.filter { $0.type == "tool_result" && ($0.toolOutput?.hasPrefix("one") ?? false) }
+        let secondResults = streamResults.filter { $0.type == "tool_result" && ($0.toolOutput?.hasPrefix("two") ?? false) }
+        XCTAssertFalse(firstResults.isEmpty)
+        XCTAssertFalse(secondResults.isEmpty)
+        for result in firstResults {
+            XCTAssertEqual(try XCTUnwrap(result.toolInvocationID), firstInvocationID)
+        }
+        for result in secondResults {
+            XCTAssertEqual(try XCTUnwrap(result.toolInvocationID), secondInvocationID)
+        }
     }
 
     func testBridgeToolResultUsesInnerRawJSONForTranscriptPayload() async throws {
@@ -279,6 +360,12 @@ final class PiNativeSessionControllerTests: XCTestCase {
                     SESSION_ID = "pi-session-id-updated"
                     SESSION_FILE = "/tmp/pi-session-updated.jsonl"
                     emit({"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": "state changed"}})
+                elif request.get("message") == "interleaved-tools":
+                    emit({"type": "tool_execution_start", "toolCallId": "call-a", "toolName": "bash", "args": {"command": "echo one"}})
+                    emit({"type": "tool_execution_start", "toolCallId": "call-b", "toolName": "bash", "args": {"command": "echo two"}})
+                    emit({"type": "tool_execution_update", "toolCallId": "call-a", "toolName": "bash", "partialResult": {"content": [{"type": "text", "text": "one partial"}]}})
+                    emit({"type": "tool_execution_end", "toolCallId": "call-b", "toolName": "bash", "result": {"content": [{"type": "text", "text": "two done"}]}, "isError": False})
+                    emit({"type": "tool_execution_end", "toolCallId": "call-a", "toolName": "bash", "result": {"content": [{"type": "text", "text": "one done"}]}, "isError": False})
                 elif request.get("message") == "bridge-result":
                     inner = '{"roots_count":1,"tree":"repoprompt-ce","uses_legend":false}'
                     emit({"type": "tool_execution_start", "toolCallId": "call-1", "toolName": "get_file_tree", "args": {"type": "roots"}})
@@ -295,7 +382,8 @@ final class PiNativeSessionControllerTests: XCTestCase {
             elif command == "abort":
                 emit({"type": "response", "id": request_id, "command": "abort", "success": True})
             elif command == "switch_session":
-                emit({"type": "response", "id": request_id, "command": "switch_session", "success": True, "data": {"cancelled": False}})
+                cancelled = request.get("sessionPath") == "/tmp/cancelled.jsonl"
+                emit({"type": "response", "id": request_id, "command": "switch_session", "success": True, "data": {"cancelled": cancelled}})
             else:
                 emit({"type": "response", "id": request_id, "command": command, "success": True})
         """#.replacingOccurrences(of: "__RECORD_PATH__", with: recordPath)
@@ -309,6 +397,7 @@ final class PiNativeSessionControllerTests: XCTestCase {
         let provider: String?
         let modelID: String?
         let level: String?
+        let sessionPath: String?
     }
 
     private func recordedCommands(at url: URL) -> [RecordedCommand] {
@@ -324,7 +413,8 @@ final class PiNativeSessionControllerTests: XCTestCase {
                 type: type,
                 provider: object["provider"] as? String,
                 modelID: object["modelId"] as? String,
-                level: object["level"] as? String
+                level: object["level"] as? String,
+                sessionPath: object["sessionPath"] as? String
             )
         }
     }

@@ -231,7 +231,8 @@ final class AgentRuntimeProviderService {
         for agent: AgentProviderKind,
         modelString: String? = nil,
         runType: AgentRunType = .discover,
-        workspacePath: String? = nil
+        workspacePath: String? = nil,
+        windowID: Int? = nil
     ) -> HeadlessAgentProvider {
         if Self.enableDebugLogging {
             Self.logger.debug("Creating provider for agent: \(agent.displayName), model: \(modelString ?? "default"), runType: \(String(describing: runType))")
@@ -291,7 +292,18 @@ final class AgentRuntimeProviderService {
             }
             return OpenCodeACPHeadlessAgentProvider(config: config, workspacePath: workspacePath)
         case .pi:
-            return UnsupportedHeadlessAgentProvider(reason: "pi Agent Mode uses the native RPC runtime and is not available for headless provider factory runs yet.")
+            guard let windowID else {
+                return UnsupportedHeadlessAgentProvider(reason: "pi Context Builder requires a RepoPrompt window for managed bridge routing.")
+            }
+            if Self.enableDebugLogging {
+                Self.logger.debug("Created PiHeadlessAgentProvider")
+            }
+            return PiHeadlessAgentProvider(
+                modelString: modelString,
+                workspacePath: workspacePath,
+                windowID: windowID,
+                enableDebugLogging: Self.enableDebugLogging
+            )
         case .cursor:
             let config = CursorAgentConfig(
                 commandName: agent.commandName,

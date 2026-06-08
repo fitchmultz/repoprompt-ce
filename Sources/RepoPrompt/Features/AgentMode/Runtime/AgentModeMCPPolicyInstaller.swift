@@ -18,21 +18,30 @@ enum AgentModeMCPPolicyInstaller {
         allowsAgentExternalControlTools: Bool = false,
         connectionPolicyInstaller: AgentModeViewModel.ConnectionPolicyInstaller
     ) async {
-        guard let clientName = agent.mcpClientNameHint else { return }
+        let leaseSpec = MCPBootstrapLeaseSpec.agentMode(
+            tabID: tabID,
+            runID: runID,
+            gateID: runID,
+            windowID: windowID,
+            agent: agent,
+            taskLabelKind: taskLabelKind,
+            allowsAgentExternalControlTools: allowsAgentExternalControlTools
+        )
+        guard let clientName = leaseSpec.clientName else { return }
         await connectionPolicyInstaller(
             clientName,
-            windowID,
-            AgentModeMCPToolPolicy.restrictedTools,
-            true,
-            policyReason,
-            policyTTL,
-            tabID,
-            runID,
-            additionalTools(for: agent),
-            .agentModeRun,
-            taskLabelKind,
-            allowsAgentExternalControlTools,
-            agent.requiresExpectedPIDOwnedAgentModeMCPRouting
+            leaseSpec.windowID,
+            leaseSpec.restrictedTools,
+            leaseSpec.oneShot,
+            leaseSpec.reason,
+            leaseSpec.ttl,
+            leaseSpec.tabID,
+            leaseSpec.runID,
+            leaseSpec.additionalTools,
+            leaseSpec.purpose,
+            leaseSpec.taskLabelKind,
+            leaseSpec.allowsAgentExternalControlTools,
+            leaseSpec.requiresExpectedAgentPID
         )
     }
 }

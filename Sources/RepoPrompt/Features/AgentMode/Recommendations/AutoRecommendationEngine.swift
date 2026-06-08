@@ -11,6 +11,7 @@ struct ProviderFlags {
     let claudeCodeConnected: Bool
     let codexConnected: Bool
     let cursorConnected: Bool
+    let piConnected: Bool
 }
 
 // MARK: - Auto Recommendation Engine
@@ -51,6 +52,7 @@ final class AutoRecommendationEngine {
                 claudeCodeCLI: .notConfigured,
                 codexCLI: .notConfigured,
                 cursorCLI: .notConfigured,
+                piCLI: .notConfigured,
                 openAI: .notConfigured
             )
         }
@@ -66,7 +68,8 @@ final class AutoRecommendationEngine {
             openAIValid: vm.isOpenAIKeyValid,
             claudeCodeConnected: vm.isClaudeCodeConnected,
             codexConnected: vm.isCodexConnected,
-            cursorConnected: vm.isCursorConnected
+            cursorConnected: vm.isCursorConnected,
+            piConnected: vm.isPiConnected
         )
     }
 
@@ -300,8 +303,8 @@ final class AutoRecommendationEngine {
     static func contextBuilderRecommendation(
         status: ProviderStatusSnapshot
     ) -> ContextBuilderRecommendation? {
-        // Priority: Codex CLI (requires CLI) > Claude Code > Cursor CLI
-        // Cursor is a fallback only; it does not take priority over existing recommended providers.
+        // Priority: Codex CLI (requires CLI) > Claude Code > pi > Cursor CLI.
+        // pi and Cursor are fallbacks only; they do not take priority over existing recommended providers.
         // Note: codexExec agent requires Codex CLI specifically, not just OpenAI API key
         if status.codexCLI == .ready {
             return ContextBuilderRecommendation(
@@ -316,12 +319,19 @@ final class AutoRecommendationEngine {
                 rationale: "Claude Code with Sonnet provides strong context building with good balance of speed and quality.",
                 upgradeHint: "For best context building, connect Codex CLI with GPT-5.5 Low. Requires OpenAI Plus/Pro subscription."
             )
+        } else if status.piCLI == .ready {
+            return ContextBuilderRecommendation(
+                recommendedAgent: .pi,
+                recommendedModel: .defaultModel,
+                rationale: "pi can build RepoPrompt context through its native RPC session and managed RepoPrompt bridge when the preferred Codex or Claude Code providers are not configured.",
+                upgradeHint: "For best context building, connect Codex CLI with GPT-5.5 Low or Claude Code with Sonnet."
+            )
         } else if status.cursorCLI == .ready {
             return ContextBuilderRecommendation(
                 recommendedAgent: .cursor,
                 recommendedModel: .cursorComposer2,
                 rationale: "Cursor CLI with Composer 2 can handle context building when the preferred Codex or Claude Code providers are not configured.",
-                upgradeHint: "For best context building, connect Codex CLI with GPT-5.5 Low or Claude Code with Sonnet."
+                upgradeHint: "For best context building, connect Codex CLI with GPT-5.5 Low, Claude Code with Sonnet, or pi with its configured default model."
             )
         }
 
@@ -436,6 +446,7 @@ final class AutoRecommendationEngine {
             codexAvailable: status.codexCLI == .ready,
             openCodeAvailable: false,
             cursorAvailable: status.cursorCLI == .ready,
+            piAvailable: status.piCLI == .ready,
             zaiConfigured: backendStore.isConfigured(.glmZAI) && backendStore.config(for: .glmZAI).isEnabled && backendStore.config(for: .glmZAI).isValid,
             kimiConfigured: backendStore.isConfigured(.kimi) && backendStore.config(for: .kimi).isEnabled && backendStore.config(for: .kimi).isValid,
             customClaudeCompatibleConfigured: backendStore.isConfigured(.custom) && backendStore.config(for: .custom).isEnabled && backendStore.config(for: .custom).isValid
@@ -496,6 +507,9 @@ final class AutoRecommendationEngine {
             }
             if recommendedStatus.claudeCodeCLI != .ready {
                 return "Connect Claude Code for Claude Opus (design/pair). Best for architecture and creative work."
+            }
+            if recommendedStatus.piCLI != .ready {
+                return "Connect pi to make its native session-capable agent available as a fallback for MCP role defaults."
             }
             return nil
         }()

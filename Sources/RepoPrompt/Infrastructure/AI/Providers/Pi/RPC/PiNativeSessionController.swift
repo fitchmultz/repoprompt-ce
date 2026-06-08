@@ -49,6 +49,7 @@ actor PiNativeSessionController {
 
     enum ControllerError: Error, LocalizedError, Equatable {
         case sessionFileMissing
+        case sessionSwitchCancelled(String)
         case modelProviderMissing(String)
         case processUnavailable(String)
 
@@ -56,6 +57,8 @@ actor PiNativeSessionController {
             switch self {
             case .sessionFileMissing:
                 "Cannot resume pi because the persisted pi session file is missing."
+            case let .sessionSwitchCancelled(path):
+                "pi cancelled switching to session \(path)."
             case let .modelProviderMissing(raw):
                 "Cannot select pi model \(raw) because it does not include a provider prefix. Use provider/model, for example zai/glm-5.1."
             case let .processUnavailable(message):
@@ -71,6 +74,7 @@ actor PiNativeSessionController {
     private var eventsContinuation: AsyncStream<Event>.Continuation?
     private var currentRef: SessionRef?
     private var pendingTurnIDs: [UUID] = []
+    private var toolInvocationIDs: [String: UUID] = [:]
     private var hasStartedForwarding = false
 
     init(
@@ -133,7 +137,10 @@ actor PiNativeSessionController {
         startForwardingEventsIfNeeded()
 
         if let sessionFile = normalized(existing?.sessionFile) {
-            _ = try await client.switchSession(path: sessionFile)
+            let result = try await client.switchSession(path: sessionFile)
+            if result.cancelled {
+                throw ControllerError.sessionSwitchCancelled(sessionFile)
+            }
         } else if existing?.sessionID != nil {
             throw ControllerError.sessionFileMissing
         }
@@ -216,6 +223,7 @@ actor PiNativeSessionController {
         eventForwardingTask = nil
         hasStartedForwarding = false
         pendingTurnIDs.removeAll()
+        toolInvocationIDs.removeAll()
         currentRef = nil
         await client.clearExpectedAgentPIDRegistration()
         await client.shutdown()
@@ -256,32 +264,39 @@ actor PiNativeSessionController {
             for streamResult in Self.streamResults(from: messageEvent) {
                 emit(.stream(streamResult))
             }
-        case let .toolExecutionStart(_, toolName, args):
+        case let .toolExecutionStart(toolCallID, toolName, args):
+            let invocationID = toolInvocationID(for: toolCallID)
             emit(.stream(AIStreamResult(
                 type: "tool_call",
                 text: nil,
                 toolName: toolName,
                 toolArgs: Self.jsonString(from: .object(args)),
+                toolOutput: nil,
+                toolInvocationID: invocationID,
                 toolArgsJSON: Self.jsonString(from: .object(args))
             )))
-        case let .toolExecutionUpdate(_, toolName, partialResult):
+        case let .toolExecutionUpdate(toolCallID, toolName, partialResult):
             guard let output = Self.toolOutputText(from: partialResult) else { return }
             emit(.stream(AIStreamResult(
                 type: "tool_result",
                 text: nil,
                 toolName: toolName,
                 toolOutput: output,
+                toolInvocationID: toolInvocationID(for: toolCallID),
                 toolResultJSON: Self.toolResultJSON(from: partialResult)
             )))
-        case let .toolExecutionEnd(_, toolName, result, isError):
+        case let .toolExecutionEnd(toolCallID, toolName, result, isError):
+            let invocationID = toolInvocationID(for: toolCallID)
             emit(.stream(AIStreamResult(
                 type: "tool_result",
                 text: nil,
                 toolName: toolName,
                 toolOutput: Self.toolOutputText(from: result),
+                toolInvocationID: invocationID,
                 toolResultJSON: Self.toolResultJSON(from: result),
                 toolIsError: isError
             )))
+            toolInvocationIDs.removeValue(forKey: toolCallID)
         case .turnEnd:
             emit(.stream(AIStreamResult(type: "message_stop", text: nil, stopReason: "end_turn")))
         case .agentEnd:
@@ -301,6 +316,15 @@ actor PiNativeSessionController {
         case .messageStart, .messageEnd, .queueUpdate, .compactionStart, .compactionEnd, .unhandled:
             break
         }
+    }
+
+    private func toolInvocationID(for toolCallID: String) -> UUID {
+        if let existing = toolInvocationIDs[toolCallID] {
+            return existing
+        }
+        let invocationID = UUID()
+        toolInvocationIDs[toolCallID] = invocationID
+        return invocationID
     }
 
     private func refreshCurrentSessionState() async {

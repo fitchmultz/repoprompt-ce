@@ -66,6 +66,30 @@ final class PiAPISettingsViewModelTests: XCTestCase {
         XCTAssertEqual(subscriptionCount, 1)
     }
 
+    func testPiBackgroundPollingFailureClearsAvailabilityAndStaleModels() async throws {
+        let polling = FakePiModelPolling(snapshot: Self.piSnapshot())
+        let viewModel = makeViewModel(polling: polling)
+
+        _ = try await viewModel.testPiConnection()
+        XCTAssertTrue(viewModel.isPiConnected)
+        XCTAssertFalse(viewModel.availablePiModelOptions.isEmpty)
+
+        await polling.emitSubscriptionFailure(message: "pi RPC model refresh failed")
+        let didDisconnect = await eventually { !viewModel.isPiConnected }
+
+        XCTAssertTrue(didDisconnect)
+        XCTAssertFalse(viewModel.agentModeAvailabilityContext.piAvailable)
+        XCTAssertEqual(viewModel.availablePiModelOptions, [])
+        XCTAssertEqual(viewModel.piError, "pi RPC model refresh failed")
+
+        await polling.emitSubscriptionSnapshot(Self.piSnapshot())
+        let didRecover = await eventually { viewModel.isPiConnected }
+        XCTAssertTrue(didRecover)
+        XCTAssertTrue(viewModel.agentModeAvailabilityContext.piAvailable)
+        XCTAssertEqual(viewModel.availablePiModelOptions.map(\.rawValue), ["default", "zai/glm-5.1"])
+        XCTAssertNil(viewModel.piError)
+    }
+
     func testPiAvailabilityPreflightDoesNotUseCachedModelsWhenDiscoveryFails() async {
         let cached = Self.piSnapshot()
         XCTAssertTrue(AgentPiModelRegistry.shared.updateDiscoveredModels(cached.models))
@@ -137,6 +161,8 @@ private actor FakePiModelPolling: PiModelPolling {
     private let error: Error?
     private(set) var discoverCallCount = 0
     private(set) var subscribeCallCount = 0
+    private var pendingEvents: [PiModelPollingService.Event] = []
+    private var eventContinuations: [AsyncStream<PiModelPollingService.Event>.Continuation] = []
 
     init(snapshot: PiModelPollingService.Snapshot? = nil, error: Error? = nil) {
         self.snapshot = snapshot
@@ -158,13 +184,36 @@ private actor FakePiModelPolling: PiModelPolling {
         return snapshot
     }
 
-    func subscribe(workspacePath: String?) async -> AsyncStream<PiModelPollingService.Snapshot> {
+    func subscribe(workspacePath: String?) async -> AsyncStream<PiModelPollingService.Event> {
         subscribeCallCount += 1
         let snapshot = snapshot
         return AsyncStream { continuation in
             if let snapshot {
-                continuation.yield(snapshot)
+                continuation.yield(.snapshot(snapshot))
             }
+            for event in pendingEvents {
+                continuation.yield(event)
+            }
+            pendingEvents.removeAll()
+            eventContinuations.append(continuation)
+        }
+    }
+
+    func emitSubscriptionFailure(message: String) {
+        emit(.failure(.init(message: message)))
+    }
+
+    func emitSubscriptionSnapshot(_ snapshot: PiModelPollingService.Snapshot) {
+        emit(.snapshot(snapshot))
+    }
+
+    private func emit(_ event: PiModelPollingService.Event) {
+        if eventContinuations.isEmpty {
+            pendingEvents.append(event)
+            return
+        }
+        for continuation in eventContinuations {
+            continuation.yield(event)
         }
     }
 

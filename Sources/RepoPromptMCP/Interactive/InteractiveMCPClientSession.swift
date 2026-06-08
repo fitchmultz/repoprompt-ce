@@ -155,8 +155,33 @@ private struct RegisteredToolCall {
     }
 }
 
+protocol InteractiveMCPClientSessioning: AnyObject, Sendable {
+    var toolsDirty: Bool { get async }
+    var serverName: String? { get async }
+    var serverVersion: String? { get async }
+    var selectedWindowID: Int? { get async }
+
+    func acknowledgeToolsChanged() async
+    func syncBindingFromServer() async
+    func tools() async -> [MCP.Tool]
+    func tool(named name: String) async -> MCP.Tool?
+    func refreshTools() async throws -> [MCP.Tool]
+    func callTool(name: String, arguments: [String: Value]?, timeout: ToolCallTimeoutPolicy) async throws -> CallTool.Result
+    func listWindows() async throws -> CallTool.Result
+    func selectWindow(windowID: Int) async throws -> CallTool.Result
+    func clearWindowSelection() async throws -> CallTool.Result
+    func bindingStatus() async throws -> BindContextBinding
+    func isMultiWindowModeAvailable() async -> Bool
+}
+
+extension InteractiveMCPClientSessioning {
+    func callTool(name: String, arguments: [String: Value]?) async throws -> CallTool.Result {
+        try await callTool(name: name, arguments: arguments, timeout: .default)
+    }
+}
+
 /// Manages an interactive MCP client session with the RepoPrompt app.
-actor InteractiveMCPClientSession {
+actor InteractiveMCPClientSession: InteractiveMCPClientSessioning {
     typealias TimeoutSleep = @Sendable (UInt64) async throws -> Void
 
     private let sessionToken: String

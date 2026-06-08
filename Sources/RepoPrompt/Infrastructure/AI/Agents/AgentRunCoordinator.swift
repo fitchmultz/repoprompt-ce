@@ -17,8 +17,8 @@ struct AgentRunSpec {
     let windowID: Int
     /// Tools to restrict for this run (same pattern as discovery).
     let restrictedTools: Set<String>
-    /// TTL in seconds for the client connection policy.
-    let connectionTTL: TimeInterval
+    /// Provider-specific MCP connection behavior for this run.
+    let connectionPolicyProfile: AgentMCPConnectionPolicyProfile
 }
 
 /// Shared coordinator for preparing, launching, and cleaning up headless agent runs.
@@ -67,6 +67,7 @@ final class AgentRunCoordinator {
             ])
         }
 
+        let profile = spec.connectionPolicyProfile
         let leaseSpec = MCPBootstrapLeaseSpec.headless(
             runID: spec.runID,
             gateID: gateID ?? UUID(),
@@ -74,11 +75,12 @@ final class AgentRunCoordinator {
             windowID: spec.windowID,
             restrictedTools: spec.restrictedTools,
             additionalTools: additionalTools,
+            oneShot: profile.oneShot,
             reason: reason ?? "\(spec.type)",
-            ttl: spec.connectionTTL,
+            ttl: profile.ttl,
             tabID: tabID,
             purpose: runPurpose(for: spec.type),
-            requiresExpectedAgentPID: spec.agentKind.requiresExpectedPIDOwnedAgentModeMCPRouting
+            requiresExpectedAgentPID: profile.requiresExpectedAgentPID
         )
 
         let lease = MCPBootstrapLease(spec: leaseSpec)
@@ -92,13 +94,15 @@ final class AgentRunCoordinator {
         agentKind: AgentProviderKind,
         modelString: String?,
         runType: AgentRunType = .discover,
-        workspacePath: String? = nil
+        workspacePath: String? = nil,
+        windowID: Int? = nil
     ) -> HeadlessAgentProvider {
         AgentRuntimeProviderService.shared.makeProvider(
             for: agentKind,
             modelString: modelString,
             runType: runType,
-            workspacePath: workspacePath
+            workspacePath: workspacePath,
+            windowID: windowID
         )
     }
 

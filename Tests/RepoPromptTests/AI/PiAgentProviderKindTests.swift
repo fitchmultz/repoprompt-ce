@@ -31,6 +31,54 @@ final class PiAgentProviderKindTests: XCTestCase {
         XCTAssertEqual(spec.additionalTools, AgentModeMCPToolPolicy.piGrantedTools)
     }
 
+    func testPiMCPConnectionPolicyProfileIsSharedSessionCapableBridgeProfile() {
+        let profile = AgentMCPConnectionPolicyProfile.headless(agent: .pi, requestedTTL: 15)
+        XCTAssertFalse(profile.oneShot)
+        XCTAssertGreaterThanOrEqual(profile.ttl, 3600)
+        XCTAssertTrue(profile.requiresExpectedAgentPID)
+
+        let codexProfile = AgentMCPConnectionPolicyProfile.headless(agent: .codexExec, requestedTTL: 15)
+        XCTAssertTrue(codexProfile.oneShot)
+        XCTAssertEqual(codexProfile.ttl, 15)
+        XCTAssertFalse(codexProfile.requiresExpectedAgentPID)
+    }
+
+    func testPiParticipatesInRecommendationProviderFilteringAndRoleDefaults() {
+        let availability = AgentModelCatalog.AvailabilityContext(
+            claudeCodeAvailable: false,
+            codexAvailable: false,
+            openCodeAvailable: false,
+            cursorAvailable: true,
+            piAvailable: true
+        )
+        let filtered = availability.filteredForRecommendationProviders([.pi])
+        XCTAssertTrue(filtered.piAvailable)
+        XCTAssertFalse(filtered.cursorAvailable)
+
+        let explore = AgentModelCatalog.resolveTaskLabelKind(.explore, availability: filtered)
+        XCTAssertEqual(explore?.agent, .pi)
+        XCTAssertEqual(explore?.modelRaw, AgentModel.defaultModel.rawValue)
+    }
+
+    func testProviderFactoryCreatesPiHeadlessProviderWhenWindowRoutingIsAvailable() {
+        let provider = AgentRuntimeProviderService.shared.makeProvider(
+            for: .pi,
+            modelString: AgentModel.defaultModel.rawValue,
+            workspacePath: "/tmp/repoprompt-ce",
+            windowID: 7
+        )
+        XCTAssertTrue(provider is PiHeadlessAgentProvider)
+    }
+
+    func testProviderFactoryRejectsPiHeadlessProviderWithoutWindowRouting() {
+        let provider = AgentRuntimeProviderService.shared.makeProvider(
+            for: .pi,
+            modelString: AgentModel.defaultModel.rawValue,
+            workspacePath: "/tmp/repoprompt-ce"
+        )
+        XCTAssertTrue(provider is UnsupportedHeadlessAgentProvider)
+    }
+
     func testPiModelsAreSelectableWhenRuntimeAvailabilityIsProven() {
         let availability = AgentModelCatalog.AvailabilityContext(piAvailable: true)
 

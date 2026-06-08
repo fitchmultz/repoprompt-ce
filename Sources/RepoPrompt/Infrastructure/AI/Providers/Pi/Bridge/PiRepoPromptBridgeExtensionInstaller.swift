@@ -39,6 +39,7 @@ enum PiRepoPromptBridgeExtensionInstaller {
 
     static let extensionVersion = "2"
 
+    private static let bridgeClientName = "pi"
     private static let managedMarker = "// RepoPrompt CE managed pi bridge extension"
     private static let globalExtensionFileName = "repoprompt-bridge.ts"
 
@@ -147,8 +148,10 @@ enum PiRepoPromptBridgeExtensionInstaller {
 
         const BRIDGE_VERSION = "\(extensionVersion)";
         const REPOPROMPT_CLI = \(escapedCLIPath);
-        const REPOPROMPT_CLIENT_NAME = "pi";
+        const REPOPROMPT_CLIENT_NAME = \(jsonStringLiteral(bridgeClientName));
         const REPOPROMPT_WINDOW_ID: string | undefined = \(escapedWindowID);
+        const REPOPROMPT_SCHEMA_ARGS = \(jsonStringArray(schemaArgs(windowID: windowID)));
+        const REPOPROMPT_TOOL_ARGS_PREFIX = \(jsonStringArray(toolArgsPrefix(windowID: windowID)));
         const SCHEMA_LOAD_TIMEOUT_MS = 60_000;
         const TOOL_EXEC_TIMEOUT_MS = 600_000;
         const MAX_RESULT_CHARS = 50 * 1024;
@@ -207,10 +210,14 @@ enum PiRepoPromptBridgeExtensionInstaller {
           }));
         }
 
+        function repoPromptSchemaArgs(): string[] {
+          return [...REPOPROMPT_SCHEMA_ARGS];
+        }
+
         async function loadRepoPromptTools(pi: ExtensionAPI): Promise<RepoPromptToolEntry[]> {
           const result = await pi.exec(
             REPOPROMPT_CLI,
-            ["--tools-schema", "--compact"],
+            repoPromptSchemaArgs(),
             { timeout: SCHEMA_LOAD_TIMEOUT_MS },
           );
           const stdout = result.stdout.trim();
@@ -222,12 +229,7 @@ enum PiRepoPromptBridgeExtensionInstaller {
         }
 
         function repoPromptToolArgs(toolName: string, params: JSONRecord): string[] {
-          const args = ["--client-name", REPOPROMPT_CLIENT_NAME, "--raw-json"];
-          if (REPOPROMPT_WINDOW_ID) {
-            args.push("-w", REPOPROMPT_WINDOW_ID);
-          }
-          args.push("-c", toolName, "-j", JSON.stringify(params ?? {}));
-          return args;
+          return [...REPOPROMPT_TOOL_ARGS_PREFIX, "-c", toolName, "-j", JSON.stringify(params ?? {})];
         }
 
         async function callRepoPromptTool(
@@ -282,6 +284,31 @@ enum PiRepoPromptBridgeExtensionInstaller {
           }
         }
         """
+    }
+
+    static func schemaArgs(windowID: Int?) -> [String] {
+        var args = ["--client-name", bridgeClientName, "--tools-schema", "--compact"]
+        if let windowID {
+            args.append(contentsOf: ["-w", String(windowID)])
+        }
+        return args
+    }
+
+    static func toolArgsPrefix(windowID: Int?) -> [String] {
+        var args = ["--client-name", bridgeClientName, "--raw-json"]
+        if let windowID {
+            args.append(contentsOf: ["-w", String(windowID)])
+        }
+        return args
+    }
+
+    static func toolArgs(toolName: String, paramsJSON: String, windowID: Int?) -> [String] {
+        toolArgsPrefix(windowID: windowID) + ["-c", toolName, "-j", paramsJSON]
+    }
+
+    private static func jsonStringArray(_ strings: [String]) -> String {
+        let data = try! JSONEncoder().encode(strings)
+        return String(data: data, encoding: .utf8)!
     }
 
     private static func jsonStringLiteral(_ string: String) -> String {

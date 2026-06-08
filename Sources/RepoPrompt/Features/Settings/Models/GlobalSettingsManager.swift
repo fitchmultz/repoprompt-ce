@@ -1509,8 +1509,21 @@ class GlobalSettingsStore: ObservableObject {
 
     /// Returns the global provider filter for recommendation generation. Absence means all providers.
     func globalRecommendationProviderFilter() -> Set<RecommendationProviderKind> {
-        Self.normalizedRecommendationProviderFilter(raw: globalDefaults.recommendationProviderFilterRaw)
+        if migrateRecommendationProviderFilterForSchemaUpdate(
+            previousVersion: globalDefaults.recommendationSchemaVersion,
+            currentVersion: BestPracticeProfiles.versionCode
+        ) {
+            save()
+        }
+        return Self.normalizedRecommendationProviderFilter(raw: globalDefaults.recommendationProviderFilterRaw)
     }
+
+    private static let prePiRecommendationAllProviderRawShape: Set<String> = [
+        RecommendationProviderKind.claudeCode.rawValue,
+        RecommendationProviderKind.codex.rawValue,
+        RecommendationProviderKind.cursor.rawValue,
+        RecommendationProviderKind.openAI.rawValue
+    ]
 
     /// Normalizes persisted provider filters across recommendation-provider list changes.
     ///
@@ -1572,7 +1585,9 @@ class GlobalSettingsStore: ObservableObject {
     /// Returns true if schema was updated (mutes cleared).
     @discardableResult
     func ensureLatestRecommendationSchema(currentVersion: Int) -> Bool {
-        if globalDefaults.recommendationSchemaVersion != currentVersion {
+        let previousVersion = globalDefaults.recommendationSchemaVersion
+        if previousVersion != currentVersion {
+            migrateRecommendationProviderFilterForSchemaUpdate(previousVersion: previousVersion, currentVersion: currentVersion)
             // Clear all mutedRecommendationIDs and completion timestamps across workspaces
             for (id, var s) in chatSettings {
                 s.mutedRecommendationIDs = nil
@@ -1584,6 +1599,16 @@ class GlobalSettingsStore: ObservableObject {
             return true
         }
         return false
+    }
+
+    @discardableResult
+    private func migrateRecommendationProviderFilterForSchemaUpdate(previousVersion: Int?, currentVersion: Int) -> Bool {
+        guard previousVersion != currentVersion,
+              let raw = globalDefaults.recommendationProviderFilterRaw,
+              Set(raw) == Self.prePiRecommendationAllProviderRawShape
+        else { return false }
+        globalDefaults.recommendationProviderFilterRaw = nil
+        return true
     }
 
     /// Seed new workspace chat settings with defaults.
