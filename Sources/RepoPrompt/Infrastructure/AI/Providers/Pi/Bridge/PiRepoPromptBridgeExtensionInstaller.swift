@@ -131,7 +131,7 @@ enum PiRepoPromptBridgeExtensionInstaller {
         ) {
           const result = await pi.exec(
             REPOPROMPT_CLI,
-            ["--client-name", REPOPROMPT_CLIENT_NAME, "-w", REPOPROMPT_WINDOW_ID, "-c", toolName, "-j", JSON.stringify(params ?? {})],
+            ["--client-name", REPOPROMPT_CLIENT_NAME, "--raw-json", "-w", REPOPROMPT_WINDOW_ID, "-c", toolName, "-j", JSON.stringify(params ?? {})],
             { signal, timeout: TOOL_EXEC_TIMEOUT_MS },
           );
           const stdout = result.stdout.trim();

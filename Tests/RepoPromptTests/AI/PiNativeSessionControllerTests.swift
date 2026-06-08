@@ -84,6 +84,79 @@ final class PiNativeSessionControllerTests: XCTestCase {
         })
     }
 
+    func testBridgeToolResultUsesInnerRawJSONForTranscriptPayload() async throws {
+        let directory = try makeTemporaryDirectory()
+        let scriptURL = try makeFakePiControllerScript(recordURL: directory.appendingPathComponent("commands.jsonl"))
+        let client = PiRPCClient(config: .init(
+            commandName: scriptURL.path,
+            additionalPathHints: [],
+            requestTimeout: 2,
+            launchArguments: []
+        ))
+        let controller = PiNativeSessionController(client: client, options: .init(requestTimeout: 2))
+        defer { Task { await controller.shutdown() } }
+        _ = try await controller.startOrResume(existing: nil)
+
+        let stream = await controller.events
+        let collector = Task { () -> [PiNativeSessionController.Event] in
+            var events: [PiNativeSessionController.Event] = []
+            for await event in stream {
+                events.append(event)
+                if case .turnCompleted = event { break }
+            }
+            return events
+        }
+
+        _ = try await controller.sendUserMessage("bridge-result")
+        let events = await collector.value
+        let result = events.compactMap { event -> AIStreamResult? in
+            if case let .stream(result) = event,
+               result.type == "tool_result",
+               result.toolName == "get_file_tree",
+               result.toolIsError == false
+            {
+                return result
+            }
+            return nil
+        }.last
+
+        XCTAssertEqual(result?.toolOutput, #"{"roots_count":1,"tree":"repoprompt-ce","uses_legend":false}"#)
+        XCTAssertEqual(result?.toolResultJSON, #"{"roots_count":1,"tree":"repoprompt-ce","uses_legend":false}"#)
+        XCTAssertFalse(result?.toolResultJSON?.contains("bridgeVersion") ?? true)
+    }
+
+    func testPromptWaitsForAgentEndAfterTurnEndBeforeCompleting() async throws {
+        let directory = try makeTemporaryDirectory()
+        let scriptURL = try makeFakePiControllerScript(recordURL: directory.appendingPathComponent("commands.jsonl"))
+        let client = PiRPCClient(config: .init(
+            commandName: scriptURL.path,
+            additionalPathHints: [],
+            requestTimeout: 2,
+            launchArguments: []
+        ))
+        let controller = PiNativeSessionController(client: client, options: .init(requestTimeout: 2))
+        defer { Task { await controller.shutdown() } }
+        _ = try await controller.startOrResume(existing: nil)
+
+        let stream = await controller.events
+        let recorder = EventRecorder()
+        let collector = Task {
+            for await event in stream {
+                await recorder.append(event)
+            }
+        }
+
+        _ = try await controller.sendUserMessage("no-agent-end")
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        let events = await recorder.events()
+
+        XCTAssertFalse(events.contains { event in
+            if case .turnCompleted = event { return true }
+            return false
+        }, "pi turn_end must not complete the RepoPrompt run before pi agent_end")
+        collector.cancel()
+    }
+
     func testModelSpecifierParsesProviderModelAndThinking() {
         XCTAssertEqual(
             PiModelSpecifier(raw: "zai/glm-5.1:high"),
@@ -160,12 +233,19 @@ final class PiNativeSessionControllerTests: XCTestCase {
                 state(request_id)
             elif command == "prompt":
                 emit({"type": "turn_start"})
-                emit({"type": "message_update", "assistantMessageEvent": {"type": "thinking_delta", "contentIndex": 0, "delta": "thinking..."}})
-                emit({"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "contentIndex": 1, "delta": "hello back"}})
-                emit({"type": "tool_execution_start", "toolCallId": "call-1", "toolName": "bash", "args": {"command": "echo hi"}})
-                emit({"type": "tool_execution_end", "toolCallId": "call-1", "toolName": "bash", "result": {"content": [{"type": "text", "text": "hi"}]}, "isError": False})
+                if request.get("message") == "bridge-result":
+                    inner = '{"roots_count":1,"tree":"repoprompt-ce","uses_legend":false}'
+                    emit({"type": "tool_execution_start", "toolCallId": "call-1", "toolName": "get_file_tree", "args": {"type": "roots"}})
+                    emit({"type": "tool_execution_end", "toolCallId": "call-1", "toolName": "get_file_tree", "result": {"content": [{"type": "text", "text": inner}], "details": {"bridgeVersion": "2", "tool": "get_file_tree", "exitCode": 0}}, "isError": False})
+                else:
+                    emit({"type": "message_update", "assistantMessageEvent": {"type": "thinking_delta", "contentIndex": 0, "delta": "thinking..."}})
+                    emit({"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "contentIndex": 1, "delta": "hello back"}})
+                    emit({"type": "tool_execution_start", "toolCallId": "call-1", "toolName": "bash", "args": {"command": "echo hi"}})
+                    emit({"type": "tool_execution_end", "toolCallId": "call-1", "toolName": "bash", "result": {"content": [{"type": "text", "text": "hi"}]}, "isError": False})
                 emit({"type": "turn_end", "toolResults": []})
                 emit({"type": "response", "id": request_id, "command": "prompt", "success": True})
+                if request.get("message") != "no-agent-end":
+                    emit({"type": "agent_end", "messages": []})
             elif command == "abort":
                 emit({"type": "response", "id": request_id, "command": "abort", "success": True})
             elif command == "switch_session":
@@ -201,5 +281,17 @@ final class PiNativeSessionControllerTests: XCTestCase {
                 level: object["level"] as? String
             )
         }
+    }
+}
+
+private actor EventRecorder {
+    private var collected: [PiNativeSessionController.Event] = []
+
+    func append(_ event: PiNativeSessionController.Event) {
+        collected.append(event)
+    }
+
+    func events() -> [PiNativeSessionController.Event] {
+        collected
     }
 }

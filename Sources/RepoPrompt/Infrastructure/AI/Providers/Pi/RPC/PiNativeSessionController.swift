@@ -271,7 +271,7 @@ actor PiNativeSessionController {
                 text: nil,
                 toolName: toolName,
                 toolOutput: output,
-                toolResultJSON: partialResult.flatMap(Self.jsonString)
+                toolResultJSON: Self.toolResultJSON(from: partialResult)
             )))
         case let .toolExecutionEnd(_, toolName, result, isError):
             emit(.stream(AIStreamResult(
@@ -279,15 +279,13 @@ actor PiNativeSessionController {
                 text: nil,
                 toolName: toolName,
                 toolOutput: Self.toolOutputText(from: result),
-                toolResultJSON: result.flatMap(Self.jsonString),
+                toolResultJSON: Self.toolResultJSON(from: result),
                 toolIsError: isError
             )))
         case .turnEnd:
             emit(.stream(AIStreamResult(type: "message_stop", text: nil, stopReason: "end_turn")))
-            completeTurnIfNeeded(status: .completed)
         case .agentEnd:
             if hasTurnInFlight {
-                emit(.stream(AIStreamResult(type: "message_stop", text: nil, stopReason: "end_turn")))
                 completeTurnIfNeeded(status: .completed)
             }
         case let .extensionUIRequest(request):
@@ -360,6 +358,26 @@ actor PiNativeSessionController {
             }
         }
         return jsonString(from: value)
+    }
+
+    private static func toolResultJSON(from value: PiJSONValue?) -> String? {
+        guard let value else { return nil }
+        if let bridgePayload = bridgeToolResultPayload(from: value) {
+            return bridgePayload
+        }
+        return jsonString(from: value)
+    }
+
+    private static func bridgeToolResultPayload(from value: PiJSONValue) -> String? {
+        guard let object = value.objectValue,
+              let details = object["details"]?.objectValue,
+              details["bridgeVersion"]?.stringValue != nil,
+              let output = toolOutputText(from: value)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !output.isEmpty,
+              let data = output.data(using: .utf8),
+              (try? JSONSerialization.jsonObject(with: data)) != nil
+        else { return nil }
+        return output
     }
 
     private static func jsonString(from value: PiJSONValue) -> String? {

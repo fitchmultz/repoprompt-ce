@@ -15,7 +15,7 @@ final class PiRepoPromptBridgeExtensionInstallerTests: XCTestCase {
         XCTAssertTrue(source.contains("parameters: asParameterSchema(tool.inputSchema)"))
         XCTAssertTrue(source.contains("[\"--tools-schema\", \"--compact\"]"))
         XCTAssertFalse(source.contains("[\"--client-name\", REPOPROMPT_CLIENT_NAME, \"--tools-schema\", \"--compact\"]"))
-        XCTAssertTrue(source.contains("[\"--client-name\", REPOPROMPT_CLIENT_NAME, \"-w\", REPOPROMPT_WINDOW_ID, \"-c\", toolName"))
+        XCTAssertTrue(source.contains("[\"--client-name\", REPOPROMPT_CLIENT_NAME, \"--raw-json\", \"-w\", REPOPROMPT_WINDOW_ID, \"-c\", toolName"))
         XCTAssertTrue(source.contains("const REPOPROMPT_CLIENT_NAME = \"pi\""))
         XCTAssertTrue(source.contains("const REPOPROMPT_WINDOW_ID = \"42\""))
         XCTAssertTrue(source.contains("\\\"Debug\\\""))
