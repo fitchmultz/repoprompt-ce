@@ -6090,7 +6090,8 @@ final class AgentModeViewModel: ObservableObject {
 
         session.pendingPiSteeringInstructions.removeFirst()
         do {
-            try await controller.steer(steering.providerText)
+            let images = try PiRPCImageContentBuilder.images(from: steering.attachments)
+            try await controller.steer(steering.providerText, images: images)
         } catch {
             session.pendingInstructions.insert(steering.providerText, at: 0)
             throw MCPError.internalError("pi steer failed: \(error.localizedDescription)")
@@ -11230,7 +11231,7 @@ final class AgentModeViewModel: ObservableObject {
 
     private func activePiSteerIsAvailable(
         for session: TabSession,
-        attachments: [AgentImageAttachment]
+        attachments _: [AgentImageAttachment]
     ) -> Bool {
         guard session.selectedAgent == .pi,
               session.runState == .running,
@@ -11238,7 +11239,6 @@ final class AgentModeViewModel: ObservableObject {
               session.pendingAskUser == nil,
               session.pendingUserInputRequest == nil,
               session.pendingPermissionsRequest == nil,
-              attachments.isEmpty,
               session.runID != nil,
               session.activeRunAttemptID != nil,
               session.piController != nil
@@ -11290,6 +11290,7 @@ final class AgentModeViewModel: ObservableObject {
                 targetRunID: session.runID,
                 targetRunAttemptID: session.activeRunAttemptID,
                 providerText: wrappedText,
+                attachments: attachmentsToSend,
                 draftText: trimmedText,
                 optimisticUserItemID: userItem.id,
                 createdAt: Date()

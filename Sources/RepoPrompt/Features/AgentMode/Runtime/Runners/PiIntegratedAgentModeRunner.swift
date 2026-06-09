@@ -249,7 +249,8 @@ final class PiIntegratedAgentModeRunner {
                 }
             }
 
-            _ = try await controller.sendUserMessage(initialMessageForRun)
+            let images = try PiRPCImageContentBuilder.images(from: attachments)
+            _ = try await controller.sendUserMessage(initialMessageForRun, images: images)
             firstEventWatchdogTask = Task { @MainActor in
                 try? await Task.sleep(nanoseconds: Self.firstProviderEventTimeoutNanoseconds)
                 guard !Task.isCancelled,

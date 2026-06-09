@@ -186,11 +186,15 @@ actor PiNativeSessionController {
     }
 
     @discardableResult
-    func sendUserMessage(_ text: String, streamingBehavior: String? = nil) async throws -> UUID {
+    func sendUserMessage(
+        _ text: String,
+        streamingBehavior: String? = nil,
+        images: [PiRPCClient.ImageContent] = []
+    ) async throws -> UUID {
         let turnID = UUID()
         pendingTurnIDs.append(turnID)
         do {
-            _ = try await client.prompt(text, streamingBehavior: streamingBehavior)
+            _ = try await client.prompt(text, streamingBehavior: streamingBehavior, images: images)
             return turnID
         } catch {
             completeTurnIfNeeded(status: .failed)
@@ -198,12 +202,12 @@ actor PiNativeSessionController {
         }
     }
 
-    func steer(_ text: String) async throws {
-        _ = try await client.steer(text)
+    func steer(_ text: String, images: [PiRPCClient.ImageContent] = []) async throws {
+        _ = try await client.steer(text, images: images)
     }
 
-    func followUp(_ text: String) async throws {
-        _ = try await client.followUp(text)
+    func followUp(_ text: String, images: [PiRPCClient.ImageContent] = []) async throws {
+        _ = try await client.followUp(text, images: images)
     }
 
     func interruptTurn(reason _: String) async -> InterruptOutcome {

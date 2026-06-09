@@ -119,6 +119,72 @@ final class PiNativeSessionControllerTests: XCTestCase {
         })
     }
 
+    func testPromptSteerAndFollowUpSendImagePayloads() async throws {
+        let directory = try makeTemporaryDirectory()
+        let recordURL = directory.appendingPathComponent("commands.jsonl")
+        let imageURL = directory.appendingPathComponent("fixture.png")
+        try Data([0x89, 0x50, 0x4E, 0x47]).write(to: imageURL)
+        let expectedBase64 = try Data(contentsOf: imageURL).base64EncodedString()
+        let scriptURL = try makeFakePiControllerScript(recordURL: recordURL)
+        let client = PiRPCClient(config: .init(
+            commandName: scriptURL.path,
+            additionalPathHints: [],
+            requestTimeout: 2,
+            launchArguments: [],
+            requiresSupportedVersionCheck: false
+        ))
+        let controller = PiNativeSessionController(client: client, options: .init(requestTimeout: 2))
+        defer { Task { await controller.shutdown() } }
+        _ = try await controller.startOrResume(existing: nil)
+
+        let images = try PiRPCImageContentBuilder.images(from: [
+            AgentImageAttachment(source: .localFile(path: imageURL.path), title: "fixture.png")
+        ])
+
+        _ = try await controller.sendUserMessage("image prompt", images: images)
+        try await controller.steer("image steer", images: images)
+        try await controller.followUp("image follow", images: images)
+
+        let commands = recordedObjects(at: recordURL)
+        try assertImagePayload(
+            in: XCTUnwrap(commands.first { $0["type"] as? String == "prompt" }),
+            expectedBase64: expectedBase64
+        )
+        try assertImagePayload(
+            in: XCTUnwrap(commands.first { $0["type"] as? String == "steer" }),
+            expectedBase64: expectedBase64
+        )
+        try assertImagePayload(
+            in: XCTUnwrap(commands.first { $0["type"] as? String == "follow_up" }),
+            expectedBase64: expectedBase64
+        )
+    }
+
+    func testTextOnlyPromptSteerAndFollowUpOmitImagePayloads() async throws {
+        let directory = try makeTemporaryDirectory()
+        let recordURL = directory.appendingPathComponent("commands.jsonl")
+        let scriptURL = try makeFakePiControllerScript(recordURL: recordURL)
+        let client = PiRPCClient(config: .init(
+            commandName: scriptURL.path,
+            additionalPathHints: [],
+            requestTimeout: 2,
+            launchArguments: [],
+            requiresSupportedVersionCheck: false
+        ))
+        let controller = PiNativeSessionController(client: client, options: .init(requestTimeout: 2))
+        defer { Task { await controller.shutdown() } }
+        _ = try await controller.startOrResume(existing: nil)
+
+        _ = try await controller.sendUserMessage("text prompt")
+        try await controller.steer("text steer")
+        try await controller.followUp("text follow")
+
+        let commands = recordedObjects(at: recordURL)
+        XCTAssertNil(commands.first { $0["type"] as? String == "prompt" }?["images"])
+        XCTAssertNil(commands.first { $0["type"] as? String == "steer" }?["images"])
+        XCTAssertNil(commands.first { $0["type"] as? String == "follow_up" }?["images"])
+    }
+
     func testAgentEndRefreshesSessionStateForProviderSideSessionChanges() async throws {
         let directory = try makeTemporaryDirectory()
         let recordURL = directory.appendingPathComponent("commands.jsonl")
@@ -404,6 +470,20 @@ final class PiNativeSessionControllerTests: XCTestCase {
         return scriptURL
     }
 
+    private func assertImagePayload(
+        in command: [String: Any],
+        expectedBase64: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws {
+        let images = try XCTUnwrap(command["images"] as? [[String: Any]], file: file, line: line)
+        XCTAssertEqual(images.count, 1, file: file, line: line)
+        let image = try XCTUnwrap(images.first, file: file, line: line)
+        XCTAssertEqual(image["type"] as? String, "image", file: file, line: line)
+        XCTAssertEqual(image["data"] as? String, expectedBase64, file: file, line: line)
+        XCTAssertEqual(image["mimeType"] as? String, "image/png", file: file, line: line)
+    }
+
     private struct RecordedCommand {
         let type: String
         let provider: String?
@@ -412,15 +492,19 @@ final class PiNativeSessionControllerTests: XCTestCase {
         let sessionPath: String?
     }
 
-    private func recordedCommands(at url: URL) -> [RecordedCommand] {
+    private func recordedObjects(at url: URL) -> [[String: Any]] {
         guard let data = try? Data(contentsOf: url),
               let text = String(data: data, encoding: .utf8)
         else { return [] }
         return text.split(whereSeparator: { $0.isNewline }).compactMap { line in
-            guard let data = String(line).data(using: .utf8),
-                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let type = object["type"] as? String
-            else { return nil }
+            guard let data = String(line).data(using: .utf8) else { return nil }
+            return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        }
+    }
+
+    private func recordedCommands(at url: URL) -> [RecordedCommand] {
+        recordedObjects(at: url).compactMap { object in
+            guard let type = object["type"] as? String else { return nil }
             return RecordedCommand(
                 type: type,
                 provider: object["provider"] as? String,

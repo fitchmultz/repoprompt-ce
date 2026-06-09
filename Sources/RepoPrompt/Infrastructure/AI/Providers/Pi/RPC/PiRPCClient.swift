@@ -57,6 +57,19 @@ actor PiRPCClient {
         var raw: [String: PiJSONValue]
     }
 
+    struct ImageContent: Equatable, Hashable {
+        var data: String
+        var mimeType: String
+
+        var jsonValue: PiJSONValue {
+            .object([
+                "type": .string("image"),
+                "data": .string(data),
+                "mimeType": .string(mimeType)
+            ])
+        }
+    }
+
     enum Event: Equatable {
         case agentStart
         case agentEnd(messages: [[String: PiJSONValue]])
@@ -405,11 +418,12 @@ actor PiRPCClient {
     }
 
     @discardableResult
-    func prompt(_ message: String, streamingBehavior: String? = nil) async throws -> [String: PiJSONValue] {
-        var command: [String: PiJSONValue] = [
-            "type": .string("prompt"),
-            "message": .string(message)
-        ]
+    func prompt(
+        _ message: String,
+        streamingBehavior: String? = nil,
+        images: [ImageContent] = []
+    ) async throws -> [String: PiJSONValue] {
+        var command = messageCommand(type: "prompt", message: message, images: images)
         if let streamingBehavior {
             command["streamingBehavior"] = .string(streamingBehavior)
         }
@@ -417,13 +431,28 @@ actor PiRPCClient {
     }
 
     @discardableResult
-    func steer(_ message: String) async throws -> [String: PiJSONValue] {
-        try await sendCommand(["type": .string("steer"), "message": .string(message)])
+    func steer(_ message: String, images: [ImageContent] = []) async throws -> [String: PiJSONValue] {
+        try await sendCommand(messageCommand(type: "steer", message: message, images: images))
     }
 
     @discardableResult
-    func followUp(_ message: String) async throws -> [String: PiJSONValue] {
-        try await sendCommand(["type": .string("follow_up"), "message": .string(message)])
+    func followUp(_ message: String, images: [ImageContent] = []) async throws -> [String: PiJSONValue] {
+        try await sendCommand(messageCommand(type: "follow_up", message: message, images: images))
+    }
+
+    private func messageCommand(
+        type: String,
+        message: String,
+        images: [ImageContent]
+    ) -> [String: PiJSONValue] {
+        var command: [String: PiJSONValue] = [
+            "type": .string(type),
+            "message": .string(message)
+        ]
+        if !images.isEmpty {
+            command["images"] = .array(images.map(\.jsonValue))
+        }
+        return command
     }
 
     @discardableResult

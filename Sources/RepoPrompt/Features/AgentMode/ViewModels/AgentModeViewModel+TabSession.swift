@@ -213,6 +213,7 @@ extension AgentModeViewModel {
             let targetRunID: UUID?
             let targetRunAttemptID: UUID?
             let providerText: String
+            let attachments: [AgentImageAttachment]
             let draftText: String
             let optimisticUserItemID: UUID?
             let createdAt: Date
