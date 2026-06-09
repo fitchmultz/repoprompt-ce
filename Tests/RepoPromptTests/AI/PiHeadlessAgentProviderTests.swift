@@ -38,7 +38,8 @@ final class PiHeadlessAgentProviderTests: XCTestCase {
                     additionalPathHints: [],
                     requestTimeout: 2,
                     workingDirectory: workspacePath,
-                    launchArguments: []
+                    launchArguments: [],
+                    requiresSupportedVersionCheck: false
                 ))
                 return PiNativeSessionController(client: client, options: .init(modelRaw: modelString, requestTimeout: 2, launchArguments: []))
             }

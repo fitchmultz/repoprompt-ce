@@ -20,7 +20,8 @@ final class PiNativeSessionControllerTests: XCTestCase {
             commandName: scriptURL.path,
             additionalPathHints: [],
             requestTimeout: 2,
-            launchArguments: []
+            launchArguments: [],
+            requiresSupportedVersionCheck: false
         ))
         let controller = PiNativeSessionController(
             client: client,
@@ -49,7 +50,8 @@ final class PiNativeSessionControllerTests: XCTestCase {
             commandName: scriptURL.path,
             additionalPathHints: [],
             requestTimeout: 2,
-            launchArguments: []
+            launchArguments: [],
+            requiresSupportedVersionCheck: false
         ))
         let controller = PiNativeSessionController(client: client, options: .init(requestTimeout: 2))
         defer { Task { await controller.shutdown() } }
@@ -80,7 +82,8 @@ final class PiNativeSessionControllerTests: XCTestCase {
             commandName: scriptURL.path,
             additionalPathHints: [],
             requestTimeout: 2,
-            launchArguments: []
+            launchArguments: [],
+            requiresSupportedVersionCheck: false
         ))
         let controller = PiNativeSessionController(client: client, options: .init(requestTimeout: 2))
         defer { Task { await controller.shutdown() } }
@@ -124,7 +127,8 @@ final class PiNativeSessionControllerTests: XCTestCase {
             commandName: scriptURL.path,
             additionalPathHints: [],
             requestTimeout: 2,
-            launchArguments: []
+            launchArguments: [],
+            requiresSupportedVersionCheck: false
         ))
         let controller = PiNativeSessionController(client: client, options: .init(requestTimeout: 2))
         defer { Task { await controller.shutdown() } }
@@ -162,7 +166,8 @@ final class PiNativeSessionControllerTests: XCTestCase {
             commandName: scriptURL.path,
             additionalPathHints: [],
             requestTimeout: 2,
-            launchArguments: []
+            launchArguments: [],
+            requiresSupportedVersionCheck: false
         ))
         let controller = PiNativeSessionController(client: client, options: .init(requestTimeout: 2))
         defer { Task { await controller.shutdown() } }
@@ -211,7 +216,8 @@ final class PiNativeSessionControllerTests: XCTestCase {
             commandName: scriptURL.path,
             additionalPathHints: [],
             requestTimeout: 2,
-            launchArguments: []
+            launchArguments: [],
+            requiresSupportedVersionCheck: false
         ))
         let controller = PiNativeSessionController(client: client, options: .init(requestTimeout: 2))
         defer { Task { await controller.shutdown() } }
@@ -252,7 +258,8 @@ final class PiNativeSessionControllerTests: XCTestCase {
             commandName: scriptURL.path,
             additionalPathHints: [],
             requestTimeout: 2,
-            launchArguments: []
+            launchArguments: [],
+            requiresSupportedVersionCheck: false
         ))
         let controller = PiNativeSessionController(client: client, options: .init(requestTimeout: 2))
         defer { Task { await controller.shutdown() } }
@@ -282,6 +289,11 @@ final class PiNativeSessionControllerTests: XCTestCase {
             PiModelSpecifier(raw: "zai/glm-5.1:high"),
             PiModelSpecifier(provider: "zai", modelID: "glm-5.1", thinkingLevel: "high")
         )
+        XCTAssertEqual(
+            PiModelSpecifier(raw: "openai-codex/gpt-5.5:low"),
+            PiModelSpecifier(provider: "openai-codex", modelID: "gpt-5.5", thinkingLevel: "low")
+        )
+        XCTAssertEqual(PiModelSpecifier(raw: "openai-codex/gpt-5.5:low")?.providerQualifiedModelRaw, "openai-codex/gpt-5.5")
         XCTAssertEqual(
             PiModelSpecifier(raw: "cursor/composer-2-5"),
             PiModelSpecifier(provider: "cursor", modelID: "composer-2-5", thinkingLevel: nil)

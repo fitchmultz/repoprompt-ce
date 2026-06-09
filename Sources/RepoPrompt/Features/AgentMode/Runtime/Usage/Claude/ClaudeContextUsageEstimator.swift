@@ -2,14 +2,16 @@ import Foundation
 
 @MainActor
 final class ClaudeContextUsageEstimator: ContextUsageEstimating {
-    let agent: AgentProviderKind = .claudeCode
+    let agent: AgentProviderKind
     private let tokenEstimator: (String) -> Int
     private let contextUsageBuilder: ProviderTurnContextUsageBuilder
 
     init(
+        agent: AgentProviderKind = .claudeCode,
         tokenEstimator: @escaping (String) -> Int,
         contextUsageBuilder: @escaping ProviderTurnContextUsageBuilder
     ) {
+        self.agent = agent
         self.tokenEstimator = tokenEstimator
         self.contextUsageBuilder = contextUsageBuilder
     }

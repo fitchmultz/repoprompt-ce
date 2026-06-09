@@ -22,9 +22,23 @@ enum AgentMCPSelectionResolver {
     struct ResolvedSelection {
         let agentRaw: String?
         let modelRaw: String?
+        /// Provider-specific reasoning/thinking level extracted from the model id, when supported.
+        let reasoningEffortRaw: String?
         /// The resolved task label kind, if the selection was role-driven.
         /// `nil` when the model_id was a compound ID or no role was involved.
         let taskLabelKind: AgentModelCatalog.TaskLabelKind?
+
+        init(
+            agentRaw: String?,
+            modelRaw: String?,
+            reasoningEffortRaw: String? = nil,
+            taskLabelKind: AgentModelCatalog.TaskLabelKind?
+        ) {
+            self.agentRaw = agentRaw
+            self.modelRaw = modelRaw
+            self.reasoningEffortRaw = reasoningEffortRaw
+            self.taskLabelKind = taskLabelKind
+        }
     }
 
     /// Resolves a `model_id` string into agent + model components.
@@ -96,7 +110,23 @@ enum AgentMCPSelectionResolver {
             }
         }
 
-        return ResolvedSelection(agentRaw: parsed.agentRaw, modelRaw: parsed.modelRaw, taskLabelKind: nil)
+        let normalizedPiSelection = normalizedPiSelection(agent: agent, modelRaw: parsed.modelRaw)
+        return ResolvedSelection(
+            agentRaw: parsed.agentRaw,
+            modelRaw: normalizedPiSelection.modelRaw,
+            reasoningEffortRaw: normalizedPiSelection.reasoningEffortRaw,
+            taskLabelKind: nil
+        )
+    }
+
+    private static func normalizedPiSelection(agent: AgentProviderKind, modelRaw: String) -> (modelRaw: String, reasoningEffortRaw: String?) {
+        guard agent == .pi,
+              let specifier = PiModelSpecifier(raw: modelRaw),
+              let thinkingLevel = specifier.thinkingLevel
+        else {
+            return (modelRaw, nil)
+        }
+        return (specifier.providerQualifiedModelRaw, thinkingLevel)
     }
 
     @MainActor

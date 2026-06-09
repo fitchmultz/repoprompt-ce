@@ -568,6 +568,7 @@ private struct AgentModeIntroStepView: View {
             HStack(spacing: 12) {
                 AgentIntegrationBadge(name: "Codex CLI", icon: "star.fill", status: "Native", color: .purple)
                 AgentIntegrationBadge(name: "Claude Code", icon: "terminal", status: "MCP", color: .blue)
+                AgentIntegrationBadge(name: "pi", icon: "pi", status: "RPC", color: .indigo)
                 AgentIntegrationBadge(name: "OpenCode", icon: "terminal", status: "MCP", color: .orange)
                 AgentIntegrationBadge(name: "Cursor", icon: "cursorarrow", status: "MCP", color: .cyan)
             }
@@ -1114,6 +1115,31 @@ private struct ProvidersStepView: View {
                 )
 
                 CompactProviderRow(
+                    name: "pi",
+                    icon: "pi",
+                    description: "Native RPC runtime — dynamic models, managed RepoPrompt bridge, and pi-specific safety controls",
+                    isConnected: viewModel.piConnected,
+                    isLoading: viewModel.isLoadingPi || viewModel.isInstallingPiBridge,
+                    errorText: viewModel.piError,
+                    setupHint: "Install pi and configure models in pi",
+                    isRecommended: false,
+                    requiresPro: false,
+                    secondaryActionTitle: "Install Bridge",
+                    secondaryAction: { viewModel.installPiBridgeExtension() },
+                    onTest: { viewModel.testPi() }
+                )
+
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "info.circle")
+                        .foregroundColor(.secondary)
+                    Text("pi models are discovered from pi at runtime. RepoPrompt permissions apply to the managed bridge tools; pi built-in tools still use pi's own runtime configuration.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.horizontal, 14)
+
+                CompactProviderRow(
                     name: "Cursor",
                     icon: "cursorarrow",
                     description: "Cursor ACP runtime — Agent Mode, Context Builder, and chat via Cursor CLI",
@@ -1300,6 +1326,8 @@ private struct CompactProviderRow: View {
     let setupHint: String
     let isRecommended: Bool
     let requiresPro: Bool
+    var secondaryActionTitle: String?
+    var secondaryAction: (() -> Void)?
     let onTest: () -> Void
 
     var body: some View {
@@ -1359,6 +1387,13 @@ private struct CompactProviderRow: View {
             } else {
                 Text(setupHint)
                     .foregroundColor(.secondary)
+            }
+
+            if let secondaryActionTitle, let secondaryAction {
+                Button(secondaryActionTitle, action: secondaryAction)
+                    .buttonStyle(.bordered)
+                    .controlSize(.regular)
+                    .disabled(isLoading)
             }
 
             Button(isConnected ? "Test" : "Connect", action: onTest)

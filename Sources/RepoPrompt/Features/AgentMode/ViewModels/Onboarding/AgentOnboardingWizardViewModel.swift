@@ -74,6 +74,8 @@ final class AgentOnboardingWizardViewModel: ObservableObject {
     @Published var isLoadingCodex = false
     @Published var isLoadingOpenCode = false
     @Published var isLoadingCursor = false
+    @Published var isLoadingPi = false
+    @Published var isInstallingPiBridge = false
 
     // MCP & CLI installers
     @Published var cliInstallStatus: CLIPathInstaller.InstallationStatus = .notInstalled
@@ -136,6 +138,7 @@ final class AgentOnboardingWizardViewModel: ObservableObject {
                 api.$isCodexConnected.map { _ in () },
                 api.$isOpenCodeConnected.map { _ in () },
                 api.$isCursorConnected.map { _ in () },
+                api.$isPiConnected.map { _ in () },
                 api.$isOpenAIKeyValid.map { _ in () }
             )
             .debounce(for: .milliseconds(300), scheduler: RunLoop.main)
@@ -218,6 +221,10 @@ final class AgentOnboardingWizardViewModel: ObservableObject {
         apiSettingsViewModel?.isCursorConnected ?? false
     }
 
+    var piConnected: Bool {
+        apiSettingsViewModel?.isPiConnected ?? false
+    }
+
     var claudeCodeError: String? {
         apiSettingsViewModel?.claudeCodeError
     }
@@ -232,6 +239,10 @@ final class AgentOnboardingWizardViewModel: ObservableObject {
 
     var cursorError: String? {
         apiSettingsViewModel?.cursorError
+    }
+
+    var piError: String? {
+        apiSettingsViewModel?.piError
     }
 
     func testClaudeCode() {
@@ -283,6 +294,32 @@ final class AgentOnboardingWizardViewModel: ObservableObject {
             }
             isLoadingCursor = false
             refreshProviderStatus()
+        }
+    }
+
+    func testPi() {
+        isLoadingPi = true
+        Task {
+            do {
+                _ = try await apiSettingsViewModel?.testPiConnection()
+            } catch {
+                // Error state is set on apiSettingsViewModel
+            }
+            isLoadingPi = false
+            refreshProviderStatus()
+        }
+    }
+
+    func installPiBridgeExtension() {
+        isInstallingPiBridge = true
+        Task {
+            defer { isInstallingPiBridge = false }
+            do {
+                let result = try PiRepoPromptBridgeExtensionInstaller.installGlobal()
+                showInstallFeedback(result.wasAlreadyInstalled ? "pi Bridge Extension is current" : "pi Bridge Extension installed")
+            } catch {
+                showInstallFeedback("pi bridge install failed: \(error.localizedDescription)", isError: true)
+            }
         }
     }
 

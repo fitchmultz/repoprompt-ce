@@ -14,13 +14,14 @@ final class ServerControllerAdmissionTests: XCTestCase {
         #endif
     }
 
-    func testDefaultAllowListDoesNotIncludeRepoPromptCLI() {
+    func testDefaultAllowListDoesNotIncludeRepoPromptCLIOrPi() {
         #if DEBUG
             XCTAssertFalse(
                 ServerController.test_defaultAlwaysAllowedClients.contains {
                     ServerController.test_isRepoPromptCLIClientName($0)
                 }
             )
+            XCTAssertFalse(ServerController.test_defaultAlwaysAllowedClients.contains("pi"))
         #else
             throw XCTSkip("DEBUG-only ServerController admission seams are unavailable in release builds")
         #endif
@@ -35,6 +36,42 @@ final class ServerControllerAdmissionTests: XCTestCase {
         #else
             throw XCTSkip("DEBUG-only ServerController admission seams are unavailable in release builds")
         #endif
+    }
+
+    func testServerControllerHasExpectedAgentClientAutoApprovalBeforeGenericAllowList() throws {
+        let source = try String(
+            contentsOf: RepoRoot.url().appendingPathComponent("Sources/RepoPrompt/Infrastructure/MCP/ServerController.swift"),
+            encoding: .utf8
+        )
+        let expectedAgentRange = try XCTUnwrap(source.range(of: "shouldAutoApproveExpectedAgentClient"))
+        let allowListRange = try XCTUnwrap(source.range(of: "isClientAlwaysAllowed", range: expectedAgentRange.upperBound ..< source.endIndex))
+        XCTAssertLessThan(expectedAgentRange.lowerBound, allowListRange.lowerBound)
+        XCTAssertTrue(source.contains("expected managed agent client"))
+    }
+
+    func testExpectedPIDAutoApprovalDoesNotRequirePriorAdmittedBootstrap() async throws {
+        let manager = ServerNetworkManager.shared
+        let runID = UUID()
+        let pid = getpid()
+        let clientName = try XCTUnwrap(AgentProviderKind.pi.mcpClientNameHint)
+        await manager.debugSeedRunPolicyState(
+            runID: runID,
+            windowID: 1,
+            restrictedTools: [],
+            additionalTools: nil,
+            purpose: .agentModeRun
+        )
+        await manager.registerExpectedAgentPID(pid, for: clientName, runID: runID)
+
+        let approved = await manager.debugShouldAutoApproveExpectedAgentClient(
+            clientName: clientName,
+            clientPid: Int(pid)
+        )
+
+        await manager.clearExpectedAgentPID(pid, for: clientName, runID: runID)
+        await manager.cleanupRunRoutingState(for: runID, windowID: 1)
+
+        XCTAssertTrue(approved)
     }
 
     func testSanitizerRemovesPersistedRepoPromptCLIAllowListEntries() {

@@ -4,6 +4,11 @@ import XCTest
 
 @MainActor
 final class AgentRunMCPToolServiceStartDefaultTests: XCTestCase {
+    override func tearDown() {
+        AgentPiModelRegistry.shared.test_reset()
+        super.tearDown()
+    }
+
     func testUntargetedStartWithoutModelIDResolvesThroughPairDefault() throws {
         let defaultLabel = AgentRunMCPToolService.defaultTaskLabelForStart(resolvedTabID: nil)
         XCTAssertEqual(defaultLabel, .pair)
@@ -214,6 +219,28 @@ final class AgentRunMCPToolServiceStartDefaultTests: XCTestCase {
         XCTAssertNil(resolved.taskLabelKind)
         XCTAssertEqual(resolved.agentRaw, AgentProviderKind.codexExec.rawValue)
         XCTAssertEqual(resolved.modelRaw, "explicit-model")
+    }
+
+    func testExplicitPiModelIDAcceptsThinkingSuffixAndExtractsEffort() throws {
+        let snapshot = PiDiscoveredModels(
+            options: [
+                AgentModelOption(rawValue: "default", displayName: "Default", description: nil, isDefault: true),
+                AgentModelOption(rawValue: "openai-codex/gpt-5.5", displayName: "openai-codex/gpt-5.5", description: nil, isDefault: true)
+            ],
+            currentModelRaw: "openai-codex/gpt-5.5"
+        )
+        XCTAssertTrue(AgentPiModelRegistry.shared.updateDiscoveredModels(snapshot))
+
+        let resolved = try AgentMCPSelectionResolver.resolve(
+            modelID: "pi:openai-codex/gpt-5.5:low",
+            defaultTaskLabel: AgentRunMCPToolService.defaultTaskLabelForStart(resolvedTabID: nil),
+            availability: AgentModelCatalog.AvailabilityContext(piAvailable: true)
+        )
+
+        XCTAssertNil(resolved.taskLabelKind)
+        XCTAssertEqual(resolved.agentRaw, AgentProviderKind.pi.rawValue)
+        XCTAssertEqual(resolved.modelRaw, "openai-codex/gpt-5.5")
+        XCTAssertEqual(resolved.reasoningEffortRaw, "low")
     }
 }
 

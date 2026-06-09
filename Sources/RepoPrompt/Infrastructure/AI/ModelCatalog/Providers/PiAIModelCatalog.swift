@@ -315,8 +315,12 @@ final class AgentPiModelRegistry {
             seen.insert(key)
             options.append(AgentModelOption(
                 rawValue: raw,
-                displayName: model.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? raw : model.displayName,
-                description: normalizedOptionalString(model.description),
+                displayName: raw,
+                description: providerQualifiedDescription(
+                    raw: raw,
+                    displayName: model.displayName,
+                    description: model.description
+                ),
                 isDefault: currentRaw?.caseInsensitiveCompare(raw) == .orderedSame
             ))
         }
@@ -330,6 +334,23 @@ final class AgentPiModelRegistry {
         guard let provider = normalizedOptionalString(model.provider) else { return id }
         if id.hasPrefix("\(provider)/") { return id }
         return "\(provider)/\(id)"
+    }
+
+    private static func providerQualifiedDescription(raw: String, displayName: String, description: String?) -> String? {
+        let friendlyName = normalizedOptionalString(displayName).flatMap { name -> String? in
+            name.caseInsensitiveCompare(raw) == .orderedSame ? nil : name
+        }
+        let detail = normalizedOptionalString(description)
+        switch (friendlyName, detail) {
+        case let (name?, detail?) where name.caseInsensitiveCompare(detail) != .orderedSame:
+            return "\(name) — \(detail)"
+        case let (name?, _):
+            return name
+        case let (_, detail?):
+            return detail
+        default:
+            return nil
+        }
     }
 
     private func snapshotFromMemory() -> PiDiscoveredModels? {

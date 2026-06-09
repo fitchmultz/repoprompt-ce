@@ -22,6 +22,7 @@ final class SecureStorageAccountCatalogTests: XCTestCase {
                 "CodexCLIAPI",
                 "OpenCodeCLIAPI",
                 "CursorCLIAPI",
+                "PiCLIAPI",
                 "ZAIAPI",
                 "ClaudeCompatibleBackend.kimi.apiKey",
                 "ClaudeCompatibleBackend.custom.apiKey",
@@ -32,7 +33,7 @@ final class SecureStorageAccountCatalogTests: XCTestCase {
                 "rp.agent.permissions.cursor.v1"
             ]
         )
-        XCTAssertEqual(Set(SecureStorageAccountCatalog.allAccounts.map(\.identifier)).count, 23)
+        XCTAssertEqual(Set(SecureStorageAccountCatalog.allAccounts.map(\.identifier)).count, 24)
     }
 
     func testProviderMappingsUseCatalogAccounts() {
@@ -52,6 +53,7 @@ final class SecureStorageAccountCatalogTests: XCTestCase {
             (.codex, .codexCLIAPI),
             (.openCode, .openCodeCLIAPI),
             (.cursor, .cursorCLIAPI),
+            (.pi, .piCLIAPI),
             (.zAI, .zAIAPI)
         ]
 

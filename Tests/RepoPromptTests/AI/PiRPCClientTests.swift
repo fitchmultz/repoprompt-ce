@@ -42,7 +42,8 @@ final class PiRPCClientTests: XCTestCase {
             commandName: scriptURL.path,
             additionalPathHints: [],
             requestTimeout: 2,
-            launchArguments: []
+            launchArguments: [],
+            requiresSupportedVersionCheck: false
         ))
         defer { Task { await client.shutdown() } }
 
@@ -66,7 +67,8 @@ final class PiRPCClientTests: XCTestCase {
             commandName: scriptURL.path,
             additionalPathHints: [],
             requestTimeout: 2,
-            launchArguments: []
+            launchArguments: [],
+            requiresSupportedVersionCheck: false
         ))
         defer { Task { await client.shutdown() } }
 
@@ -123,7 +125,8 @@ final class PiRPCClientTests: XCTestCase {
             commandName: scriptURL.path,
             additionalPathHints: [],
             requestTimeout: 2,
-            launchArguments: []
+            launchArguments: [],
+            requiresSupportedVersionCheck: false
         ))
         defer { Task { await client.shutdown() } }
 
@@ -133,6 +136,63 @@ final class PiRPCClientTests: XCTestCase {
         } catch let error as PiRPCClient.ClientError {
             XCTAssertEqual(error, .requestFailed("bad thinking level"))
         }
+    }
+
+    func testApprovedLaunchRequiresSupportedPiVersionBeforeRPCStart() async throws {
+        let scriptURL = try makeFakePiVersionedRPCScript(version: "0.78.1")
+        let client = PiRPCClient(config: .init(
+            commandName: scriptURL.path,
+            additionalPathHints: [],
+            requestTimeout: 2,
+            launchArguments: PiIntegrationConfiguration.managedRPCLaunchArguments()
+        ))
+        defer { Task { await client.shutdown() } }
+
+        do {
+            _ = try await client.getState()
+            XCTFail("Expected unsupported pi version to fail before RPC startup")
+        } catch let error as PiRPCClient.ClientError {
+            XCTAssertEqual(
+                error,
+                .executableUnavailable(
+                    "RepoPrompt requires pi 0.79.0 or newer for managed RPC project trust; found 0.78.1. Update pi and try again."
+                )
+            )
+        }
+    }
+
+    func testApprovedLaunchStartsWithSupportedPiVersion() async throws {
+        let scriptURL = try makeFakePiVersionedRPCScript(version: "0.79.0")
+        let client = PiRPCClient(config: .init(
+            commandName: scriptURL.path,
+            additionalPathHints: [],
+            requestTimeout: 2,
+            launchArguments: PiIntegrationConfiguration.managedRPCLaunchArguments()
+        ))
+        defer { Task { await client.shutdown() } }
+
+        let state = try await client.getState()
+
+        XCTAssertEqual(state.sessionID, "session-123")
+    }
+
+    func testApprovedLaunchRechecksSupportedPiVersionAfterShutdown() async throws {
+        let recordURL = try makeTemporaryDirectory().appendingPathComponent("version-checks.txt")
+        let scriptURL = try makeFakePiVersionedRPCScript(version: "0.79.0", versionProbeRecordURL: recordURL)
+        let client = PiRPCClient(config: .init(
+            commandName: scriptURL.path,
+            additionalPathHints: [],
+            requestTimeout: 2,
+            launchArguments: PiIntegrationConfiguration.managedRPCLaunchArguments()
+        ))
+        defer { Task { await client.shutdown() } }
+
+        _ = try await client.getState()
+        await client.shutdown()
+        _ = try await client.getState()
+
+        let record = (try? String(contentsOf: recordURL, encoding: .utf8)) ?? ""
+        XCTAssertEqual(record.split(separator: "\n").count, 2)
     }
 
     func testExpectedAgentPIDRegistrationRegistersSpawnedPiProcessAndClearsOnShutdown() async throws {
@@ -152,7 +212,8 @@ final class PiRPCClientTests: XCTestCase {
                 commandName: scriptURL.path,
                 additionalPathHints: [],
                 requestTimeout: 2,
-                launchArguments: []
+                launchArguments: [],
+                requiresSupportedVersionCheck: false
             ),
             expectedAgentPIDRegistrar: registrar
         )
@@ -183,7 +244,8 @@ final class PiRPCClientTests: XCTestCase {
             commandName: scriptURL.path,
             additionalPathHints: [],
             requestTimeout: 2,
-            launchArguments: []
+            launchArguments: [],
+            requiresSupportedVersionCheck: false
         ))
         defer { Task { await client.shutdown() } }
 
@@ -278,6 +340,55 @@ final class PiRPCClientTests: XCTestCase {
         try script.write(to: scriptURL, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
         return scriptURL
+    }
+
+    private func makeFakePiVersionedRPCScript(version: String, versionProbeRecordURL: URL? = nil) throws -> URL {
+        let directory = try makeTemporaryDirectory()
+        let scriptURL = directory.appendingPathComponent("fake_pi_versioned_rpc.py")
+        let recordPath = try Self.pythonStringLiteral(versionProbeRecordURL?.path)
+        let script = #"""
+        #!/usr/bin/env python3
+        import json
+        import sys
+
+        VERSION = "__VERSION__"
+        VERSION_PROBE_RECORD_PATH = __VERSION_PROBE_RECORD_PATH__
+
+        if len(sys.argv) > 1 and sys.argv[1] == "--version":
+            if VERSION_PROBE_RECORD_PATH is not None:
+                with open(VERSION_PROBE_RECORD_PATH, "a", encoding="utf-8") as handle:
+                    handle.write("version\n")
+            print(VERSION, flush=True)
+            raise SystemExit(0)
+
+        for line in sys.stdin:
+            try:
+                request = json.loads(line)
+            except Exception:
+                continue
+            print(json.dumps({
+                "type": "response",
+                "id": request.get("id"),
+                "command": request.get("type"),
+                "success": True,
+                "data": {
+                    "sessionId": "session-123",
+                    "isStreaming": False,
+                    "isCompacting": False
+                }
+            }), flush=True)
+        """#
+        .replacingOccurrences(of: "__VERSION__", with: version)
+        .replacingOccurrences(of: "__VERSION_PROBE_RECORD_PATH__", with: recordPath)
+        try script.write(to: scriptURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
+        return scriptURL
+    }
+
+    private static func pythonStringLiteral(_ value: String?) throws -> String {
+        guard let value else { return "None" }
+        let data = try JSONEncoder().encode(value)
+        return (String(data: data, encoding: .utf8) ?? "None").replacingOccurrences(of: "\\/", with: "/")
     }
 
     private func makeFakePiUIResponseRecorderScript(recordURL: URL) throws -> URL {

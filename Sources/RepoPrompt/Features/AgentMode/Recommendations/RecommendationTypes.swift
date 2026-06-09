@@ -90,12 +90,14 @@ struct ProviderStatusSnapshot {
 enum ChatBackendKind: String, Codable {
     case claudeCode
     case codex
+    case pi
     case openAI
 
     var displayName: String {
         switch self {
         case .claudeCode: "Claude Code"
         case .codex: "Codex CLI"
+        case .pi: "pi"
         case .openAI: "OpenAI API"
         }
     }
@@ -134,6 +136,9 @@ struct ChatModelRecommendation {
     /// Option for Claude Code CLI, if available.
     let claudeCodeOption: ChatBackendOption?
 
+    /// Option for pi RPC, if available.
+    let piOption: ChatBackendOption?
+
     /// Priority path used to determine the default (e.g., ["OpenAI API", "Codex CLI"]).
     let priorityPath: [String]
 
@@ -142,7 +147,7 @@ struct ChatModelRecommendation {
 
     /// Returns all available options.
     var availableOptions: [ChatBackendOption] {
-        [openAIOption, codexOption, claudeCodeOption].compactMap(\.self)
+        [openAIOption, codexOption, claudeCodeOption, piOption].compactMap(\.self)
     }
 
     /// Returns the option for a specific backend kind.
@@ -150,15 +155,17 @@ struct ChatModelRecommendation {
         switch kind {
         case .claudeCode: claudeCodeOption
         case .codex: codexOption
+        case .pi: piOption
         case .openAI: openAIOption
         }
     }
 
-    init(defaultBackend: ChatBackendKind, codexOption: ChatBackendOption?, openAIOption: ChatBackendOption?, claudeCodeOption: ChatBackendOption?, priorityPath: [String], upgradeHint: String? = nil) {
+    init(defaultBackend: ChatBackendKind, codexOption: ChatBackendOption?, openAIOption: ChatBackendOption?, claudeCodeOption: ChatBackendOption?, piOption: ChatBackendOption? = nil, priorityPath: [String], upgradeHint: String? = nil) {
         self.defaultBackend = defaultBackend
         self.codexOption = codexOption
         self.openAIOption = openAIOption
         self.claudeCodeOption = claudeCodeOption
+        self.piOption = piOption
         self.priorityPath = priorityPath
         self.upgradeHint = upgradeHint
     }

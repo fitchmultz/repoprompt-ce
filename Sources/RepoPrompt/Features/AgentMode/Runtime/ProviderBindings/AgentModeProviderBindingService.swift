@@ -57,8 +57,8 @@ final class AgentModeProviderBindingService {
         provider: AgentProviderBindingID?
     ) -> AgentProviderPermissionProfile {
         _ = isSubagent
-        let defaults = preferences.defaults
-        let global = AgentModePermissionPreferences.subagentPermissionPolicy(defaults: defaults, secureStore: preferences.securePermissions)
+        let document = preferences.securePermissions?.cachedSubagentPermissionsOrFailClosed()
+        let global = document?.globalPolicy() ?? AgentModePermissionPreferences.subagentPermissionPolicy(defaults: preferences.defaults, secureStore: nil)
         switch global {
         case .safeManaged:
             return .mcpSafeDefaults
@@ -66,11 +66,12 @@ final class AgentModeProviderBindingService {
             return .userConfigured
         case .custom:
             guard let provider else { return .mcpSafeDefaults }
-            let level = AgentModePermissionPreferences.providerSubagentPermissionLevel(
-                for: provider,
-                defaults: defaults,
-                secureStore: preferences.securePermissions
-            )
+            let level = document?.providerPermissionLevel(for: provider)
+                ?? AgentModePermissionPreferences.providerSubagentPermissionLevel(
+                    for: provider,
+                    defaults: preferences.defaults,
+                    secureStore: nil
+                )
             return .providerOverride(level)
         }
     }

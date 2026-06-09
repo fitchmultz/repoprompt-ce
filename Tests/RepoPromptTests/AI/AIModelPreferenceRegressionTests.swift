@@ -93,6 +93,65 @@ final class AIModelPreferenceRegressionTests: XCTestCase {
         XCTAssertEqual(resolved, .configured(configuredModel))
     }
 
+    func testStrictOraclePlanningResolutionAcceptsPiModelRaw() {
+        let configuredModel = AIModel.piCustom(name: "zai/glm-5.1")
+        let resolved = PromptViewModel.mcpOraclePlanningModelResolution(
+            rawValue: "  \(configuredModel.rawValue)  ",
+            isModelAvailable: { model in model == configuredModel && model.providerType == .pi }
+        )
+        XCTAssertEqual(resolved, .configured(configuredModel))
+    }
+
+    func testPiOracleModelProviderSurfaceIsRegistered() throws {
+        AgentPiModelRegistry.shared.test_reset()
+        defer { AgentPiModelRegistry.shared.test_reset() }
+        XCTAssertEqual(AIModel.fromModelName("pi_custom_zai/glm-5.1"), .piCustom(name: "zai/glm-5.1"))
+        XCTAssertEqual(AIModel.piCustom(name: "zai/glm-5.1").providerType, .pi)
+        XCTAssertTrue(AIModel.modelsForProvider(.pi).isEmpty)
+
+        let snapshot = PiDiscoveredModels(
+            options: [AgentModelOption(rawValue: "zai/glm-5.1", displayName: "GLM 5.1", description: nil, isDefault: true)],
+            currentModelRaw: "zai/glm-5.1"
+        )
+        XCTAssertTrue(AgentPiModelRegistry.shared.updateDiscoveredModels(snapshot))
+        XCTAssertEqual(AIModel.modelsForProvider(.pi), [.piCustom(name: "zai/glm-5.1")])
+
+        let repoRoot = try RepoRoot.url(filePath: #filePath)
+        let sourcePath = "Sources/RepoPrompt/Infrastructure/MCP/AppSettingsMCPService.swift"
+        let contents = try String(contentsOf: repoRoot.appendingPathComponent(sourcePath), encoding: .utf8)
+        XCTAssertTrue(contents.contains("case .pi:\n            .pi"), sourcePath)
+    }
+
+    func testPiOracleUnavailableGuidanceDoesNotMentionAPIKey() throws {
+        let repoRoot = try RepoRoot.url(filePath: #filePath)
+        let sourcePath = "Sources/RepoPrompt/Infrastructure/MCP/MCPOracleToolService.swift"
+        let contents = try String(contentsOf: repoRoot.appendingPathComponent(sourcePath), encoding: .utf8)
+        XCTAssertTrue(contents.contains("case .pi:\n            return \"Connect pi in Settings.\""), sourcePath)
+        XCTAssertTrue(contents.contains("case .codex:"), sourcePath)
+        XCTAssertTrue(contents.contains("case .openCode:"), sourcePath)
+        XCTAssertTrue(contents.contains("case .cursor:"), sourcePath)
+    }
+
+    func testPiCLIModelPreferencesArePreservedLikeOtherCLIProviders() throws {
+        let repoRoot = try RepoRoot.url(filePath: #filePath)
+        let sourcePath = "Sources/RepoPrompt/Features/Prompt/ViewModels/PromptViewModel.swift"
+        let contents = try String(contentsOf: repoRoot.appendingPathComponent(sourcePath), encoding: .utf8)
+        XCTAssertTrue(contents.contains("case .claudeCode, .codex, .openCode, .cursor, .pi:"), sourcePath)
+    }
+
+    func testPiOracleProviderLaunchesPromptOnlyRPC() throws {
+        XCTAssertEqual(
+            PiIntegrationConfiguration.managedRPCPromptOnlyLaunchArguments(),
+            ["--mode", "rpc", "--approve", "--no-tools"]
+        )
+
+        let repoRoot = try RepoRoot.url(filePath: #filePath)
+        let sourcePath = "Sources/RepoPrompt/Infrastructure/AI/Providers/Pi/PiCLIProvider.swift"
+        let contents = try String(contentsOf: repoRoot.appendingPathComponent(sourcePath), encoding: .utf8)
+        XCTAssertTrue(contents.contains("managedRPCPromptOnlyLaunchArguments()"), sourcePath)
+        XCTAssertFalse(contents.contains("managedRPCLaunchArguments(bridgeExtensionPath:"), sourcePath)
+    }
+
     func testOracleModelsReportingUsesStrictPlanningResolutionInsteadOfPreferredFallback() throws {
         let repoRoot = try RepoRoot.url(filePath: #filePath)
         let sourcePath = "Sources/RepoPrompt/Infrastructure/MCP/MCPOracleToolService.swift"

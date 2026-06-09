@@ -431,7 +431,12 @@ struct AgentManageMCPToolService {
             defaultTaskLabel: .engineer,
             availability: targetWindow.apiSettingsViewModel.agentModeAvailabilityContext
         )
-        let resolved = resolvedModelAndEffort(agentRaw: selection.agentRaw, modelRaw: selection.modelRaw, args: args)
+        let resolved = resolvedModelAndEffort(
+            agentRaw: selection.agentRaw,
+            modelRaw: selection.modelRaw,
+            selectionEffortRaw: selection.reasoningEffortRaw,
+            args: args
+        )
         let target = try await agentModeVM.mcpResolveOrCreateSessionTarget(
             tabID: nil,
             sessionID: nil,
@@ -499,7 +504,12 @@ struct AgentManageMCPToolService {
             modelID: normalizedString(args["model_id"]),
             availability: targetWindow.apiSettingsViewModel.agentModeAvailabilityContext
         )
-        let resolved = resolvedModelAndEffort(agentRaw: selection.agentRaw, modelRaw: selection.modelRaw, args: args)
+        let resolved = resolvedModelAndEffort(
+            agentRaw: selection.agentRaw,
+            modelRaw: selection.modelRaw,
+            selectionEffortRaw: selection.reasoningEffortRaw,
+            args: args
+        )
         let target = try await agentModeVM.mcpResolveOrCreateSessionTarget(
             tabID: nil,
             sessionID: sessionID,
@@ -1140,11 +1150,15 @@ struct AgentManageMCPToolService {
     private func resolvedModelAndEffort(
         agentRaw: String?,
         modelRaw: String?,
+        selectionEffortRaw: String?,
         args: [String: Value]
     ) -> (agent: String?, model: String?, effort: String?) {
         let explicitEffort = normalizedString(args["reasoning_effort"])
         if let explicitEffort {
             return (agentRaw, modelRaw, explicitEffort)
+        }
+        if let selectionEffortRaw {
+            return (agentRaw, modelRaw, selectionEffortRaw)
         }
         let extracted = AgentExternalMCPRunStarter.extractReasoningEffort(from: modelRaw)
         return (agentRaw, extracted.model, extracted.effort)

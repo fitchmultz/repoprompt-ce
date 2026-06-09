@@ -129,6 +129,7 @@ final class AutoRecommendationEngine {
         var codexOption: ChatBackendOption?
         var openAIOption: ChatBackendOption?
         var claudeCodeOption: ChatBackendOption?
+        var piOption: ChatBackendOption?
 
         // Codex CLI option - PREFERRED for chat
         if status.codexCLI == .ready {
@@ -176,8 +177,22 @@ final class AutoRecommendationEngine {
             )
         }
 
+        if status.piCLI == .ready, let option = recommendedPiChatModelOption() {
+            piOption = ChatBackendOption(
+                kind: .pi,
+                displayName: "pi",
+                modelString: AIModel.piCustom(name: option.rawValue).rawValue,
+                description: "\(option.displayName) via pi RPC — uses pi's configured provider/model setup",
+                tradeoffs: [
+                    "• Dynamic model discovery from your pi configuration",
+                    "• Native RPC sessions and RepoPrompt bridge tools",
+                    "• pi built-in tools remain governed by pi runtime settings"
+                ]
+            )
+        }
+
         // Determine default backend and upgrade hint
-        // Priority for CHAT: Codex CLI > OpenAI API > Claude Code
+        // Priority for CHAT: Codex CLI > OpenAI API > Claude Code > pi
         let defaultBackend: ChatBackendKind
         var priorityPath: [String] = []
         var upgradeHint: String? = nil
@@ -191,8 +206,12 @@ final class AutoRecommendationEngine {
             upgradeHint = "Connect Codex CLI for \(inAppPlanning.modelLabel) – strong reasoning with practical usage limits (requires OpenAI Plus/Pro)."
         } else if claudeCodeOption != nil {
             defaultBackend = .claudeCode
-            priorityPath = ["Claude Code"]
+            priorityPath = ["Claude Code", "pi"]
             upgradeHint = "For best chat experience, connect Codex CLI (requires OpenAI Plus/Pro) for \(inAppPlanning.modelLabel) – balances quality with usage limits."
+        } else if piOption != nil {
+            defaultBackend = .pi
+            priorityPath = ["pi"]
+            upgradeHint = "Connect Codex CLI, OpenAI API, or Claude Code for the curated chat defaults; pi remains available through its dynamically configured models."
         } else {
             return nil
         }
@@ -202,6 +221,7 @@ final class AutoRecommendationEngine {
             codexOption: codexOption,
             openAIOption: openAIOption,
             claudeCodeOption: claudeCodeOption,
+            piOption: piOption,
             priorityPath: priorityPath,
             upgradeHint: upgradeHint
         )
@@ -215,6 +235,7 @@ final class AutoRecommendationEngine {
         var claudeCodeOption: ChatBackendOption?
         var codexOption: ChatBackendOption?
         var openAIOption: ChatBackendOption?
+        var piOption: ChatBackendOption?
 
         // Priority 1: Claude Code CLI
         if status.claudeCodeCLI == .ready {
@@ -261,6 +282,20 @@ final class AutoRecommendationEngine {
             )
         }
 
+        if status.piCLI == .ready, let option = recommendedPiChatModelOption() {
+            piOption = ChatBackendOption(
+                kind: .pi,
+                displayName: "pi",
+                modelString: AIModel.piCustom(name: option.rawValue).rawValue,
+                description: "\(option.displayName) via pi RPC",
+                tradeoffs: [
+                    "• Uses your configured pi model/provider",
+                    "• Native RPC integration with RepoPrompt bridge tools",
+                    "• pi built-ins follow pi runtime configuration"
+                ]
+            )
+        }
+
         // Determine default backend based on priority
         let defaultBackend: ChatBackendKind
         var priorityPath: [String] = []
@@ -274,6 +309,9 @@ final class AutoRecommendationEngine {
         } else if openAIOption != nil {
             defaultBackend = .openAI
             priorityPath.append("OpenAI API")
+        } else if piOption != nil {
+            defaultBackend = .pi
+            priorityPath.append("pi")
         } else {
             // No suitable providers available
             return nil
@@ -284,9 +322,16 @@ final class AutoRecommendationEngine {
             codexOption: codexOption,
             openAIOption: openAIOption,
             claudeCodeOption: claudeCodeOption,
+            piOption: piOption,
             priorityPath: priorityPath,
             upgradeHint: nil
         )
+    }
+
+    private func recommendedPiChatModelOption() -> AgentModelOption? {
+        guard let vm = apiSettingsViewModel else { return nil }
+        return vm.availablePiModelOptions.first(where: { $0.isProviderDefault })
+            ?? vm.availablePiModelOptions.first
     }
 
     // MARK: - Context Builder Recommendation
@@ -604,6 +649,8 @@ final class AutoRecommendationEngine {
             rec.claudeCodeOption?.modelString ?? AIModel.claudeCodeOpus.rawValue
         case .codex:
             rec.codexOption?.modelString ?? AIModel.codexCliGpt55CodexHigh.rawValue
+        case .pi:
+            rec.piOption?.modelString ?? recommendedPiChatModelOption().map { AIModel.piCustom(name: $0.rawValue).rawValue } ?? AIModel.piCustom(name: AgentModel.defaultModel.rawValue).rawValue
         case .openAI:
             rec.openAIOption?.modelString ?? AIModel.gpt54Pro.rawValue
         }

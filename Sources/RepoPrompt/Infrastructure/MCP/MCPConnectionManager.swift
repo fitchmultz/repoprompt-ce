@@ -2983,9 +2983,9 @@ actor ServerNetworkManager {
 
         return expectedAgentPIDsByRunID.compactMap { runID, runExpectedPIDs -> (affinity: LiveRunAffinity, updatedAt: Date)? in
             let expectedPIDs = runExpectedPIDs.intersection(clientExpectedPIDs)
-            guard admittedPolicyRunIDs.contains(runID),
-                  !expectedPIDs.isEmpty,
-                  isAncestor(expectedPIDs: expectedPIDs, ofPid: pid_t(clientPid)),
+            let ancestor = isAncestor(expectedPIDs: expectedPIDs, ofPid: pid_t(clientPid))
+            guard !expectedPIDs.isEmpty,
+                  ancestor,
                   let cached = runPolicyStateByRunID[runID],
                   shouldAllowPersistedAgentModeRestore(clientName: clientName, purpose: cached.purpose)
             else {
@@ -3059,6 +3059,16 @@ actor ServerNetworkManager {
             || !expectedAgentPIDs(for: clientName).isEmpty
             || preferredLiveRunAffinity(for: clientName, sessionKey: sessionKey) != nil
             || preferredExpectedPIDRunAffinity(for: clientName, clientPid: clientPid) != nil
+    }
+
+    func shouldAutoApproveExpectedAgentClient(clientName: String, connectionID: UUID) async -> Bool {
+        guard Self.isKnownAgentClientName(clientName),
+              let clientPid = await peerPID(for: connectionID),
+              let affinity = preferredExpectedPIDRunAffinity(for: clientName, clientPid: clientPid)
+        else { return false }
+        await applyRunPolicyStateIfAvailable(runID: affinity.runID, connectionID: connectionID)
+        admittedPolicyRunIDs.insert(affinity.runID)
+        return true
     }
 
     private func clearLiveRunAffinity(for runID: UUID) {
@@ -6746,6 +6756,10 @@ actor ServerNetworkManager {
             case .timedOut:
                 return "timedOut"
             }
+        }
+
+        func debugShouldAutoApproveExpectedAgentClient(clientName: String, clientPid: Int) -> Bool {
+            preferredExpectedPIDRunAffinity(for: clientName, clientPid: clientPid) != nil
         }
 
         func debugRunPolicyState(for runID: UUID) -> (windowID: Int, workspaceID: UUID?, restrictedTools: Set<String>, additionalTools: Set<String>?, purpose: MCPRunPurpose)? {

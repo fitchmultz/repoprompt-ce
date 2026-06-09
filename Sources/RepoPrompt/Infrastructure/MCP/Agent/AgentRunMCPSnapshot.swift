@@ -500,6 +500,8 @@ extension AgentModeViewModel.MCPInstructionDispatch {
             "Queued as the next turn once the active run reaches a safe handoff point."
         case .dispatchedCodexTurn:
             "Delivered to the active Codex run."
+        case .dispatchedPiSteer:
+            "Delivered to the active pi run through native RPC steering."
         case .queuedClaudeInterrupt:
             "Queued for Claude and requested an interrupt at the next decision point."
         case .queuedACPInterrupt:

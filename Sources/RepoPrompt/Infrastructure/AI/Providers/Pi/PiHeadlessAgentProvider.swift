@@ -31,7 +31,9 @@ final class PiHeadlessAgentProvider: HeadlessAgentProvider {
                 options: .init(
                     modelRaw: modelString,
                     enableDebugLogging: enableDebugLogging,
-                    launchArguments: ["--mode", "rpc", "--extension", bridgeExtensionURL.path]
+                    launchArguments: PiIntegrationConfiguration.managedRPCLaunchArguments(
+                        bridgeExtensionPath: bridgeExtensionURL.path
+                    )
                 )
             )
         }

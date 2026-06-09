@@ -150,6 +150,8 @@ enum PiRepoPromptBridgeExtensionInstaller {
         const REPOPROMPT_CLI = \(escapedCLIPath);
         const REPOPROMPT_CLIENT_NAME = \(jsonStringLiteral(bridgeClientName));
         const REPOPROMPT_WINDOW_ID: string | undefined = \(escapedWindowID);
+        const REPOPROMPT_IS_MANAGED_WINDOW_BRIDGE = REPOPROMPT_WINDOW_ID !== undefined;
+        const REPOPROMPT_MANAGED_RUN_ENV = \(jsonStringLiteral(PiIntegrationConfiguration.managedRunEnvironmentKey));
         const REPOPROMPT_SCHEMA_ARGS = \(jsonStringArray(schemaArgs(windowID: windowID)));
         const REPOPROMPT_TOOL_ARGS_PREFIX = \(jsonStringArray(toolArgsPrefix(windowID: windowID)));
         const SCHEMA_LOAD_TIMEOUT_MS = 60_000;
@@ -263,6 +265,10 @@ enum PiRepoPromptBridgeExtensionInstaller {
         }
 
         export default async function repoPromptBridge(pi: ExtensionAPI) {
+          if (!REPOPROMPT_IS_MANAGED_WINDOW_BRIDGE && process.env[REPOPROMPT_MANAGED_RUN_ENV] === "1") {
+            return;
+          }
+
           const tools = await loadRepoPromptTools(pi);
           for (const tool of tools) {
             const toolName = requireToolName(tool.name);
@@ -287,11 +293,10 @@ enum PiRepoPromptBridgeExtensionInstaller {
     }
 
     static func schemaArgs(windowID: Int?) -> [String] {
-        var args = ["--client-name", bridgeClientName, "--tools-schema", "--compact"]
-        if let windowID {
-            args.append(contentsOf: ["-w", String(windowID)])
+        guard let windowID else {
+            return ["--tools-schema", "--compact"]
         }
-        return args
+        return ["--client-name", bridgeClientName, "--tools-schema", "--compact", "-w", String(windowID)]
     }
 
     static func toolArgsPrefix(windowID: Int?) -> [String] {

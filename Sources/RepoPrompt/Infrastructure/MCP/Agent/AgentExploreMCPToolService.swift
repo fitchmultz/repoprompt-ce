@@ -306,7 +306,7 @@ struct AgentExploreMCPToolService {
             context.agentModeVM,
             context.selection.agentRaw,
             context.selection.modelRaw,
-            nil,
+            context.selection.reasoningEffortRaw,
             .explore,
             nil
         )

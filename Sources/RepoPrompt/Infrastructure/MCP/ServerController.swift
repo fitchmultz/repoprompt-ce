@@ -148,6 +148,16 @@ final actor ServerController: ObservableObject {
                     log.warning("RepoPrompt CLI name matched but executable path verification failed for connectionID=\(connectionID)")
                 }
 
+                if !isRepoCLI,
+                   await networkManager.shouldAutoApproveExpectedAgentClient(clientName: client.name, connectionID: connectionID)
+                {
+                    serverControllerDebugLog("Auto-approving '\(client.name)' (expected managed agent client)")
+                    if let service = await mcpService {
+                        await service.clientConnectedSuccessfully(name: client.name)
+                    }
+                    return true
+                }
+
                 // Per-client auto-approve when whitelisted. RepoPrompt CLI names are handled
                 // above and intentionally never bypass executable verification through this list.
                 if !isRepoCLI, await isClientAlwaysAllowed(clientID: client.name) {

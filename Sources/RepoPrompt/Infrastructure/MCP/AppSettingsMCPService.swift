@@ -1333,7 +1333,7 @@ private enum AppSettingsMCPRegistry {
         case .cursor:
             .cursor
         case .pi:
-            nil
+            .pi
         }
     }
 
@@ -1355,6 +1355,7 @@ private enum AppSettingsMCPRegistry {
         case .codex: "codex"
         case .openCode: "openCode"
         case .cursor: "cursor"
+        case .pi: "pi"
         }
     }
 

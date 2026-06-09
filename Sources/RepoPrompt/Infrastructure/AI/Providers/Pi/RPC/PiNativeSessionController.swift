@@ -38,7 +38,7 @@ actor PiNativeSessionController {
             modelRaw: String? = nil,
             requestTimeout: TimeInterval? = 30,
             enableDebugLogging: Bool = false,
-            launchArguments: [String] = ["--mode", "rpc"]
+            launchArguments: [String] = PiIntegrationConfiguration.managedRPCLaunchArguments()
         ) {
             self.modelRaw = modelRaw
             self.requestTimeout = requestTimeout
@@ -447,6 +447,13 @@ struct PiModelSpecifier: Equatable {
         self.provider = provider
         self.modelID = modelID
         self.thinkingLevel = thinkingLevel
+    }
+
+    var providerQualifiedModelRaw: String {
+        if let provider {
+            return "\(provider)/\(modelID)"
+        }
+        return modelID
     }
 
     init?(raw: String?) {

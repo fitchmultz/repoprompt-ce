@@ -395,6 +395,12 @@ final class AgentPermissionSecureStore {
         }
     }
 
+    func cachedSubagentPermissionsOrFailClosed() -> SecureSubagentPermissionDocument {
+        withLock {
+            subagentCache ?? SecureSubagentPermissionDocument.failClosedDocument(now: now())
+        }
+    }
+
     func subagentPolicy() -> AgentSubagentPermissionPolicy {
         subagentPermissions().globalPolicy()
     }

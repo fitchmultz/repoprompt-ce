@@ -1730,6 +1730,10 @@ public class APISettingsViewModel: ObservableObject {
             modelSet.formUnion(AIModel.modelsForProvider(.cursor))
         }
 
+        if isPiConnected {
+            modelSet.formUnion(AIModel.modelsForProvider(.pi))
+        }
+
         // ── Custom provider (OpenAI compatible) ────────────────────────────────
         if isCustomProviderValid,
            let config = try? CustomProviderConfiguration.load()
@@ -1798,6 +1802,7 @@ public class APISettingsViewModel: ObservableObject {
         case .claudeCode: "claude_code"
         case .codex: "codex"
         case .openCode: "opencode"
+        case .pi: "pi"
         }
     }
 
@@ -1872,6 +1877,8 @@ public class APISettingsViewModel: ObservableObject {
                 break
             case .cursor:
                 break
+            case .pi:
+                break
             }
 
             await updateAvailableModels()
@@ -1932,6 +1939,9 @@ public class APISettingsViewModel: ObservableObject {
             break
         case .cursor:
             break
+        case .pi:
+            isPiConnected = false
+            availablePiModelOptions = []
         }
         await updateAvailableModels()
         resetPreferredModelIfNeeded(for: provider)
@@ -1980,6 +1990,7 @@ public class APISettingsViewModel: ObservableObject {
         case .groq: condition = { $0.providerType == .groq }
         case .zAI: condition = { $0.providerType == .zAI }
         case .cursor: condition = { $0.providerType == .cursor }
+        case .pi: condition = { $0.providerType == .pi }
         // Add other providers if needed (Ollama usually doesn't need key resets this way)
         default: return // No reset needed for this provider type
         }
@@ -3455,9 +3466,9 @@ public class APISettingsViewModel: ObservableObject {
             return false
         }
         collector?.append("Discovered \(snapshot.models.options.count) pi model option(s)")
-        applyPiModelSnapshot(snapshot)
         piError = nil
         isPiConnected = true
+        applyPiModelSnapshot(snapshot)
         return true
     }
 
@@ -3472,9 +3483,9 @@ public class APISettingsViewModel: ObservableObject {
                     guard let self else { return }
                     switch event {
                     case let .snapshot(snapshot):
-                        applyPiModelSnapshot(snapshot)
                         piError = nil
                         isPiConnected = true
+                        applyPiModelSnapshot(snapshot)
                     case let .failure(failure):
                         applyPiDisconnected(errorMessage: failure.message)
                     }
@@ -3496,12 +3507,14 @@ public class APISettingsViewModel: ObservableObject {
 
     private func applyPiModelSnapshot(_ snapshot: PiModelPollingService.Snapshot) {
         availablePiModelOptions = snapshot.models.options
+        Task { await updateAvailableModels() }
     }
 
     private func applyPiDisconnected(errorMessage: String?) {
         piError = errorMessage
         isPiConnected = false
         availablePiModelOptions = []
+        Task { await updateAvailableModels() }
     }
 
     private func friendlyPiMessage(for error: Error) -> String {

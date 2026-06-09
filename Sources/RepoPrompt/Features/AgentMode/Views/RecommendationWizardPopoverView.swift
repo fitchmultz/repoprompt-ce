@@ -783,6 +783,9 @@ private struct ChatModelStepView: View {
                     if rec.openAIOption != nil {
                         backendCard(.openAI, option: rec.openAIOption!)
                     }
+                    if rec.piOption != nil {
+                        backendCard(.pi, option: rec.piOption!)
+                    }
                 }
                 .id("recommendationContent")
 

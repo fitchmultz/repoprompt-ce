@@ -1437,6 +1437,7 @@ final class AgentModeRunServiceLifecycleTests: XCTestCase {
             scheduleSave: { _ in recorder.record("save") },
             notifyAgentTurnComplete: { _ in },
             handleHeadlessStreamResult: { _, _, _, _ in },
+            askUserInteraction: { _, _ in AgentAskUserResponse(answersByQuestionID: [:], timedOut: false, skipped: true, elapsedSeconds: 0) },
             buildHeadlessAgentMessage: { _, text, _, _ in AgentMessage(userMessage: text) },
             finalizeStreamingItems: { _ in },
             finalizePendingToolCalls: { _, _ in },

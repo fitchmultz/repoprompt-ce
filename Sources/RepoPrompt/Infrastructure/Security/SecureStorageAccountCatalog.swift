@@ -20,6 +20,7 @@ enum SecureStorageAccount: CaseIterable, Hashable, Identifiable {
     case codexCLIAPI
     case openCodeCLIAPI
     case cursorCLIAPI
+    case piCLIAPI
     case zAIAPI
 
     // Claude-compatible backend accounts.
@@ -65,6 +66,8 @@ enum SecureStorageAccount: CaseIterable, Hashable, Identifiable {
             "OpenCodeCLIAPI"
         case .cursorCLIAPI:
             "CursorCLIAPI"
+        case .piCLIAPI:
+            "PiCLIAPI"
         case .zAIAPI:
             "ZAIAPI"
         case .claudeCompatibleKimiAPIKey:
@@ -120,6 +123,7 @@ enum SecureStorageAccount: CaseIterable, Hashable, Identifiable {
         case .codexCLIAPI: "Codex CLI API key"
         case .openCodeCLIAPI: "OpenCode CLI API key"
         case .cursorCLIAPI: "Cursor CLI API key"
+        case .piCLIAPI: "pi CLI account"
         case .zAIAPI: "Z.AI API key"
         case .claudeCompatibleKimiAPIKey: "Kimi compatible API key"
         case .claudeCompatibleCustomAPIKey: "Custom Claude-compatible API key"
@@ -153,6 +157,7 @@ enum SecureStorageAccountCatalog {
         .codexCLIAPI,
         .openCodeCLIAPI,
         .cursorCLIAPI,
+        .piCLIAPI,
         .zAIAPI
     ]
 

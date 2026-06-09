@@ -351,6 +351,14 @@ struct MCPOracleToolService {
                 return "Configure and enable \(descriptor.groupDisplayName) in Settings."
             }
             return "Connect Claude Code in Settings."
+        case .codex:
+            return "Connect Codex in Settings."
+        case .openCode:
+            return "Connect OpenCode in Settings."
+        case .cursor:
+            return "Connect Cursor in Settings."
+        case .pi:
+            return "Connect pi in Settings."
         default:
             return "Please check that the \(model.providerType.displayName) API key is configured in Settings."
         }

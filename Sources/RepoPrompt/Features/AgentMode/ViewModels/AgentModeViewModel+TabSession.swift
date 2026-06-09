@@ -207,6 +207,19 @@ extension AgentModeViewModel {
         /// Task that drains `pendingACPSteeringInstructions` one-by-one, waiting for MCP tool idle between each.
         var acpSteeringFlushTask: Task<Void, Never>?
 
+        /// pi native steering queue — sends through pi RPC `steer` while the turn is running.
+        struct PiSteeringInstruction: Identifiable {
+            let id: UUID
+            let targetRunID: UUID?
+            let targetRunAttemptID: UUID?
+            let providerText: String
+            let draftText: String
+            let optimisticUserItemID: UUID?
+            let createdAt: Date
+        }
+
+        var pendingPiSteeringInstructions: [PiSteeringInstruction] = []
+
         /// Number of upcoming turnCompleted events that should be treated as intermediate
         /// because we successfully queued a follow-up prompt during the same run.
         var pendingSupersedingTurnCompletionsUpdatedAt: Date?

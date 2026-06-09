@@ -274,12 +274,14 @@ extension AgentModeViewModel {
     enum ActiveProviderSteeringRoute: Equatable {
         case acpPrompt
         case claudeNativeInterrupt
+        case piNativeSteer
     }
 
     enum MCPInstructionDispatch: String, Equatable {
         case deliveredIntoWaitingContinuation = "delivered_waiting_continuation"
         case queuedClaudeInterrupt = "queued_claude_interrupt"
         case queuedACPInterrupt = "queued_acp_interrupt"
+        case dispatchedPiSteer = "dispatched_pi_steer"
         case queuedFollowUp = "queued_follow_up"
         case dispatchedCodexTurn = "dispatched_codex_turn"
         case startedRun = "started_run"
@@ -288,7 +290,7 @@ extension AgentModeViewModel {
         /// Used to suppress stale assistant previews in the immediate steer response.
         var isActiveRunDispatch: Bool {
             switch self {
-            case .queuedClaudeInterrupt, .queuedACPInterrupt, .queuedFollowUp, .dispatchedCodexTurn:
+            case .queuedClaudeInterrupt, .queuedACPInterrupt, .dispatchedPiSteer, .queuedFollowUp, .dispatchedCodexTurn:
                 true
             case .deliveredIntoWaitingContinuation, .startedRun:
                 false
@@ -303,7 +305,7 @@ extension AgentModeViewModel {
             switch self {
             case .queuedClaudeInterrupt, .queuedACPInterrupt:
                 return false
-            case .queuedFollowUp, .dispatchedCodexTurn:
+            case .dispatchedPiSteer, .queuedFollowUp, .dispatchedCodexTurn:
                 return true
             case .deliveredIntoWaitingContinuation, .startedRun:
                 return false

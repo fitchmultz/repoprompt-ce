@@ -365,7 +365,7 @@ struct AgentRunMCPToolService {
                 agentModeVM,
                 selection.agentRaw,
                 selection.modelRaw,
-                nil,
+                selection.reasoningEffortRaw,
                 selection.taskLabelKind,
                 workflow
             )
@@ -1522,7 +1522,7 @@ struct AgentRunMCPToolService {
         var metadata: [String: Value] = [:]
         if let delivery {
             switch delivery {
-            case .queuedFollowUp, .queuedClaudeInterrupt, .queuedACPInterrupt, .deliveredIntoWaitingContinuation, .dispatchedCodexTurn:
+            case .queuedFollowUp, .queuedClaudeInterrupt, .queuedACPInterrupt, .deliveredIntoWaitingContinuation, .dispatchedCodexTurn, .dispatchedPiSteer:
                 metadata["delivery"] = .string(delivery.rawValue)
             case .startedRun:
                 break

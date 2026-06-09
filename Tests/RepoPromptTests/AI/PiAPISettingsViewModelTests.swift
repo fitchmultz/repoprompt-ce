@@ -26,6 +26,10 @@ final class PiAPISettingsViewModelTests: XCTestCase {
             AgentModelCatalog.options(for: .pi, availability: viewModel.agentModeAvailabilityContext).map(\.rawValue),
             ["default", "zai/glm-5.1"]
         )
+        let didPublishOracleModels = await eventually {
+            viewModel.availableModels.filter { $0.providerType == .pi }.map(\.rawValue) == ["pi_custom_default", "pi_custom_zai/glm-5.1"]
+        }
+        XCTAssertTrue(didPublishOracleModels)
         let discoveryCount = await polling.discoveryCount()
         XCTAssertEqual(discoveryCount, 1)
     }
@@ -44,6 +48,8 @@ final class PiAPISettingsViewModelTests: XCTestCase {
         XCTAssertFalse(viewModel.isPiConnected)
         XCTAssertFalse(viewModel.agentModeAvailabilityContext.piAvailable)
         XCTAssertEqual(viewModel.availablePiModelOptions, [])
+        let didClearOracleModels = await eventually { viewModel.availableModels.filter { $0.providerType == .pi }.isEmpty }
+        XCTAssertTrue(didClearOracleModels)
         XCTAssertEqual(viewModel.piError, "pi executable was not found.")
         let discoveryCount = await polling.discoveryCount()
         XCTAssertEqual(discoveryCount, 1)
@@ -80,6 +86,8 @@ final class PiAPISettingsViewModelTests: XCTestCase {
         XCTAssertTrue(didDisconnect)
         XCTAssertFalse(viewModel.agentModeAvailabilityContext.piAvailable)
         XCTAssertEqual(viewModel.availablePiModelOptions, [])
+        let didClearOracleModels = await eventually { viewModel.availableModels.filter { $0.providerType == .pi }.isEmpty }
+        XCTAssertTrue(didClearOracleModels)
         XCTAssertEqual(viewModel.piError, "pi RPC model refresh failed")
 
         await polling.emitSubscriptionSnapshot(Self.piSnapshot())

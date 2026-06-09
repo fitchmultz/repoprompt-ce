@@ -70,6 +70,7 @@ extension AIProviderType {
         case .codex: .codexCLIAPI
         case .openCode: .openCodeCLIAPI
         case .cursor: .cursorCLIAPI
+        case .pi: .piCLIAPI
         case .zAI: .zAIAPI
         }
     }

@@ -1659,6 +1659,14 @@ final class AgentModeViewModel: ObservableObject {
         }
     )
 
+    lazy var piContextUsageEstimator = ClaudeContextUsageEstimator(
+        agent: .pi,
+        tokenEstimator: { Self.estimateRuntimeTokens(for: $0) },
+        contextUsageBuilder: { usage, modelContextWindow in
+            Self.contextUsageFromClaudeProviderTokens(usage, modelContextWindow: modelContextWindow)
+        }
+    )
+
     lazy var codexContextUsageEstimator = CodexContextUsageEstimator()
 
     func slashSkillSuggestions(for query: String) async -> [MentionSuggestion] {
@@ -1925,6 +1933,12 @@ final class AgentModeViewModel: ObservableObject {
             },
             handleHeadlessStreamResult: { [weak self] result, session, runID, runAttemptID in
                 await self?.handleStreamResult(result, session: session, runID: runID, runAttemptID: runAttemptID)
+            },
+            askUserInteraction: { [weak self] tabID, interaction in
+                guard let self else {
+                    throw MCPError.internalError("Agent Mode is no longer available for the pi UI request.")
+                }
+                return try await askUserInteraction(tabID: tabID, interaction: interaction)
             },
             buildHeadlessAgentMessage: { [weak self] session, initialMessage, runID, attachments in
                 self?.buildHeadlessAgentMessage(
@@ -5726,10 +5740,14 @@ final class AgentModeViewModel: ObservableObject {
         // tri-state policy's per-provider override never goes stale on an already-active
         // MCP-controlled session (sub-agent or top-level).
         _ = refreshMCPPermissionProfileIfNeeded(for: session)
-        codexCoordinator.normalizeCodexSelectionForSession(
-            session,
-            preservingExplicitEffort: reasoningEffortRaw != nil
-        )
+        if session.selectedAgent == .codexExec {
+            codexCoordinator.normalizeCodexSelectionForSession(
+                session,
+                preservingExplicitEffort: reasoningEffortRaw != nil
+            )
+        } else if reasoningEffortRaw == nil, previousAgent != normalized.agent {
+            session.selectedReasoningEffortRaw = nil
+        }
         // Record last-used effort for the MCP path so the in-memory fallback
         // used by `normalizeCodexSelectionForSession` stays current.  The UI path
         // records this via the `@Published selectedReasoningEffortRaw` didSet, but
@@ -6011,6 +6029,12 @@ final class AgentModeViewModel: ObservableObject {
                 codexAttemptID: nil,
                 signalsDeliveryAfterDispatch: false
             )
+        case .piNativeSteer:
+            return MCPActiveInstructionDispatchPlan(
+                delivery: .dispatchedPiSteer,
+                codexAttemptID: nil,
+                signalsDeliveryAfterDispatch: true
+            )
         case nil:
             break
         }
@@ -6050,6 +6074,29 @@ final class AgentModeViewModel: ObservableObject {
         Self.steeringDebugLog("[AgentRunSteeringWake] mcpDispatch yielded after steering wake sessionID=\(sessionID)")
     }
 
+    private func submitQueuedPiSteeringIfSupported(session: TabSession) async throws {
+        guard session.runState == .running,
+              session.pendingApproval == nil,
+              session.pendingAskUser == nil,
+              session.pendingUserInputRequest == nil,
+              session.pendingPermissionsRequest == nil,
+              let controller = session.piController,
+              let steering = session.pendingPiSteeringInstructions.first,
+              steering.targetRunID == session.runID,
+              steering.targetRunAttemptID == session.activeRunAttemptID
+        else {
+            throw MCPError.internalError("pi steer could not be sent because the run is no longer ready for native steering.")
+        }
+
+        session.pendingPiSteeringInstructions.removeFirst()
+        do {
+            try await controller.steer(steering.providerText)
+        } catch {
+            session.pendingInstructions.insert(steering.providerText, at: 0)
+            throw MCPError.internalError("pi steer failed: \(error.localizedDescription)")
+        }
+    }
+
     private func startQueuedProviderSteeringForMCPDispatch(
         delivery: MCPInstructionDispatch,
         session: TabSession
@@ -6069,6 +6116,8 @@ final class AgentModeViewModel: ObservableObject {
                     "ACP steer could not be queued because the run is no longer ready for interruption."
                 )
             }
+        case .dispatchedPiSteer:
+            try await submitQueuedPiSteeringIfSupported(session: session)
         default:
             break
         }
@@ -11170,10 +11219,33 @@ final class AgentModeViewModel: ObservableObject {
         if activeACPPromptIsAvailable(for: session, attachments: attachments) {
             return .acpPrompt
         }
+        if activePiSteerIsAvailable(for: session, attachments: attachments) {
+            return .piNativeSteer
+        }
         if session.selectedAgent.usesClaudeNativeRuntime {
             return .claudeNativeInterrupt
         }
         return nil
+    }
+
+    private func activePiSteerIsAvailable(
+        for session: TabSession,
+        attachments: [AgentImageAttachment]
+    ) -> Bool {
+        guard session.selectedAgent == .pi,
+              session.runState == .running,
+              session.pendingApproval == nil,
+              session.pendingAskUser == nil,
+              session.pendingUserInputRequest == nil,
+              session.pendingPermissionsRequest == nil,
+              attachments.isEmpty,
+              session.runID != nil,
+              session.activeRunAttemptID != nil,
+              session.piController != nil
+        else {
+            return false
+        }
+        return true
     }
 
     private func activeACPPromptIsAvailable(
@@ -11212,6 +11284,37 @@ final class AgentModeViewModel: ObservableObject {
         userInputTokenEstimate: Int
     ) {
         switch route {
+        case .piNativeSteer:
+            let steering = TabSession.PiSteeringInstruction(
+                id: UUID(),
+                targetRunID: session.runID,
+                targetRunAttemptID: session.activeRunAttemptID,
+                providerText: wrappedText,
+                draftText: trimmedText,
+                optimisticUserItemID: userItem.id,
+                createdAt: Date()
+            )
+            session.pendingPiSteeringInstructions.append(steering)
+            Self.steeringDebugLog("[AgentRunSteeringWake] pi steering queued tab=\(session.tabID) runID=\(String(describing: session.runID)) attempt=\(String(describing: session.activeRunAttemptID)) queue=\(session.pendingPiSteeringInstructions.count) mcpDispatch=\(session.isMCPInstructionDispatchInProgress)")
+            guard !session.isMCPInstructionDispatchInProgress else {
+                Self.steeringDebugLog("[AgentRunSteeringWake] pi steering flush owned by MCP dispatch tab=\(session.tabID) queue=\(session.pendingPiSteeringInstructions.count)")
+                return
+            }
+            Task { [weak self, weak session] in
+                guard let self, let session else { return }
+                do {
+                    try await submitQueuedPiSteeringIfSupported(session: session)
+                    await signalMCPInstructionDelivered(for: session)
+                } catch {
+                    if let queuedIndex = session.pendingPiSteeringInstructions.firstIndex(where: { $0.id == steering.id }) {
+                        let queued = session.pendingPiSteeringInstructions.remove(at: queuedIndex)
+                        session.pendingInstructions.insert(queued.providerText, at: 0)
+                    }
+                    session.isDirty = true
+                    updateBindingsFromSession(session)
+                    scheduleSave(for: session.tabID)
+                }
+            }
         case .acpPrompt:
             // ACP live steering uses the same serialized queued-flush shape as
             // Claude native steering. The run service waits for MCP tools to go idle,
@@ -11641,7 +11744,7 @@ final class AgentModeViewModel: ObservableObject {
         for session: TabSession
     ) -> MCPActiveInstructionDeliverySignalTiming {
         switch activeProviderSteeringRoute(for: session) {
-        case .claudeNativeInterrupt, .acpPrompt:
+        case .claudeNativeInterrupt, .acpPrompt, .piNativeSteer:
             .afterProviderSend
         case nil:
             session.selectedAgent == .codexExec

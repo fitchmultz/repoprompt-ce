@@ -417,7 +417,11 @@ enum AgentModelCatalog {
         }
         if agentKind == .pi {
             if let discoveredModels = resolvedPiDiscoveredModels() {
-                return discoveredModels.contains(rawModel: normalized)
+                if discoveredModels.contains(rawModel: normalized) {
+                    return true
+                }
+                guard let specifier = PiModelSpecifier(raw: normalized) else { return false }
+                return discoveredModels.contains(rawModel: specifier.providerQualifiedModelRaw)
             }
             if normalized.caseInsensitiveCompare(AgentModel.defaultModel.rawValue) == .orderedSame {
                 return true
@@ -467,7 +471,7 @@ enum AgentModelCatalog {
             if agentKind == .pi,
                let discoveredOption = resolvedPiDiscoveredModels()?.option(matching: raw)
             {
-                return discoveredOption.displayName
+                return discoveredOption.isPlaceholderDefault ? discoveredOption.displayName : discoveredOption.rawValue
             }
             if let discoveredOption = resolvedACPDiscoveredModels(for: agentKind)?.option(matching: raw) {
                 return discoveredOption.displayName
@@ -510,6 +514,16 @@ enum AgentModelCatalog {
                 return "\(baseName) \(storedEffort.displayName)"
             }
             return baseName
+        }
+
+        if agentKind == .pi {
+            let specifier = PiModelSpecifier(raw: effectiveRaw)
+            let baseRaw = specifier?.providerQualifiedModelRaw ?? effectiveRaw
+            let baseName = baseDisplayName(for: baseRaw)
+            guard includeEffortSuffix,
+                  let thinkingLevel = specifier?.thinkingLevel
+            else { return baseName }
+            return "\(baseName) \(piThinkingLevelDisplayName(thinkingLevel))"
         }
 
         if agentKind == .codexExec {
@@ -964,6 +978,12 @@ enum AgentModelCatalog {
             return true
         }
 
+        if agentKind == .pi {
+            guard let selectedSpecifier = PiModelSpecifier(raw: selected) else { return false }
+            let optionBase = PiModelSpecifier(raw: option)?.providerQualifiedModelRaw ?? option
+            return optionBase.caseInsensitiveCompare(selectedSpecifier.providerQualifiedModelRaw) == .orderedSame
+        }
+
         if agentKind == .codexExec {
             let optionSlug = CodexAgentToolPreferences.reasoningEffortPreferenceSlug(forModelRaw: option)
             let selectedSlug = CodexAgentToolPreferences.reasoningEffortPreferenceSlug(forModelRaw: selected)
@@ -1194,9 +1214,13 @@ enum AgentModelCatalog {
         let providerID = parts.count == 2 ? parts[0].trimmingCharacters(in: .whitespacesAndNewlines) : nil
         let modelID = parts.count == 2 ? parts[1].trimmingCharacters(in: .whitespacesAndNewlines) : rawValue
         let providerDisplayName = providerID.map(humanizedPiProviderName) ?? "pi"
-        let modelDisplayName = displayName.isEmpty || displayName == rawValue
-            ? humanizedPiModelName(modelID)
-            : displayName
+        let modelDisplayName: String = if providerID?.isEmpty == false {
+            rawValue
+        } else {
+            displayName.isEmpty || displayName == rawValue
+                ? humanizedPiModelName(modelID)
+                : displayName
+        }
         return (providerID?.isEmpty == false ? providerID : nil, providerDisplayName, modelDisplayName)
     }
 
@@ -1209,6 +1233,7 @@ enum AgentModelCatalog {
         switch normalized.lowercased() {
         case "zai", "z ai", "z.ai": return "Z.ai"
         case "openai": return "OpenAI"
+        case "openai codex": return "OpenAI Codex"
         case "anthropic": return "Anthropic"
         case "google": return "Google"
         case "cursor": return "Cursor"
@@ -1236,6 +1261,19 @@ enum AgentModelCatalog {
                 return lower.capitalized
             }
             .joined(separator: " ")
+    }
+
+    private static func piThinkingLevelDisplayName(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch trimmed.lowercased() {
+        case "off": return "Off"
+        case "minimal": return "Minimal"
+        case "low": return "Low"
+        case "medium": return "Medium"
+        case "high": return "High"
+        case "xhigh", "x-high": return "XHigh"
+        default: return trimmed
+        }
     }
 
     private enum OpenCodeVariant: String {
@@ -2070,7 +2108,6 @@ enum AgentModelCatalog {
     ) -> [DiscoveryTaskLabel] {
         taskLabels.compactMap { entry in
             guard let resolved = resolveTaskLabelKind(entry.kind, availability: availability) else { return nil }
-            let selectionID = AgentModelSelectionID(agentRaw: resolved.agent.rawValue, modelRaw: resolved.modelRaw)
             let name = displayName(for: resolved.modelRaw, agentKind: resolved.agent, availability: availability)
             return DiscoveryTaskLabel(
                 label: entry.label,

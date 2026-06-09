@@ -9,6 +9,8 @@ actor PiRPCClient {
         var requestTimeout: TimeInterval?
         var workingDirectory: String?
         var launchArguments: [String]
+        var environmentOverrides: [String: String]
+        var requiresSupportedVersionCheck: Bool
 
         init(
             commandName: String = CLILaunchProfiles.pi.commandName,
@@ -16,7 +18,9 @@ actor PiRPCClient {
             enableDebugLogging: Bool = false,
             requestTimeout: TimeInterval? = 30,
             workingDirectory: String? = nil,
-            launchArguments: [String] = ["--mode", "rpc"]
+            launchArguments: [String] = PiIntegrationConfiguration.managedRPCLaunchArguments(),
+            environmentOverrides: [String: String] = PiIntegrationConfiguration.managedRunEnvironment(),
+            requiresSupportedVersionCheck: Bool = true
         ) {
             self.commandName = commandName
             self.additionalPathHints = additionalPathHints
@@ -24,6 +28,8 @@ actor PiRPCClient {
             self.requestTimeout = requestTimeout
             self.workingDirectory = workingDirectory
             self.launchArguments = launchArguments
+            self.environmentOverrides = environmentOverrides
+            self.requiresSupportedVersionCheck = requiresSupportedVersionCheck
         }
     }
 
@@ -177,6 +183,7 @@ actor PiRPCClient {
     private var isShuttingDown = false
     private var expectedAgentPIDRegistration: ExpectedAgentPIDRegistration?
     private var registeredExpectedAgentPID: RegisteredExpectedAgentPID?
+    private var didPassSupportedVersionCheck = false
     private let expectedAgentPIDRegistrar: ExpectedAgentPIDRegistrar
 
     init(
@@ -200,6 +207,7 @@ actor PiRPCClient {
 
     func updateConfig(_ config: Config) {
         self.config = config
+        didPassSupportedVersionCheck = false
     }
 
     func setExpectedAgentPIDRegistration(_ registration: ExpectedAgentPIDRegistration?) async {
@@ -276,7 +284,7 @@ actor PiRPCClient {
                 enableDebugLogging: config.enableDebugLogging
             )
         )
-        let environment = environmentResult.environment
+        let environment = environmentResult.environment.merging(config.environmentOverrides) { _, override in override }
         let resolvedCommand = CommandPathResolver.resolve(
             config.commandName,
             environment: environment,
@@ -295,6 +303,19 @@ actor PiRPCClient {
             throw ClientError.executableUnavailable("pi executable is not runnable: \(resolvedCommand).")
         }
         let workingDirectory = normalizedWorkingDirectory(config.workingDirectory) ?? FileManager.default.temporaryDirectory.path
+        if config.requiresSupportedVersionCheck, !didPassSupportedVersionCheck {
+            let availability = await PiIntegrationConfiguration.checkManagedRPCAvailability(
+                commandName: resolvedCommand,
+                workingDirectory: workingDirectory,
+                enableDebugLogging: config.enableDebugLogging
+            )
+            guard availability.isAvailable else {
+                throw ClientError.executableUnavailable(
+                    availability.diagnostic ?? "pi is unavailable or unsupported."
+                )
+            }
+            didPassSupportedVersionCheck = true
+        }
         let spawned = try ProcessLauncher.spawn(
             command: resolvedCommand,
             arguments: config.launchArguments,
@@ -331,6 +352,7 @@ actor PiRPCClient {
         let activeProcess = process
         let expectedAgentPIDToClear = takeRegisteredExpectedAgentPIDForDeferredClear()
         process = nil
+        didPassSupportedVersionCheck = false
         stdoutConsumerTask?.cancel()
         stderrConsumerTask?.cancel()
         stdoutConsumerTask = nil
@@ -606,6 +628,7 @@ actor PiRPCClient {
         let stderr = String(data: stderrTail, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
         let reason = stderr?.isEmpty == false ? "pi RPC stdout closed. stderr: \(stderr!)" : "pi RPC stdout closed."
         process = nil
+        didPassSupportedVersionCheck = false
         failAllPendingRequests(ClientError.transportClosed(reason))
         emit(.transportClosed(reason: reason))
     }

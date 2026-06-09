@@ -59,6 +59,7 @@ final class AgentModeRunService {
         let scheduleSave: (UUID) -> Void
         let notifyAgentTurnComplete: (AgentModeViewModel.TabSession) -> Void
         let handleHeadlessStreamResult: (AIStreamResult, AgentModeViewModel.TabSession, UUID, UUID) async -> Void
+        let askUserInteraction: (UUID, AgentAskUserInteraction) async throws -> AgentAskUserResponse
         let buildHeadlessAgentMessage: (AgentModeViewModel.TabSession, String, UUID, [AgentImageAttachment]) -> AgentMessage
         let finalizeStreamingItems: (AgentModeViewModel.TabSession) -> Void
         let finalizePendingToolCalls: (AgentModeViewModel.TabSession, AgentSessionRunState) -> Void
