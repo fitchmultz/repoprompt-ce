@@ -323,10 +323,19 @@ final class CLIProcessRunner {
                     throw error
                 }
 
-                // Proactively close FDs and wait for readers to finish
-                spawned.stdout.closeFile()
-                spawned.stderr.closeFile()
-                await Self.waitForGroup(group)
+                // The child has exited, so its pipe write ends are closed. Let reader threads
+                // drain buffered output before closing the parent read handles; closing first can
+                // race with the readers and lose short-lived process output under executor load.
+                let groupFinished = await Self.waitForGroup(group, timeout: 5.0, pid: spawned.pid) { [weak self] warning in
+                    self?.log(warning)
+                }
+                if !groupFinished {
+                    spawned.stdout.closeFile()
+                    spawned.stderr.closeFile()
+                    _ = await Self.waitForGroup(group, timeout: 1.0, pid: spawned.pid) { [weak self] warning in
+                        self?.log(warning)
+                    }
+                }
                 let outputSnapshot = outputBuffer.snapshot()
                 let capturedStdoutData = outputSnapshot.stdout
                 let capturedStderrData = outputSnapshot.stderr

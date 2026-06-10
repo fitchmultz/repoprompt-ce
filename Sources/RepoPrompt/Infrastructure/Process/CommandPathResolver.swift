@@ -283,13 +283,30 @@ enum CommandPathResolver {
         let out = stdoutPipe.fileHandleForReading
         let err = stderrPipe.fileHandleForReading
 
-        var stdoutAccum = Data()
-        var stderrAccum = Data()
+        final class LockedDataBuffer: @unchecked Sendable {
+            private let lock = NSLock()
+            private var data = Data()
+
+            func append(_ chunk: Data) {
+                lock.lock()
+                data.append(chunk)
+                lock.unlock()
+            }
+
+            func snapshot() -> Data {
+                lock.lock()
+                defer { lock.unlock() }
+                return data
+            }
+        }
+
+        let stdoutAccum = LockedDataBuffer()
+        let stderrAccum = LockedDataBuffer()
 
         let group = DispatchGroup()
         let chunkSize = 64 * 1024
 
-        // Drain stdout concurrently to avoid blocking the child on pipe buffer fills
+        // Drain stdout concurrently to avoid blocking the child on pipe buffer fills.
         group.enter()
         DispatchQueue.global(qos: .userInitiated).async {
             defer { group.leave() }
@@ -299,7 +316,7 @@ enum CommandPathResolver {
             }
         }
 
-        // Drain stderr concurrently (even if we don't use it) to prevent deadlock
+        // Drain stderr concurrently (even if we don't use it) to prevent deadlock.
         group.enter()
         DispatchQueue.global(qos: .userInitiated).async {
             defer { group.leave() }
@@ -307,6 +324,15 @@ enum CommandPathResolver {
                 guard let chunk = try? err.read(upToCount: chunkSize), !chunk.isEmpty else { break }
                 stderrAccum.append(chunk)
             }
+        }
+
+        func closeReadHandles() {
+            out.closeFile()
+            err.closeFile()
+        }
+
+        func waitForReaderDrain() -> Bool {
+            group.wait(timeout: .now() + shellLookupPipeDrainGraceInterval(environment: environment)) == .success
         }
 
         let terminationGroup = DispatchGroup()
@@ -319,33 +345,45 @@ enum CommandPathResolver {
             try process.run()
         } catch {
             terminationGroup.leave()
-            out.closeFile()
-            err.closeFile()
-            group.wait()
-            return (127, stdoutAccum, stderrAccum)
+            closeReadHandles()
+            _ = waitForReaderDrain()
+            return (127, stdoutAccum.snapshot(), stderrAccum.snapshot())
         }
 
         var timedOut = false
-        if terminationGroup.wait(timeout: .now() + shellLookupTimeout) == .timedOut {
+        var didTerminate = true
+        if terminationGroup.wait(timeout: .now() + shellLookupTimeout(environment: environment)) == .timedOut {
             timedOut = true
             if process.isRunning {
                 process.terminate()
             }
-            if terminationGroup.wait(timeout: .now() + shellLookupTerminationGraceInterval) == .timedOut {
+            if terminationGroup.wait(timeout: .now() + shellLookupTerminationGraceInterval(environment: environment)) == .timedOut {
                 kill(process.processIdentifier, SIGKILL)
-                terminationGroup.wait()
+                if terminationGroup.wait(timeout: .now() + shellLookupTerminationGraceInterval(environment: environment)) == .timedOut {
+                    didTerminate = false
+                }
             }
         }
 
-        // Wait for exit, then close to unblock readers and join them
-        process.waitUntilExit()
-        out.closeFile()
-        err.closeFile()
-        group.wait()
-        if timedOut {
-            return (124, stdoutAccum, stderrAccum)
+        // Wait for exit only after the bounded termination waits have observed exit.
+        // The reader join is intentionally bounded: FileHandle reads can remain wedged
+        // on some shells even after process termination, and path resolution must never
+        // be able to hang the caller indefinitely. Let readers drain naturally after a
+        // normal exit; close read handles only as the fallback unblocking step.
+        if didTerminate {
+            process.waitUntilExit()
+            if !waitForReaderDrain() {
+                closeReadHandles()
+                _ = waitForReaderDrain()
+            }
+        } else {
+            closeReadHandles()
+            _ = waitForReaderDrain()
         }
-        return (process.terminationStatus, stdoutAccum, stderrAccum)
+        if timedOut || !didTerminate {
+            return (124, stdoutAccum.snapshot(), stderrAccum.snapshot())
+        }
+        return (process.terminationStatus, stdoutAccum.snapshot(), stderrAccum.snapshot())
     }
 
     static func sanitizedExecutableOutput(_ rawLine: String, originalCommand: String, preferredBasenames: [String]? = nil) -> (path: String, isAliasTarget: Bool)? {
@@ -401,8 +439,38 @@ enum CommandPathResolver {
         return expanded.isEmpty ? nil : (expanded, isAliasTarget)
     }
 
-    private static let shellLookupTimeout: TimeInterval = 5
-    private static let shellLookupTerminationGraceInterval: TimeInterval = 2
+    private static let defaultShellLookupTimeout: TimeInterval = 5
+    private static let defaultShellLookupTerminationGraceInterval: TimeInterval = 2
+    private static let defaultShellLookupPipeDrainGraceInterval: TimeInterval = 1
+
+    private static func shellLookupTimeout(environment: [String: String]) -> TimeInterval {
+        shellLookupInterval(
+            environment["REPOPROMPT_SHELL_LOOKUP_TIMEOUT_SECONDS"],
+            defaultValue: defaultShellLookupTimeout
+        )
+    }
+
+    private static func shellLookupTerminationGraceInterval(environment: [String: String]) -> TimeInterval {
+        shellLookupInterval(
+            environment["REPOPROMPT_SHELL_LOOKUP_TERMINATION_GRACE_SECONDS"],
+            defaultValue: defaultShellLookupTerminationGraceInterval
+        )
+    }
+
+    private static func shellLookupPipeDrainGraceInterval(environment: [String: String]) -> TimeInterval {
+        shellLookupInterval(
+            environment["REPOPROMPT_SHELL_LOOKUP_PIPE_DRAIN_GRACE_SECONDS"],
+            defaultValue: defaultShellLookupPipeDrainGraceInterval
+        )
+    }
+
+    private static func shellLookupInterval(_ rawValue: String?, defaultValue: TimeInterval) -> TimeInterval {
+        guard let rawValue,
+              let parsed = TimeInterval(rawValue),
+              parsed >= 0
+        else { return defaultValue }
+        return parsed
+    }
 
     private static let wrapperCommands: Set<String> = [
         "command",

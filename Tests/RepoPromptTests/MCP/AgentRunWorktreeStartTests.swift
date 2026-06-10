@@ -1673,6 +1673,10 @@ final class AgentRunWorktreeStartTests: XCTestCase {
         GlobalSettingsStore.shared.setMCPAutoStart(false, commit: false)
         let window = WindowState()
         WindowStatesManager.shared.registerWindowState(window)
+        addTeardownBlock { @MainActor in
+            await window.tearDown()
+            WindowStatesManager.shared.unregisterWindowState(window)
+        }
         GlobalSettingsStore.shared.setMCPAutoStart(previousAutoStart, commit: false)
 
         let workspace = window.workspaceManager.createWorkspace(
