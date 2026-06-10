@@ -1400,6 +1400,8 @@ actor CodexAppServerClient {
                 return EBADF
             case let .descriptorCheckFailed(_, _, errnoValue):
                 return errnoValue
+            case .directoryDescriptor:
+                return EISDIR
             }
         }
         if let posixError = error as? POSIXError {

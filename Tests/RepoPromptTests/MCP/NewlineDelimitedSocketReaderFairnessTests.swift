@@ -6,6 +6,21 @@ import Logging
 import XCTest
 
 final class NewlineDelimitedSocketReaderFairnessTests: XCTestCase {
+    func testReadSourcePreflightRejectsDirectoryFileDescriptor() throws {
+        let directory = FileManager.default.temporaryDirectory.path
+        let fd = open(directory, O_RDONLY)
+        XCTAssertGreaterThanOrEqual(fd, 0)
+        defer { close(fd) }
+
+        XCTAssertThrowsError(try ReadSourceFDPreflight.validateOpenFD(fd, label: "directory fixture")) { error in
+            guard case let ReadSourceFDPreflightError.directoryDescriptor(label, observedFD) = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+            XCTAssertEqual(label, "directory fixture")
+            XCTAssertEqual(observedFD, fd)
+        }
+    }
+
     func testContinuouslyReadableInputYieldsThenResumesProgress() {
         let queue = DispatchQueue(label: "NewlineDelimitedSocketReaderFairnessTests.continuous")
         let script = ContinuousFrameReadOperation(frameCount: 6)

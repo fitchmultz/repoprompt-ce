@@ -148,6 +148,7 @@ final class PiIntegratedAgentModeRunner {
         lease: MCPBootstrapLease
     ) async {
         var didCommitTerminal = false
+        var didReleaseLease = false
         func commitTerminal(
             _ state: AgentSessionRunState,
             source: String,
@@ -156,6 +157,10 @@ final class PiIntegratedAgentModeRunner {
         ) async {
             guard !didCommitTerminal else { return }
             didCommitTerminal = true
+            if !didReleaseLease {
+                didReleaseLease = true
+                await lease.cancelAndCleanup()
+            }
             await terminalCommitBarrier.commit(.init(
                 session: session,
                 ownership: ownership,
@@ -192,6 +197,7 @@ final class PiIntegratedAgentModeRunner {
                 thinkingLevel: session.selectedReasoningEffortRaw
             )
             await lease.releaseWithoutRoutingWait()
+            didReleaseLease = true
             applySessionRef(ref, to: session)
             hooks.recordPendingHandoffSendOutcome(session, true)
             hooks.stageConsumedAttachmentFilesForDeferredCleanup(attachments, session)

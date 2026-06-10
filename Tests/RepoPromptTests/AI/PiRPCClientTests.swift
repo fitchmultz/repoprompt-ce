@@ -236,6 +236,47 @@ final class PiRPCClientTests: XCTestCase {
         XCTAssertEqual(events[1].runID, runID)
     }
 
+    func testExpectedAgentPIDRegistrationClearsWhenRPCProcessExits() async throws {
+        let scriptURL = try makeFakePiExitAfterStateScript()
+        let recorder = ExpectedPIDRecorder()
+        let runID = UUID()
+        let registrar = PiRPCClient.ExpectedAgentPIDRegistrar(
+            register: { pid, clientName, runID in
+                await recorder.record(.register, pid: pid, clientName: clientName, runID: runID)
+            },
+            clear: { pid, clientName, runID in
+                await recorder.record(.clear, pid: pid, clientName: clientName, runID: runID)
+            }
+        )
+        let client = PiRPCClient(
+            config: .init(
+                commandName: scriptURL.path,
+                additionalPathHints: [],
+                requestTimeout: 2,
+                launchArguments: [],
+                requiresSupportedVersionCheck: false
+            ),
+            expectedAgentPIDRegistrar: registrar
+        )
+        defer { Task { await client.shutdown() } }
+
+        await client.setExpectedAgentPIDRegistration(.init(clientName: "pi", runID: runID))
+        _ = try await client.getState()
+        let didClear = await eventually {
+            let events = await recorder.events()
+            return events.count == 2 && events[1].kind == .clear
+        }
+        let events = await recorder.events()
+
+        XCTAssertTrue(didClear)
+        XCTAssertEqual(events.count, 2)
+        XCTAssertEqual(events[0].kind, .register)
+        XCTAssertEqual(events[1].kind, .clear)
+        XCTAssertEqual(events[1].pid, events[0].pid)
+        XCTAssertEqual(events[1].clientName, "pi")
+        XCTAssertEqual(events[1].runID, runID)
+    }
+
     func testExtensionUIResponsePreservesOriginalRequestID() async throws {
         let directory = try makeTemporaryDirectory()
         let recordURL = directory.appendingPathComponent("ui-responses.jsonl")
@@ -342,6 +383,37 @@ final class PiRPCClientTests: XCTestCase {
         return scriptURL
     }
 
+    private func makeFakePiExitAfterStateScript() throws -> URL {
+        let directory = try makeTemporaryDirectory()
+        let scriptURL = directory.appendingPathComponent("fake_pi_exit_after_state.py")
+        let script = #"""
+        #!/usr/bin/env python3
+        import json
+        import sys
+
+        for line in sys.stdin:
+            try:
+                request = json.loads(line)
+            except Exception:
+                continue
+            print(json.dumps({
+                "type": "response",
+                "id": request.get("id"),
+                "command": request.get("type"),
+                "success": True,
+                "data": {
+                    "sessionId": "session-exit",
+                    "isStreaming": False,
+                    "isCompacting": False
+                }
+            }), flush=True)
+            raise SystemExit(0)
+        """#
+        try script.write(to: scriptURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
+        return scriptURL
+    }
+
     private func makeFakePiVersionedRPCScript(version: String, versionProbeRecordURL: URL? = nil) throws -> URL {
         let directory = try makeTemporaryDirectory()
         let scriptURL = directory.appendingPathComponent("fake_pi_versioned_rpc.py")
@@ -417,6 +489,18 @@ final class PiRPCClientTests: XCTestCase {
         try script.write(to: scriptURL, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
         return scriptURL
+    }
+
+    private func eventually(
+        timeout: TimeInterval = 1,
+        condition: @escaping () async -> Bool
+    ) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if await condition() { return true }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        return await condition()
     }
 
     private func waitForRecordedObjects(at url: URL, count: Int) async throws -> [[String: Any]] {

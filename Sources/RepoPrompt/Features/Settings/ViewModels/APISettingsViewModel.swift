@@ -301,7 +301,7 @@ public class APISettingsViewModel: ObservableObject {
     private var cursorLogCollector: CLIProcessLogCollector?
 
     // pi RPC
-    @Published var isPiConnected: Bool = false
+    @Published var isPiConnected: Bool = UserDefaults.standard.bool(forKey: "PiCLIConnected")
     @Published var piError: String? = nil
     @Published private(set) var availablePiModelOptions: [AgentModelOption] = []
     private var piLogCollector: CLIProcessLogCollector?
@@ -499,7 +499,8 @@ public class APISettingsViewModel: ObservableObject {
             NotificationCenter.default.publisher(for: .claudeCodeConnectionChanged).map { _ in AgentProviderKind.claudeCode },
             NotificationCenter.default.publisher(for: .codexConnectionChanged).map { _ in AgentProviderKind.codexExec },
             NotificationCenter.default.publisher(for: .openCodeConnectionChanged).map { _ in AgentProviderKind.openCode },
-            NotificationCenter.default.publisher(for: .cursorConnectionChanged).map { _ in AgentProviderKind.cursor }
+            NotificationCenter.default.publisher(for: .cursorConnectionChanged).map { _ in AgentProviderKind.cursor },
+            NotificationCenter.default.publisher(for: .piConnectionChanged).map { _ in AgentProviderKind.pi }
         ])
         .receive(on: DispatchQueue.main)
         .sink { [weak self] provider in
@@ -515,6 +516,7 @@ public class APISettingsViewModel: ObservableObject {
 
     private func reloadCLIConnectionFlagsFromDefaults() {
         let wasCursorConnected = isCursorConnected
+        let wasPiConnected = isPiConnected
         isClaudeCodeConnected = UserDefaults.standard.bool(forKey: "ClaudeCodeConnected")
         if isClaudeCodeConnected {
             claudeCodeCLIStatus = .binaryPresent
@@ -522,11 +524,20 @@ public class APISettingsViewModel: ObservableObject {
         isCodexConnected = UserDefaults.standard.bool(forKey: "CodexCLIConnected")
         isOpenCodeConnected = UserDefaults.standard.bool(forKey: "OpenCodeCLIConnected")
         isCursorConnected = UserDefaults.standard.bool(forKey: "CursorCLIConnected")
-        guard wasCursorConnected != isCursorConnected else { return }
-        if isCursorConnected {
-            startCursorModelsSubscriptionIfNeeded(workspacePath: nil)
-        } else {
-            stopCursorModelsSubscription(clearModels: true)
+        isPiConnected = UserDefaults.standard.bool(forKey: "PiCLIConnected")
+        if wasCursorConnected != isCursorConnected {
+            if isCursorConnected {
+                startCursorModelsSubscriptionIfNeeded(workspacePath: nil)
+            } else {
+                stopCursorModelsSubscription(clearModels: true)
+            }
+        }
+        if wasPiConnected != isPiConnected {
+            if isPiConnected {
+                startPiAvailabilityPreflightIfNeeded(workspacePath: nil)
+            } else {
+                stopPiModelsSubscription(clearModels: true)
+            }
         }
         Task { await updateAvailableModels() }
     }
@@ -1016,6 +1027,7 @@ public class APISettingsViewModel: ObservableObject {
         }
         isCodexConnected = UserDefaults.standard.bool(forKey: "CodexCLIConnected")
         isOpenCodeConnected = UserDefaults.standard.bool(forKey: "OpenCodeCLIConnected")
+        isPiConnected = UserDefaults.standard.bool(forKey: "PiCLIConnected")
 
         if let customConfig = try? CustomProviderConfiguration.load() {
             if let version = customConfig.apiVersion, !version.isEmpty {
@@ -1420,7 +1432,7 @@ public class APISettingsViewModel: ObservableObject {
         }
         if isOpenCodeConnected { startOpenCodeModelsSubscriptionIfNeeded(workspacePath: nil) } else { stopOpenCodeModelsSubscription(clearModels: true) }
         if isCursorConnected { startCursorModelsSubscriptionIfNeeded(workspacePath: nil) } else { stopCursorModelsSubscription(clearModels: true) }
-        startPiAvailabilityPreflightIfNeeded(workspacePath: nil)
+        if isPiConnected { startPiAvailabilityPreflightIfNeeded(workspacePath: nil) } else { stopPiModelsSubscription(clearModels: true) }
         if isOpenRouterKeyValid { openRouterModelsTask = Task { await self.fetchOpenRouterModels() } }
         if isCustomProviderValid { Task { await self.fetchCustomModels() } }
 
@@ -1961,6 +1973,11 @@ public class APISettingsViewModel: ObservableObject {
 
         func test_startPiAvailabilityPreflightIfNeeded(workspacePath: String? = nil) {
             startPiAvailabilityPreflightIfNeeded(workspacePath: workspacePath)
+        }
+
+
+        func test_reloadCLIConnectionFlagsFromDefaults() {
+            reloadCLIConnectionFlagsFromDefaults()
         }
 
         func test_completeContextBuilderProviderValidation(
@@ -3388,6 +3405,8 @@ public class APISettingsViewModel: ObservableObject {
             }
             collector.append("pi RPC marked as connected")
             piLogCollector = nil
+            UserDefaults.standard.set(true, forKey: "PiCLIConnected")
+            NotificationCenter.default.post(name: .piConnectionChanged, object: nil)
             startPiModelsSubscriptionIfNeeded(workspacePath: nil)
             return true
         } catch {
@@ -3404,6 +3423,8 @@ public class APISettingsViewModel: ObservableObject {
         stopPiModelsSubscription(clearModels: true)
         piPreflightTask?.cancel()
         piPreflightTask = nil
+        UserDefaults.standard.set(false, forKey: "PiCLIConnected")
+        NotificationCenter.default.post(name: .piConnectionChanged, object: nil)
         applyPiDisconnected(errorMessage: nil)
     }
 

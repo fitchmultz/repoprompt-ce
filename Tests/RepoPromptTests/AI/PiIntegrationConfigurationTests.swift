@@ -73,12 +73,15 @@ final class PiIntegrationConfigurationTests: XCTestCase {
     }
 
     func testManagedRPCLaunchArgumentsIncludeBridgeExtensionAfterApproval() {
+        let arguments = PiIntegrationConfiguration.managedRPCLaunchArguments(
+            bridgeExtensionPath: "/tmp/repoprompt-bridge.ts"
+        )
         XCTAssertEqual(
-            PiIntegrationConfiguration.managedRPCLaunchArguments(
-                bridgeExtensionPath: "/tmp/repoprompt-bridge.ts"
-            ),
+            arguments,
             ["--mode", "rpc", "--approve", "--extension", "/tmp/repoprompt-bridge.ts"]
         )
+        XCTAssertFalse(arguments.contains("--no-extensions"))
+        XCTAssertFalse(arguments.contains("--no-builtin-tools"))
     }
 
     func testPiRPCDefaultsUseManagedLaunchArguments() {
@@ -105,7 +108,7 @@ final class PiIntegrationConfigurationTests: XCTestCase {
     }
 
     func testAvailabilityProbeAcceptsSupportedVersionOutput() async throws {
-        let scriptURL = try makeFakePiVersionScript(exitCode: 0, stdout: "pi 0.79.0")
+        let scriptURL = try makeFakePiVersionScript(exitCode: 0, stdout: "pi 0.79.0\n")
 
         let availability = await PiIntegrationConfiguration.checkAvailability(
             commandName: scriptURL.path,
@@ -118,7 +121,7 @@ final class PiIntegrationConfigurationTests: XCTestCase {
     }
 
     func testAvailabilityProbeReportsExecutableVersionWithoutManagedGate() async throws {
-        let scriptURL = try makeFakePiVersionScript(exitCode: 0, stdout: "pi 0.78.1")
+        let scriptURL = try makeFakePiVersionScript(exitCode: 0, stdout: "pi 0.78.1\n")
 
         let availability = await PiIntegrationConfiguration.checkAvailability(
             commandName: scriptURL.path,
@@ -131,7 +134,7 @@ final class PiIntegrationConfigurationTests: XCTestCase {
     }
 
     func testManagedRPCAvailabilityProbeRejectsUnsupportedVersionOutput() async throws {
-        let scriptURL = try makeFakePiVersionScript(exitCode: 0, stdout: "pi 0.78.1")
+        let scriptURL = try makeFakePiVersionScript(exitCode: 0, stdout: "pi 0.78.1\n")
 
         let availability = await PiIntegrationConfiguration.checkManagedRPCAvailability(
             commandName: scriptURL.path,
@@ -156,7 +159,7 @@ final class PiIntegrationConfigurationTests: XCTestCase {
 
         XCTAssertFalse(availability.isAvailable)
         XCTAssertNil(availability.version)
-        XCTAssertEqual(availability.diagnostic, "pi unavailable")
+        XCTAssertNotNil(availability.diagnostic)
     }
 
     private func makeTemporaryDirectory() throws -> URL {

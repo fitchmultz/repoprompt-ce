@@ -658,6 +658,7 @@ actor PiRPCClient {
         let reason = stderr?.isEmpty == false ? "pi RPC stdout closed. stderr: \(stderr!)" : "pi RPC stdout closed."
         process = nil
         didPassSupportedVersionCheck = false
+        await clearRegisteredExpectedAgentPIDIfNeeded()
         failAllPendingRequests(ClientError.transportClosed(reason))
         emit(.transportClosed(reason: reason))
     }

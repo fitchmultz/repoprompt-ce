@@ -3,8 +3,14 @@ import XCTest
 
 @MainActor
 final class PiAPISettingsViewModelTests: XCTestCase {
+    override func setUp() {
+        super.setUp()
+        UserDefaults.standard.removeObject(forKey: "PiCLIConnected")
+    }
+
     override func tearDown() {
         AgentPiModelRegistry.shared.test_reset()
+        UserDefaults.standard.removeObject(forKey: "PiCLIConnected")
         super.tearDown()
     }
 
@@ -30,6 +36,87 @@ final class PiAPISettingsViewModelTests: XCTestCase {
             viewModel.availableModels.filter { $0.providerType == .pi }.map(\.rawValue) == ["pi_custom_default", "pi_custom_zai/glm-5.1"]
         }
         XCTAssertTrue(didPublishOracleModels)
+        let discoveryCount = await polling.discoveryCount()
+        XCTAssertEqual(discoveryCount, 1)
+        XCTAssertTrue(UserDefaults.standard.bool(forKey: "PiCLIConnected"))
+    }
+
+    func testLoadAllKeysDoesNotAutoProbePiBeforeUserConnects() async {
+        let polling = FakePiModelPolling(snapshot: Self.piSnapshot())
+        let viewModel = makeViewModel(polling: polling)
+
+        await viewModel.loadAllKeys()
+        let stayedIdle = await remainsTrue {
+            let discoveryCount = await polling.discoveryCount()
+            let subscriptionCount = await polling.subscriptionCount()
+            return discoveryCount == 0 && subscriptionCount == 0
+        }
+
+        XCTAssertTrue(stayedIdle)
+        XCTAssertFalse(viewModel.isPiConnected)
+        XCTAssertFalse(viewModel.agentModeAvailabilityContext.piAvailable)
+        XCTAssertEqual(viewModel.availablePiModelOptions, [])
+        let discoveryCount = await polling.discoveryCount()
+        let subscriptionCount = await polling.subscriptionCount()
+        XCTAssertEqual(discoveryCount, 0)
+        XCTAssertEqual(subscriptionCount, 0)
+    }
+
+    func testLoadAllKeysRefreshesPiOnlyAfterUserConnected() async {
+        UserDefaults.standard.set(true, forKey: "PiCLIConnected")
+        let polling = FakePiModelPolling(snapshot: Self.piSnapshot())
+        let viewModel = makeViewModel(polling: polling)
+
+        await viewModel.loadAllKeys()
+        let didConnect = await eventually { !viewModel.availablePiModelOptions.isEmpty }
+
+        XCTAssertTrue(didConnect)
+        XCTAssertTrue(viewModel.agentModeAvailabilityContext.piAvailable)
+        XCTAssertEqual(viewModel.availablePiModelOptions.map(\.rawValue), ["default", "zai/glm-5.1"])
+        let discoveryCount = await polling.discoveryCount()
+        XCTAssertEqual(discoveryCount, 1)
+    }
+
+    func testPiConnectionFlagReloadsExternalDefaultChanges() async {
+        let polling = FakePiModelPolling(snapshot: Self.piSnapshot())
+        let viewModel = makeViewModel(polling: polling)
+
+        UserDefaults.standard.set(true, forKey: "PiCLIConnected")
+        viewModel.test_reloadCLIConnectionFlagsFromDefaults()
+        let didConnect = await eventually { !viewModel.availablePiModelOptions.isEmpty }
+
+        XCTAssertTrue(didConnect)
+        XCTAssertTrue(viewModel.isPiConnected)
+        let discoveryCount = await polling.discoveryCount()
+        XCTAssertEqual(discoveryCount, 1)
+
+        UserDefaults.standard.set(false, forKey: "PiCLIConnected")
+        viewModel.test_reloadCLIConnectionFlagsFromDefaults()
+        let didDisconnect = await eventually { !viewModel.isPiConnected }
+
+        XCTAssertTrue(didDisconnect)
+        XCTAssertEqual(viewModel.availablePiModelOptions, [])
+    }
+
+    func testDisconnectPiPersistsOptOutAcrossSettingsReload() async throws {
+        let polling = FakePiModelPolling(snapshot: Self.piSnapshot())
+        let viewModel = makeViewModel(polling: polling)
+        _ = try await viewModel.testPiConnection()
+        XCTAssertTrue(UserDefaults.standard.bool(forKey: "PiCLIConnected"))
+
+        viewModel.disconnectPi()
+        let reloadedViewModel = makeViewModel(polling: polling)
+        await reloadedViewModel.loadAllKeys()
+        let stayedIdle = await remainsTrue {
+            let discoveryCount = await polling.discoveryCount()
+            let subscriptionCount = await polling.subscriptionCount()
+            return discoveryCount == 1 && subscriptionCount == 1
+        }
+
+        XCTAssertTrue(stayedIdle)
+        XCTAssertFalse(reloadedViewModel.isPiConnected)
+        XCTAssertFalse(UserDefaults.standard.bool(forKey: "PiCLIConnected"))
+        XCTAssertEqual(reloadedViewModel.availablePiModelOptions, [])
         let discoveryCount = await polling.discoveryCount()
         XCTAssertEqual(discoveryCount, 1)
     }
@@ -158,6 +245,18 @@ final class PiAPISettingsViewModelTests: XCTestCase {
             if await condition() {
                 return true
             }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        return await condition()
+    }
+
+    private func remainsTrue(
+        duration: TimeInterval = 0.15,
+        condition: @escaping () async -> Bool
+    ) async -> Bool {
+        let deadline = Date().addingTimeInterval(duration)
+        while Date() < deadline {
+            guard await condition() else { return false }
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
         return await condition()
