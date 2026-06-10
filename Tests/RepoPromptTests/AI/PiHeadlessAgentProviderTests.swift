@@ -44,7 +44,7 @@ final class PiHeadlessAgentProviderTests: XCTestCase {
                 return PiNativeSessionController(client: client, options: .init(modelRaw: modelString, requestTimeout: 2, launchArguments: []))
             }
         )
-        defer { Task { await provider.dispose() } }
+        addTeardownBlock { await provider.dispose() }
 
         let stream = try await provider.streamAgentMessage(
             AgentMessage(systemPrompt: "Use RepoPrompt context.", userMessage: "Build a context brief."),

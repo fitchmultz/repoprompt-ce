@@ -514,9 +514,10 @@ final class PersistentMCPDistinctConnectionConcurrencyTests: XCTestCase {
                 })
             }
             let sameMedian = Self.median(sameConnectionMillis)
-            let distinctBest = distinctConnectionMillis.min() ?? .infinity
+            let distinctMedian = Self.median(distinctConnectionMillis)
             XCTAssertGreaterThanOrEqual(sameMedian, 700, "same-connection sleeps must serialize: \(sameConnectionMillis)")
-            XCTAssertLessThanOrEqual(distinctBest, sameMedian * 0.85, "at least one distinct-connection trial must overlap materially: same=\(sameConnectionMillis), distinct=\(distinctConnectionMillis)")
+            XCTAssertLessThanOrEqual(distinctMedian, 650, "distinct-connection sleeps must overlap: \(distinctConnectionMillis)")
+            XCTAssertLessThanOrEqual(distinctMedian, sameMedian * 0.85, "distinct connections must overlap materially")
 
             async let readA = endpointA.callTool(name: MCPWindowToolName.readFile, arguments: ["path": fixture.contextA.fileURL.path])
             async let readB = endpointB.callTool(name: MCPWindowToolName.readFile, arguments: ["path": fixture.contextB.fileURL.path])

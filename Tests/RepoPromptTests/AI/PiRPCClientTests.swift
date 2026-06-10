@@ -45,7 +45,7 @@ final class PiRPCClientTests: XCTestCase {
             launchArguments: [],
             requiresSupportedVersionCheck: false
         ))
-        defer { Task { await client.shutdown() } }
+        addTeardownBlock { await client.shutdown() }
 
         let state = try await client.getState()
         XCTAssertEqual(state.sessionID, "session-123")
@@ -70,7 +70,7 @@ final class PiRPCClientTests: XCTestCase {
             launchArguments: [],
             requiresSupportedVersionCheck: false
         ))
-        defer { Task { await client.shutdown() } }
+        addTeardownBlock { await client.shutdown() }
 
         let events = await client.events
         let collector = Task { () -> [PiRPCClient.Event] in
@@ -128,7 +128,7 @@ final class PiRPCClientTests: XCTestCase {
             launchArguments: [],
             requiresSupportedVersionCheck: false
         ))
-        defer { Task { await client.shutdown() } }
+        addTeardownBlock { await client.shutdown() }
 
         do {
             _ = try await client.setThinkingLevel("explode")
@@ -146,7 +146,7 @@ final class PiRPCClientTests: XCTestCase {
             requestTimeout: 2,
             launchArguments: PiIntegrationConfiguration.managedRPCLaunchArguments()
         ))
-        defer { Task { await client.shutdown() } }
+        addTeardownBlock { await client.shutdown() }
 
         do {
             _ = try await client.getState()
@@ -169,7 +169,7 @@ final class PiRPCClientTests: XCTestCase {
             requestTimeout: 2,
             launchArguments: PiIntegrationConfiguration.managedRPCLaunchArguments()
         ))
-        defer { Task { await client.shutdown() } }
+        addTeardownBlock { await client.shutdown() }
 
         let state = try await client.getState()
 
@@ -185,7 +185,7 @@ final class PiRPCClientTests: XCTestCase {
             requestTimeout: 2,
             launchArguments: PiIntegrationConfiguration.managedRPCLaunchArguments()
         ))
-        defer { Task { await client.shutdown() } }
+        addTeardownBlock { await client.shutdown() }
 
         _ = try await client.getState()
         await client.shutdown()
@@ -258,7 +258,7 @@ final class PiRPCClientTests: XCTestCase {
             ),
             expectedAgentPIDRegistrar: registrar
         )
-        defer { Task { await client.shutdown() } }
+        addTeardownBlock { await client.shutdown() }
 
         await client.setExpectedAgentPIDRegistration(.init(clientName: "pi", runID: runID))
         _ = try await client.getState()
@@ -288,7 +288,7 @@ final class PiRPCClientTests: XCTestCase {
             launchArguments: [],
             requiresSupportedVersionCheck: false
         ))
-        defer { Task { await client.shutdown() } }
+        addTeardownBlock { await client.shutdown() }
 
         try await client.respondToExtensionUIRequest(.value(id: "ui-request-1", "accepted"))
         let recorded = try await waitForRecordedObjects(at: recordURL, count: 1)

@@ -37,18 +37,18 @@ enum PiRPCImageContentBuilder {
             let path = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !path.isEmpty else { return nil }
             let url = URL(fileURLWithPath: path).standardizedFileURL
-            return try image(fromLocalURL: url, fallbackTitle: attachment.title)
+            return try image(fromLocalURL: url, attachmentTitle: attachment.title)
         case let .url(rawURL):
             let urlString = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !urlString.isEmpty else { return nil }
             guard let url = URL(string: urlString), url.isFileURL else {
                 throw Error.unsupportedRemoteImageURL(urlString)
             }
-            return try image(fromLocalURL: url.standardizedFileURL, fallbackTitle: attachment.title)
+            return try image(fromLocalURL: url.standardizedFileURL, attachmentTitle: attachment.title)
         }
     }
 
-    private static func image(fromLocalURL url: URL, fallbackTitle: String?) throws -> PiRPCClient.ImageContent {
+    private static func image(fromLocalURL url: URL, attachmentTitle: String?) throws -> PiRPCClient.ImageContent {
         let data: Data
         do {
             data = try Data(contentsOf: url)
@@ -60,12 +60,12 @@ enum PiRPCImageContentBuilder {
         }
         return PiRPCClient.ImageContent(
             data: data.base64EncodedString(),
-            mimeType: mimeType(forPathExtension: url.pathExtension, fallbackTitle: fallbackTitle)
+            mimeType: mimeType(forPathExtension: url.pathExtension, attachmentTitle: attachmentTitle)
         )
     }
 
-    private static func mimeType(forPathExtension pathExtension: String?, fallbackTitle: String?) -> String {
-        let candidates = [pathExtension, fallbackTitle.flatMap { URL(fileURLWithPath: $0).pathExtension }]
+    private static func mimeType(forPathExtension pathExtension: String?, attachmentTitle: String?) -> String {
+        let candidates = [pathExtension, attachmentTitle.flatMap { URL(fileURLWithPath: $0).pathExtension }]
         for candidate in candidates {
             let ext = candidate?.trimmingCharacters(in: CharacterSet(charactersIn: ".").union(.whitespacesAndNewlines)) ?? ""
             guard !ext.isEmpty else { continue }

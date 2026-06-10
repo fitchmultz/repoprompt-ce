@@ -27,7 +27,7 @@ final class PiNativeSessionControllerTests: XCTestCase {
             client: client,
             options: .init(modelRaw: "zai/glm-5.1:high", requestTimeout: 2)
         )
-        defer { Task { await controller.shutdown() } }
+        addTeardownBlock { await controller.shutdown() }
 
         let ref = try await controller.startOrResume(existing: nil)
 
@@ -54,7 +54,7 @@ final class PiNativeSessionControllerTests: XCTestCase {
             requiresSupportedVersionCheck: false
         ))
         let controller = PiNativeSessionController(client: client, options: .init(requestTimeout: 2))
-        defer { Task { await controller.shutdown() } }
+        addTeardownBlock { await controller.shutdown() }
 
         do {
             _ = try await controller.startOrResume(existing: .init(
@@ -86,7 +86,7 @@ final class PiNativeSessionControllerTests: XCTestCase {
             requiresSupportedVersionCheck: false
         ))
         let controller = PiNativeSessionController(client: client, options: .init(requestTimeout: 2))
-        defer { Task { await controller.shutdown() } }
+        addTeardownBlock { await controller.shutdown() }
         _ = try await controller.startOrResume(existing: nil)
 
         let stream = await controller.events
@@ -134,7 +134,7 @@ final class PiNativeSessionControllerTests: XCTestCase {
             requiresSupportedVersionCheck: false
         ))
         let controller = PiNativeSessionController(client: client, options: .init(requestTimeout: 2))
-        defer { Task { await controller.shutdown() } }
+        addTeardownBlock { await controller.shutdown() }
         _ = try await controller.startOrResume(existing: nil)
 
         let images = try PiRPCImageContentBuilder.images(from: [
@@ -200,7 +200,7 @@ final class PiNativeSessionControllerTests: XCTestCase {
             requiresSupportedVersionCheck: false
         ))
         let controller = PiNativeSessionController(client: client, options: .init(requestTimeout: 2))
-        defer { Task { await controller.shutdown() } }
+        addTeardownBlock { await controller.shutdown() }
         _ = try await controller.startOrResume(existing: nil)
 
         _ = try await controller.sendUserMessage("text prompt")
@@ -225,7 +225,7 @@ final class PiNativeSessionControllerTests: XCTestCase {
             requiresSupportedVersionCheck: false
         ))
         let controller = PiNativeSessionController(client: client, options: .init(requestTimeout: 2))
-        defer { Task { await controller.shutdown() } }
+        addTeardownBlock { await controller.shutdown() }
         _ = try await controller.startOrResume(existing: nil)
 
         let stream = await controller.events
@@ -264,7 +264,7 @@ final class PiNativeSessionControllerTests: XCTestCase {
             requiresSupportedVersionCheck: false
         ))
         let controller = PiNativeSessionController(client: client, options: .init(requestTimeout: 2))
-        defer { Task { await controller.shutdown() } }
+        addTeardownBlock { await controller.shutdown() }
         _ = try await controller.startOrResume(existing: nil)
 
         let stream = await controller.events
@@ -314,7 +314,7 @@ final class PiNativeSessionControllerTests: XCTestCase {
             requiresSupportedVersionCheck: false
         ))
         let controller = PiNativeSessionController(client: client, options: .init(requestTimeout: 2))
-        defer { Task { await controller.shutdown() } }
+        addTeardownBlock { await controller.shutdown() }
         _ = try await controller.startOrResume(existing: nil)
 
         let stream = await controller.events
@@ -356,7 +356,7 @@ final class PiNativeSessionControllerTests: XCTestCase {
             requiresSupportedVersionCheck: false
         ))
         let controller = PiNativeSessionController(client: client, options: .init(requestTimeout: 2))
-        defer { Task { await controller.shutdown() } }
+        addTeardownBlock { await controller.shutdown() }
         _ = try await controller.startOrResume(existing: nil)
 
         let stream = await controller.events

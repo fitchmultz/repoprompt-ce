@@ -24,7 +24,6 @@ import Logging
 public enum ReadSourceFDPreflightError: Error, Equatable, CustomStringConvertible, LocalizedError {
     case invalidFileDescriptor(label: String, fd: Int32)
     case descriptorCheckFailed(label: String, fd: Int32, errno: Int32)
-    case directoryDescriptor(label: String, fd: Int32)
 
     public var description: String {
         switch self {
@@ -32,8 +31,6 @@ public enum ReadSourceFDPreflightError: Error, Equatable, CustomStringConvertibl
             "Invalid file descriptor for \(label): \(fd)"
         case let .descriptorCheckFailed(label, fd, errno):
             "File descriptor check failed for \(label) fd=\(fd) errno=\(errno)"
-        case let .directoryDescriptor(label, fd):
-            "File descriptor for \(label) is a directory fd=\(fd)"
         }
     }
 
@@ -50,18 +47,6 @@ public enum ReadSourceFDPreflight {
 
         guard fcntl(fd, F_GETFL) >= 0 else {
             throw ReadSourceFDPreflightError.descriptorCheckFailed(label: label, fd: fd, errno: errno)
-        }
-        var status = stat()
-        guard fstat(fd, &status) == 0 else {
-            throw ReadSourceFDPreflightError.descriptorCheckFailed(label: label, fd: fd, errno: errno)
-        }
-        #if canImport(Darwin)
-            let fileType = status.st_mode & S_IFMT
-        #else
-            let fileType = status.st_mode & UInt32(S_IFMT)
-        #endif
-        if fileType == S_IFDIR {
-            throw ReadSourceFDPreflightError.directoryDescriptor(label: label, fd: fd)
         }
     }
 

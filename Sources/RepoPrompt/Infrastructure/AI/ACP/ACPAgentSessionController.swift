@@ -268,12 +268,8 @@ actor ACPAgentSessionController {
     private var loadSessionSupported = false
     private var discoveredSessionModels: ACPDiscoveredSessionModels?
     private var sessionModelConfigOptionID: String?
-    private var sessionModelUsesLegacyConfigOption = false
     private var sessionModelFailureReason: String?
     private var sessionModeSnapshot: SessionModeSnapshot?
-    private var legacyCurrentSessionModeID: String?
-    private var legacyAdvertisedSessionModeIDs = Set<String>()
-    private var legacySessionModeSelectionSupported = false
     private var sessionModeFailureReason: String?
     private var lastAppliedConfigurationSequence: UInt64 = 0
     private var bufferedConfigOptionUpdates: [BufferedConfigOptionUpdate] = []
@@ -664,7 +660,7 @@ actor ACPAgentSessionController {
                 return
             }
             guard let sessionModelConfigOptionID else {
-                throw ControllerError.requestFailed("ACP runtime does not advertise model switching support.")
+                throw ControllerError.requestFailed("ACP runtime does not advertise model switching through configOptions.")
             }
             guard let mappedConfigValue = sessionModelConfigValue(forSelectedModel: model) else {
                 throw ControllerError.requestFailed("ACP runtime does not advertise a safe config value for selected model '\(model)'.")
@@ -684,15 +680,11 @@ actor ACPAgentSessionController {
                     "value": configValue
                 ]
             )
-            if sessionModelUsesLegacyConfigOption {
-                try applyLegacyModelMutationResponse(response.result, selectedValue: configValue)
-            } else {
-                try await applyVerifiedConfigOptionsMutationResponse(
-                    response,
-                    requiredModeValue: nil,
-                    requiredModelValue: configValue
-                )
-            }
+            try await applyVerifiedConfigOptionsMutationResponse(
+                response,
+                requiredModeValue: nil,
+                requiredModelValue: configValue
+            )
         }
     }
 
@@ -717,25 +709,9 @@ actor ACPAgentSessionController {
                 throw ControllerError.protocolViolation("malformed modern session mode config option: \(sessionModeFailureReason)")
             }
             if trimmedModeID.caseInsensitiveCompare("default") == .orderedSame {
-                legacyCurrentSessionModeID = trimmedModeID
                 return
             }
-            guard legacySessionModeSelectionSupported else {
-                throw ControllerError.requestFailed("ACP runtime does not advertise session mode switching support.")
-            }
-            let canonicalModeID = try canonicalLegacySessionModeValue(trimmedModeID)
-            if legacyCurrentSessionModeID?.caseInsensitiveCompare(canonicalModeID) == .orderedSame {
-                return
-            }
-            _ = try await sendRequestResponse(
-                method: "session/set_mode",
-                params: [
-                    "sessionId": sessionID,
-                    "modeId": canonicalModeID
-                ]
-            )
-            legacyCurrentSessionModeID = canonicalModeID
-            return
+            throw ControllerError.requestFailed("ACP runtime does not advertise a modern session mode configOptions selector.")
         }
         let canonicalModeID = try canonicalSessionModeValue(trimmedModeID, in: snapshot)
         if snapshot.currentValue == canonicalModeID {
@@ -1923,12 +1899,8 @@ actor ACPAgentSessionController {
     private func beginOpeningSessionConfiguration() {
         discoveredSessionModels = nil
         sessionModelConfigOptionID = nil
-        sessionModelUsesLegacyConfigOption = false
         sessionModelFailureReason = nil
         sessionModeSnapshot = nil
-        legacyCurrentSessionModeID = nil
-        legacyAdvertisedSessionModeIDs.removeAll()
-        legacySessionModeSelectionSupported = false
         sessionModeFailureReason = nil
         lastAppliedConfigurationSequence = 0
         bufferedConfigOptionUpdates.removeAll()
@@ -1960,7 +1932,9 @@ actor ACPAgentSessionController {
         case .absent:
             sessionModeSnapshot = nil
             sessionModeFailureReason = nil
-            applyLegacySessionModes(from: response["modes"] as? [String: Any])
+            if response["modes"] != nil {
+                diagnose(.info("Ignoring legacy ACP modes metadata because mode selection requires a modern configOptions selector."))
+            }
         case let .malformed(reason):
             sessionModeSnapshot = nil
             sessionModeFailureReason = reason
@@ -1968,51 +1942,6 @@ actor ACPAgentSessionController {
         }
         applyDiscoveredSessionModels(from: response)
         lastAppliedConfigurationSequence = inboundSequence
-    }
-
-    private func applyLegacySessionModes(from modes: [String: Any]?) {
-        guard let modes else {
-            legacyCurrentSessionModeID = nil
-            legacyAdvertisedSessionModeIDs.removeAll()
-            legacySessionModeSelectionSupported = false
-            return
-        }
-        legacyCurrentSessionModeID = modes["currentModeId"] as? String
-        legacyAdvertisedSessionModeIDs = parseAdvertisedLegacySessionModeIDs(from: modes)
-        legacySessionModeSelectionSupported = true
-    }
-
-    private func parseAdvertisedLegacySessionModeIDs(from modes: [String: Any]) -> Set<String> {
-        let rawModes = modes["availableModes"] ?? modes["available"] ?? modes["modeOptions"]
-        if let strings = rawModes as? [String] {
-            return Set(strings.compactMap(normalizedConfigValue))
-        }
-        if let objects = rawModes as? [[String: Any]] {
-            return Set(objects.compactMap { object in
-                normalizedConfigValue(
-                    (object["id"] as? String) ?? (object["modeId"] as? String) ?? (object["value"] as? String)
-                )
-            })
-        }
-        return []
-    }
-
-    private func canonicalLegacySessionModeValue(_ modeID: String) throws -> String {
-        if let exact = legacyAdvertisedSessionModeIDs.first(where: { $0 == modeID }) {
-            return exact
-        }
-        let matches = legacyAdvertisedSessionModeIDs.filter { $0.caseInsensitiveCompare(modeID) == .orderedSame }
-        if matches.count == 1, let canonical = matches.first {
-            return canonical
-        }
-        if matches.count > 1 {
-            throw ControllerError.requestFailed("ACP runtime advertises case-colliding session modes for '\(modeID)'. Use an exact value. Available modes: \(legacyAdvertisedSessionModeDescription()).")
-        }
-        throw ControllerError.requestFailed("ACP runtime does not advertise session mode '\(modeID)'. Available modes: \(legacyAdvertisedSessionModeDescription()).")
-    }
-
-    private func legacyAdvertisedSessionModeDescription() -> String {
-        legacyAdvertisedSessionModeIDs.isEmpty ? "none" : legacyAdvertisedSessionModeIDs.sorted().joined(separator: ", ")
     }
 
     private func parseModernModeSnapshot(from response: [String: Any]) -> ParsedModernModeSnapshot {
@@ -2332,20 +2261,20 @@ actor ACPAgentSessionController {
         switch parseModernModelSnapshot(from: response) {
         case let .valid(configID, models):
             sessionModelConfigOptionID = configID
-            sessionModelUsesLegacyConfigOption = false
             sessionModelFailureReason = nil
             parsed = models
             if response["models"] != nil {
                 diagnose(.info("ACP session advertised both configOptions and legacy models; using authoritative configOptions model selector."))
             }
         case .absent:
+            sessionModelConfigOptionID = nil
             sessionModelFailureReason = nil
-            parsed = parseLegacyModelsSnapshot(from: response["models"] as? [String: Any])
-            sessionModelConfigOptionID = parsed == nil ? nil : "model"
-            sessionModelUsesLegacyConfigOption = parsed != nil
+            parsed = nil
+            if response["models"] != nil {
+                diagnose(.info("Ignoring legacy ACP models metadata because model discovery and selection require configOptions."))
+            }
         case let .malformed(reason):
             sessionModelConfigOptionID = nil
-            sessionModelUsesLegacyConfigOption = false
             sessionModelFailureReason = reason
             parsed = nil
             diagnose(.info("ACP session advertised a malformed modern model config option; legacy fallback is disabled: \(reason)"))
@@ -2354,58 +2283,6 @@ actor ACPAgentSessionController {
         discoveredSessionModels = parsed
         guard let parsed else { return }
         _ = AgentACPModelRegistry.shared.updateDiscoveredModels(parsed, for: provider.providerID)
-    }
-
-    private func applyLegacyModelMutationResponse(_ response: [String: Any], selectedValue: String) throws {
-        switch parseModernModelSnapshot(from: response) {
-        case let .valid(_, models):
-            try validateModelMutationResponseCurrentValue(models.currentModelRaw, selectedValue: selectedValue)
-            applyDiscoveredSessionModels(from: response)
-        case let .malformed(reason):
-            throw ControllerError.protocolViolation("malformed modern model config option: \(reason)")
-        case .absent:
-            if response["models"] != nil {
-                if let models = parseLegacyModelsSnapshot(from: response["models"] as? [String: Any]) {
-                    try validateModelMutationResponseCurrentValue(models.currentModelRaw, selectedValue: selectedValue)
-                }
-                applyDiscoveredSessionModels(from: response)
-            } else if let current = discoveredSessionModels {
-                let updated = ACPDiscoveredSessionModels(
-                    options: current.options,
-                    currentModelRaw: selectedValue
-                )
-                discoveredSessionModels = updated
-                _ = AgentACPModelRegistry.shared.updateDiscoveredModels(updated, for: provider.providerID)
-            }
-        }
-    }
-
-    private func validateModelMutationResponseCurrentValue(_ currentValue: String?, selectedValue: String) throws {
-        guard let currentValue, currentValue != selectedValue else { return }
-        throw ControllerError.protocolViolation("session/set_config_option response model mismatch: expected \(selectedValue), got \(currentValue)")
-    }
-
-    private func parseLegacyModelsSnapshot(from models: [String: Any]?) -> ACPDiscoveredSessionModels? {
-        guard let models else { return nil }
-        let currentModelRaw = normalizedACPModelString(models["currentModelId"] as? String)
-        let availableModels = models["availableModels"] as? [[String: Any]] ?? []
-        let options = mergeModelOptions(availableModels.compactMap { rawModel in
-            guard let rawValue = normalizedACPModelString(
-                (rawModel["modelId"] as? String) ?? (rawModel["id"] as? String) ?? (rawModel["value"] as? String)
-            ) else { return nil }
-            return AgentModelOption(
-                rawValue: rawValue,
-                displayName: normalizedACPModelString((rawModel["name"] as? String) ?? (rawModel["displayName"] as? String)) ?? rawValue,
-                description: normalizedACPModelString(rawModel["description"] as? String),
-                isPlaceholderDefault: false,
-                isProviderDefault: rawModel["isDefault"] as? Bool ?? false
-            )
-        })
-        guard !options.isEmpty else { return nil }
-        return ACPDiscoveredSessionModels(
-            options: options,
-            currentModelRaw: currentModelRaw
-        )
     }
 
     private func parseModernModelSnapshot(from response: [String: Any]) -> ParsedModernModelSnapshot {

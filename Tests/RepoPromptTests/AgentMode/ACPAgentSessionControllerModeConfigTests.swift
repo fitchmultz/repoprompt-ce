@@ -92,23 +92,23 @@ final class ACPAgentSessionControllerModeConfigTests: XCTestCase {
         XCTAssertEqual(mutation.params["value"] as? String, "plan")
     }
 
-    func testLegacyOnlyModeAdvertisementUsesLegacySetModeEndpoint() async throws {
-        let fixture = try makeFixture(shape: "legacy")
-        try await withBootstrappedController(fixture.controller) { controller in
-            try await controller.setSessionMode("PLAN")
+    func testLegacyOnlyModeAdvertisementIsIgnored() async throws {
+        let diagnostics = LockedStrings()
+        let fixture = try makeFixture(shape: "legacy", diagnostics: diagnostics)
+        _ = try await fixture.controller.bootstrap()
+        await assertThrows(containing: "does not advertise a modern session mode configOptions selector") {
+            try await fixture.controller.setSessionMode("plan")
         }
+        await fixture.controller.shutdown()
 
-        let legacy = recordedRequests(at: fixture.recordURL, method: "session/set_mode")
-        let mutation = try XCTUnwrap(legacy.first)
-        XCTAssertEqual(legacy.count, 1)
-        XCTAssertEqual(mutation.params["modeId"] as? String, "plan")
-        XCTAssertTrue(recordedRequests(at: fixture.recordURL, method: "session/set_config_option").isEmpty)
+        XCTAssertTrue(recordedMutationRequests(at: fixture.recordURL).isEmpty)
+        XCTAssertTrue(diagnostics.values.contains { $0.contains("Ignoring legacy ACP modes metadata") })
     }
 
     func testMissingModeAdvertisementPreservesUnsupportedError() async throws {
         let fixture = try makeFixture(shape: "none")
         _ = try await fixture.controller.bootstrap()
-        await assertThrows(containing: "does not advertise session mode switching support") {
+        await assertThrows(containing: "does not advertise a modern session mode configOptions selector") {
             try await fixture.controller.setSessionMode("plan")
         }
         await fixture.controller.shutdown()
@@ -461,43 +461,27 @@ final class ACPAgentSessionControllerModeConfigTests: XCTestCase {
         XCTAssertTrue(recordedMutationRequests(at: fixture.recordURL).isEmpty)
     }
 
-    func testLegacyOnlyModelAdvertisementUsesLegacyModelConfigOption() async throws {
+    func testLegacyOnlyModelAdvertisementIsIgnored() async throws {
         AgentACPModelRegistry.shared.test_reset(providerID: .openCode)
         addTeardownBlock {
             AgentACPModelRegistry.shared.test_reset(providerID: .openCode)
         }
+        let diagnostics = LockedStrings()
         let fixture = try makeFixture(
             shape: "none",
-            extraEnvironment: ["ACP_INCLUDE_LEGACY_MODELS": "1"]
+            extraEnvironment: ["ACP_INCLUDE_LEGACY_MODELS": "1"],
+            diagnostics: diagnostics
         )
 
         try await withBootstrappedController(fixture.controller) { controller in
-            XCTAssertEqual(AgentACPModelRegistry.shared.test_snapshot(providerID: .openCode)?.currentModelRaw, "legacy-model")
-            try await controller.setSessionModel("other-legacy-model")
-            XCTAssertEqual(AgentACPModelRegistry.shared.test_snapshot(providerID: .openCode)?.currentModelRaw, "other-legacy-model")
-        }
-
-        let mutations = recordedRequests(at: fixture.recordURL, method: "session/set_config_option")
-        let mutation = try XCTUnwrap(mutations.first)
-        XCTAssertEqual(mutations.count, 1)
-        XCTAssertEqual(mutation.params["configId"] as? String, "model")
-        XCTAssertEqual(mutation.params["value"] as? String, "other-legacy-model")
-    }
-
-    func testLegacyModelMutationRejectsExplicitLegacyResponseMismatch() async throws {
-        let fixture = try makeFixture(
-            shape: "none",
-            extraEnvironment: [
-                "ACP_INCLUDE_LEGACY_MODELS": "1",
-                "ACP_LEGACY_MODEL_RESPONSE_MISMATCH": "1"
-            ]
-        )
-
-        try await withBootstrappedController(fixture.controller) { controller in
-            await assertThrows(containing: "response model mismatch") {
-                try await controller.setSessionModel("other-legacy-model")
+            XCTAssertNil(AgentACPModelRegistry.shared.test_snapshot(providerID: .openCode))
+            await assertThrows(containing: "does not advertise model switching through configOptions") {
+                try await controller.setSessionModel("legacy-model")
             }
         }
+
+        XCTAssertTrue(recordedMutationRequests(at: fixture.recordURL).isEmpty)
+        XCTAssertTrue(diagnostics.values.contains { $0.contains("Ignoring legacy ACP models metadata") })
     }
 
     func testMalformedModernModelDoesNotFallBackToLegacyModels() async throws {
@@ -593,7 +577,7 @@ final class ACPAgentSessionControllerModeConfigTests: XCTestCase {
             extraEnvironment: ["ACP_FAIL_LOAD": "1"]
         )
         _ = try await fixture.controller.bootstrap()
-        await assertThrows(containing: "does not advertise session mode switching support") {
+        await assertThrows(containing: "does not advertise a modern session mode configOptions selector") {
             try await fixture.controller.setSessionMode("plan")
         }
         await fixture.controller.shutdown()
@@ -1204,10 +1188,7 @@ final class ACPAgentSessionControllerModeConfigTests: XCTestCase {
             if os.environ.get("ACP_INCLUDE_LEGACY_MODELS") == "1":
                 result["models"] = {
                     "currentModelId": "legacy-model",
-                    "availableModels": [
-                        {"modelId": "legacy-model", "name": "Legacy Model"},
-                        {"modelId": "other-legacy-model", "name": "Other Legacy Model"}
-                    ]
+                    "availableModels": [{"modelId": "legacy-model", "name": "Legacy Model"}]
                 }
             return result
 
@@ -1293,24 +1274,10 @@ final class ACPAgentSessionControllerModeConfigTests: XCTestCase {
                     )
                 else:
                     respond(request.get("id"), session_result(session_id))
-            elif method == "session/set_mode":
-                current_mode = params.get("modeId") or current_mode
-                respond(request.get("id"), {})
             elif method == "session/set_config_option":
                 config_id = params.get("configId")
                 if config_id == os.environ.get("ACP_MODEL_CONFIG_ID", "model"):
                     current_model = params.get("value")
-                    if os.environ.get("ACP_LEGACY_MODEL_RESPONSE_MISMATCH") == "1":
-                        respond(request.get("id"), {
-                            "models": {
-                                "currentModelId": "legacy-model",
-                                "availableModels": [
-                                    {"modelId": "legacy-model", "name": "Legacy Model"},
-                                    {"modelId": "other-legacy-model", "name": "Other Legacy Model"}
-                                ]
-                            }
-                        })
-                        continue
                     if os.environ.get("ACP_MODEL_CHANGES_MODE_CONFIG_ID") == "1":
                         mode_config_id = "mode_after_model"
                     if os.environ.get("ACP_MODEL_RELEASE_PATH"):

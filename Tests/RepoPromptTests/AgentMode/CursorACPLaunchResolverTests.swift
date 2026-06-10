@@ -510,75 +510,19 @@ final class CursorACPLaunchResolverTests: XCTestCase {
         }
     }
 
-    func testCursorSubcommandFallbackRemainsSupported() async throws {
+    func testCursorTokenIsRejectedWithoutExecution() async throws {
         let directory = try makeTemporaryDirectory()
         let marker = directory.appendingPathComponent("cursor-ran")
-        let executable = try makeExecutable(named: "cursor", in: directory, marker: marker)
-        var environment = ProcessInfo.processInfo.environment
-        environment["PATH"] = directory.path
-        environment["SHELL"] = "/bin/false"
-        let capturedEnvironment = environment
-        let resolver = CursorACPLaunchResolver(environmentProvider: { _ in capturedEnvironment })
-        let config = CursorAgentConfig(commandName: "cursor", additionalPathHints: [])
+        _ = try makeExecutable(named: "cursor", in: directory, marker: marker)
+        let config = CursorAgentConfig(commandName: "cursor", additionalPathHints: [directory.path])
 
-        let support = try await resolver.probeSupport(for: config)
-        let provider = CursorACPAgentProvider(config: config, launchResolver: resolver)
-        let launch = try provider.makeLaunchConfiguration(for: makeRunRequest(workspacePath: directory.path))
+        let support = try await CursorACPLaunchResolver().probeSupport(for: config)
 
-        XCTAssertEqual(support, .supported)
-        XCTAssertEqual(launch.command, executable.resolvingSymlinksInPath().standardizedFileURL.path)
-        XCTAssertEqual(launch.arguments, ["agent", "--approve-mcps", "acp"])
-        XCTAssertEqual(try String(contentsOf: marker, encoding: .utf8), launch.command)
-    }
-
-    func testCursorAgentFallsBackToCursorSubcommandWhenCursorAgentIsMissing() async throws {
-        let directory = try makeTemporaryDirectory()
-        let marker = directory.appendingPathComponent("cursor-ran")
-        _ = try makeExecutable(named: "cursor-agent", in: directory, output: "no acp here", exitStatus: 2)
-        let executable = try makeExecutable(named: "cursor", in: directory, marker: marker)
-        var environment = ProcessInfo.processInfo.environment
-        environment["PATH"] = directory.path
-        environment["SHELL"] = "/bin/false"
-        let capturedEnvironment = environment
-        let resolver = CursorACPLaunchResolver(environmentProvider: { _ in capturedEnvironment })
-        let config = CursorAgentConfig(commandName: "cursor-agent", additionalPathHints: [])
-
-        let support = try await resolver.probeSupport(for: config)
-        let provider = CursorACPAgentProvider(config: config, launchResolver: resolver)
-        let launch = try provider.makeLaunchConfiguration(for: makeRunRequest(workspacePath: directory.path))
-
-        XCTAssertEqual(support, .supported)
-        XCTAssertEqual(launch.command, executable.resolvingSymlinksInPath().standardizedFileURL.path)
-        XCTAssertEqual(launch.arguments, ["agent", "--approve-mcps", "acp"])
-        XCTAssertEqual(try String(contentsOf: marker, encoding: .utf8), launch.command)
-    }
-
-    func testCursorSubcommandAllowsStandardAppBundleShim() async throws {
-        let directory = try makeTemporaryDirectory()
-        let appBinDirectory = directory
-            .appendingPathComponent("Cursor.app", isDirectory: true)
-            .appendingPathComponent("Contents/Resources/app/bin", isDirectory: true)
-        try FileManager.default.createDirectory(at: appBinDirectory, withIntermediateDirectories: true)
-        let marker = directory.appendingPathComponent("cursor-ran")
-        _ = try makeExecutable(named: "cursor-agent", in: directory, output: "no acp here", exitStatus: 2)
-        let appExecutable = try makeExecutable(named: "cursor", in: appBinDirectory, marker: marker)
-        let shim = directory.appendingPathComponent("cursor")
-        try FileManager.default.createSymbolicLink(at: shim, withDestinationURL: appExecutable)
-        var environment = ProcessInfo.processInfo.environment
-        environment["PATH"] = directory.path
-        environment["SHELL"] = "/bin/false"
-        let capturedEnvironment = environment
-        let resolver = CursorACPLaunchResolver(environmentProvider: { _ in capturedEnvironment })
-        let config = CursorAgentConfig(commandName: "cursor-agent", additionalPathHints: [])
-
-        let support = try await resolver.probeSupport(for: config)
-        let provider = CursorACPAgentProvider(config: config, launchResolver: resolver)
-        let launch = try provider.makeLaunchConfiguration(for: makeRunRequest(workspacePath: directory.path))
-
-        XCTAssertEqual(support, .supported)
-        XCTAssertEqual(launch.command, appExecutable.resolvingSymlinksInPath().standardizedFileURL.path)
-        XCTAssertEqual(launch.arguments, ["agent", "--approve-mcps", "acp"])
-        XCTAssertEqual(try String(contentsOf: marker, encoding: .utf8), launch.command)
+        guard case let .unsupported(reason) = support else {
+            return XCTFail("Expected unsupported result")
+        }
+        XCTAssertTrue(reason.contains("Refusing unsafe Cursor ACP command"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
     }
 
     func testCancelledSupportProbePropagatesCancellationAndLeavesNoBareCommandCache() async throws {
