@@ -15,11 +15,11 @@ enum PiAgentToolPreferences {
         }
 
         var detailText: String? {
-            "RepoPrompt bridge tools use Agent Mode MCP routing and permissions. pi built-in tools remain governed by pi's own runtime configuration."
+            "RepoPrompt controls only generated bridge tools. pi built-in read/bash/edit/write/search tools are not sandboxed by RepoPrompt and follow pi's own runtime configuration."
         }
 
         var isWarning: Bool {
-            false
+            true
         }
     }
 

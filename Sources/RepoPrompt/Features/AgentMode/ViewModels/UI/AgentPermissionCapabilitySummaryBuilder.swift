@@ -177,12 +177,12 @@ struct AgentPermissionCapabilitySummaryBuilder {
                 providerID: providerID,
                 providerName: providerID.displayName,
                 isAvailable: isAvailable,
-                fileMutation: "RepoPrompt bridge tools only",
-                shell: "pi built-ins use pi config",
+                fileMutation: "RepoPrompt bridge tools only; pi built-ins use pi config",
+                shell: "pi built-in shell is not sandboxed by RepoPrompt",
                 externalMCP: safeManaged ? "Bridge MCP: managed run only" : "Bridge MCP: RepoPrompt policy",
-                search: "Managed by pi",
-                approvalModeDescription: "Bridge permissions: Managed Bridge",
-                warnings: []
+                search: "pi built-ins use pi config",
+                approvalModeDescription: "Bridge permissions only: Managed Bridge",
+                warnings: ["RepoPrompt permissions do not sandbox pi built-in tools."]
             )
         }
     }

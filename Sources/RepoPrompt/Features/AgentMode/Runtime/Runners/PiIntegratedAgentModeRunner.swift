@@ -210,6 +210,7 @@ final class PiIntegratedAgentModeRunner {
             }
             let eventTask = Task { @MainActor [weak self, weak session] in
                 guard let self, let session else { return }
+                var latestPendingMessageCount = 0
                 for await event in events {
                     guard session.isCurrentRunAttempt(ownership, expectedRunID: runID) else { return }
                     switch event {
@@ -217,9 +218,14 @@ final class PiIntegratedAgentModeRunner {
                         markPostPromptProviderEvent(session: session)
                         await hooks.handleHeadlessStreamResult(result, session, runID, runAttemptID)
                     case let .sessionState(state):
+                        latestPendingMessageCount = state.pendingMessageCount ?? 0
                         applySessionState(state, to: session)
                     case let .turnCompleted(_, status):
                         markPostPromptProviderEvent(session: session)
+                        if status == .completed, latestPendingMessageCount > 0 {
+                            latestPendingMessageCount -= 1
+                            continue
+                        }
                         let terminalState: AgentSessionRunState = switch status {
                         case .completed: .completed
                         case .cancelled: .cancelled

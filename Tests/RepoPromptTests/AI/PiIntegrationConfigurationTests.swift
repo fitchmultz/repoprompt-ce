@@ -11,7 +11,9 @@ final class PiIntegrationConfigurationTests: XCTestCase {
         XCTAssertTrue(contents.contains("first provider event timeout"), sourcePath)
         XCTAssertTrue(contents.contains("pi.firstProviderEventTimeout"), sourcePath)
         XCTAssertTrue(contents.contains("didReceivePostPromptProviderEvent = true"), sourcePath)
-        XCTAssertTrue(contents.contains("case let .sessionState(state):\n                        applySessionState(state, to: session)"), sourcePath)
+        XCTAssertTrue(contents.contains("case let .sessionState(state):"), sourcePath)
+        XCTAssertTrue(contents.contains("latestPendingMessageCount = state.pendingMessageCount ?? 0"), sourcePath)
+        XCTAssertTrue(contents.contains("applySessionState(state, to: session)"), sourcePath)
         XCTAssertTrue(contents.contains("pi accepted the prompt but did not produce any response events within 60 seconds."), sourcePath)
     }
 
@@ -56,6 +58,20 @@ final class PiIntegrationConfigurationTests: XCTestCase {
         )
     }
 
+    func testModelDiscoveryLaunchArgumentsAreEphemeralAndToolless() {
+        XCTAssertEqual(
+            PiIntegrationConfiguration.managedRPCModelDiscoveryLaunchArguments(),
+            ["--mode", "rpc", "--approve", "--no-session", "--no-tools"]
+        )
+    }
+
+    func testPromptOnlyLaunchArgumentsAreEphemeralAndToolless() {
+        XCTAssertEqual(
+            PiIntegrationConfiguration.managedRPCPromptOnlyLaunchArguments(),
+            ["--mode", "rpc", "--approve", "--no-session", "--no-tools"]
+        )
+    }
+
     func testManagedRPCLaunchArgumentsIncludeBridgeExtensionAfterApproval() {
         XCTAssertEqual(
             PiIntegrationConfiguration.managedRPCLaunchArguments(
@@ -78,6 +94,14 @@ final class PiIntegrationConfigurationTests: XCTestCase {
             PiNativeSessionController.Options().launchArguments,
             PiIntegrationConfiguration.managedRPCLaunchArguments()
         )
+    }
+
+    func testPiModelPollingUsesEphemeralDiscoveryLaunchProfile() throws {
+        let repoRoot = try RepoRoot.url(filePath: #filePath)
+        let sourcePath = "Sources/RepoPrompt/Infrastructure/AI/Providers/Pi/PiModelPollingService.swift"
+        let contents = try String(contentsOf: repoRoot.appendingPathComponent(sourcePath), encoding: .utf8)
+        XCTAssertTrue(contents.contains("managedRPCModelDiscoveryLaunchArguments()"), sourcePath)
+        XCTAssertFalse(contents.contains("managedRPCLaunchArguments()"), sourcePath)
     }
 
     func testAvailabilityProbeAcceptsSupportedVersionOutput() async throws {

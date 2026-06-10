@@ -532,7 +532,7 @@ final class ContextBuilderRunLifecycleTests: XCTestCase {
                 windowID: -75,
                 deferredInitialAgentSystemWorkspaceRefresh: true,
                 sharedMCPService: MCPService(),
-                contextBuilderProviderFactory: { _, _, _ in providers.next() }
+                contextBuilderProviderFactory: { _, _, _, _ in providers.next() }
             )
             GlobalSettingsStore.shared.setMCPAutoStart(previousMCPAutoStart, commit: false)
             await composition.workspaceManager.awaitInitialized()

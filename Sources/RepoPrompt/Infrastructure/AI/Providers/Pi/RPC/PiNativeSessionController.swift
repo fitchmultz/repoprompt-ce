@@ -51,6 +51,7 @@ actor PiNativeSessionController {
         case sessionFileMissing
         case sessionSwitchCancelled(String)
         case modelProviderMissing(String)
+        case unsupportedThinkingLevel(String)
         case processUnavailable(String)
 
         var errorDescription: String? {
@@ -61,6 +62,8 @@ actor PiNativeSessionController {
                 "pi cancelled switching to session \(path)."
             case let .modelProviderMissing(raw):
                 "Cannot select pi model \(raw) because it does not include a provider prefix. Use provider/model, for example zai/glm-5.1."
+            case let .unsupportedThinkingLevel(level):
+                "Unsupported pi thinking level: \(level)."
             case let .processUnavailable(message):
                 message
             }
@@ -181,7 +184,10 @@ actor PiNativeSessionController {
         }
         let requestedThinking = normalized(thinkingLevel) ?? specifier?.thinkingLevel
         if let requestedThinking {
-            _ = try await client.setThinkingLevel(requestedThinking)
+            guard let level = PiThinkingLevel.parse(requestedThinking) else {
+                throw ControllerError.unsupportedThinkingLevel(requestedThinking)
+            }
+            _ = try await client.setThinkingLevel(level.rawValue)
         }
     }
 

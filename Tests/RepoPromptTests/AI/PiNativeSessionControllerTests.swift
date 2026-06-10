@@ -160,6 +160,34 @@ final class PiNativeSessionControllerTests: XCTestCase {
         )
     }
 
+    func testPiImageBuilderRejectsRemoteURLsAndOversizedLocalImages() throws {
+        XCTAssertThrowsError(try PiRPCImageContentBuilder.images(from: [
+            AgentImageAttachment(source: .url("https://example.com/image.png"), title: "image.png")
+        ])) { error in
+            XCTAssertEqual(
+                error as? PiRPCImageContentBuilder.Error,
+                .unsupportedRemoteImageURL("https://example.com/image.png")
+            )
+        }
+
+        let directory = try makeTemporaryDirectory()
+        let imageURL = directory.appendingPathComponent("huge.png")
+        try Data(repeating: 0x41, count: PiRPCImageContentBuilder.maxImageBytes + 1).write(to: imageURL)
+
+        XCTAssertThrowsError(try PiRPCImageContentBuilder.images(from: [
+            AgentImageAttachment(source: .localFile(path: imageURL.path), title: "huge.png")
+        ])) { error in
+            XCTAssertEqual(
+                error as? PiRPCImageContentBuilder.Error,
+                .localImageTooLarge(
+                    path: imageURL.path,
+                    byteCount: PiRPCImageContentBuilder.maxImageBytes + 1,
+                    maxBytes: PiRPCImageContentBuilder.maxImageBytes
+                )
+            )
+        }
+    }
+
     func testTextOnlyPromptSteerAndFollowUpOmitImagePayloads() async throws {
         let directory = try makeTemporaryDirectory()
         let recordURL = directory.appendingPathComponent("commands.jsonl")

@@ -30,7 +30,7 @@ struct AgentMCPConnectionPolicyProfile: Equatable {
         return AgentMCPConnectionPolicyProfile(
             oneShot: true,
             ttl: requestedTTL,
-            requiresExpectedAgentPID: false
+            requiresExpectedAgentPID: agent.requiresExpectedPIDOwnedAgentModeMCPRouting
         )
     }
 

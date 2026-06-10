@@ -225,7 +225,13 @@ final class AgentRunMCPToolServiceStartDefaultTests: XCTestCase {
         let snapshot = PiDiscoveredModels(
             options: [
                 AgentModelOption(rawValue: "default", displayName: "Default", description: nil, isDefault: true),
-                AgentModelOption(rawValue: "openai-codex/gpt-5.5", displayName: "openai-codex/gpt-5.5", description: nil, isDefault: true)
+                AgentModelOption(
+                    rawValue: "openai-codex/gpt-5.5",
+                    displayName: "openai-codex/gpt-5.5",
+                    description: nil,
+                    isDefault: true,
+                    supportedPiThinkingLevels: [.off, .low, .medium, .high]
+                )
             ],
             currentModelRaw: "openai-codex/gpt-5.5"
         )

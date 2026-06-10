@@ -1,51 +1,5 @@
 import Foundation
 
-enum PiThinkingLevel: String, CaseIterable, Hashable {
-    case off
-    case minimal
-    case low
-    case medium
-    case high
-    case xhigh
-
-    static let displayOrder: [PiThinkingLevel] = [.off, .minimal, .low, .medium, .high, .xhigh]
-
-    static func parse(_ raw: String?) -> PiThinkingLevel? {
-        let normalized = raw?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-            .replacingOccurrences(of: "_", with: "-")
-        guard let normalized, !normalized.isEmpty else { return nil }
-        switch normalized {
-        case "off", "none":
-            return .off
-        case "minimal":
-            return .minimal
-        case "low":
-            return .low
-        case "medium":
-            return .medium
-        case "high":
-            return .high
-        case "xhigh", "x-high":
-            return .xhigh
-        default:
-            return nil
-        }
-    }
-
-    var displayName: String {
-        switch self {
-        case .off: "Off"
-        case .minimal: "Minimal"
-        case .low: "Low"
-        case .medium: "Medium"
-        case .high: "High"
-        case .xhigh: "XHigh"
-        }
-    }
-}
-
 enum AgentModelCatalog {
     struct AvailabilityContext {
         let claudeCodeAvailable: Bool
@@ -483,16 +437,20 @@ enum AgentModelCatalog {
         }
         if agentKind == .pi {
             if let discoveredModels = resolvedPiDiscoveredModels() {
-                if discoveredModels.contains(rawModel: normalized) {
-                    return true
+                if let specifier = PiModelSpecifier(raw: normalized), let rawThinking = specifier.thinkingLevel {
+                    guard let level = PiThinkingLevel.parse(rawThinking) else { return false }
+                    return discoveredModels.supportsThinkingLevel(level, for: specifier.providerQualifiedModelRaw)
                 }
-                guard let specifier = PiModelSpecifier(raw: normalized) else { return false }
-                return discoveredModels.contains(rawModel: specifier.providerQualifiedModelRaw)
+                return discoveredModels.contains(rawModel: normalized)
             }
             if normalized.caseInsensitiveCompare(AgentModel.defaultModel.rawValue) == .orderedSame {
                 return true
             }
-            return PiModelSpecifier(raw: normalized) != nil
+            guard let specifier = PiModelSpecifier(raw: normalized) else { return false }
+            if let rawThinking = specifier.thinkingLevel {
+                return PiThinkingLevel.parse(rawThinking) != nil
+            }
+            return true
         }
         if let discoveredModels = resolvedACPDiscoveredModels(for: agentKind) {
             if agentKind == .cursor {
@@ -537,7 +495,7 @@ enum AgentModelCatalog {
             if agentKind == .pi,
                let discoveredOption = resolvedPiDiscoveredModels()?.option(matching: raw)
             {
-                return discoveredOption.isPlaceholderDefault ? discoveredOption.displayName : discoveredOption.rawValue
+                return discoveredOption.displayName
             }
             if let discoveredOption = resolvedACPDiscoveredModels(for: agentKind)?.option(matching: raw) {
                 return discoveredOption.displayName
@@ -718,6 +676,23 @@ enum AgentModelCatalog {
         return OpenCodeMenu(providerGroups: providerGroups, groups: groups)
     }
 
+    static func piThinkingLevelOptions(for rawModel: String?) -> [PiThinkingLevel] {
+        let trimmed = rawModel?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if trimmed.isEmpty || trimmed.caseInsensitiveCompare(AgentModel.defaultModel.rawValue) == .orderedSame {
+            if let discoveredModels = resolvedPiDiscoveredModels(),
+               let currentModelRaw = discoveredModels.currentModelRaw
+            {
+                return discoveredModels.supportedThinkingLevels(for: currentModelRaw)
+            }
+            return PiThinkingLevel.standardModelOrder
+        }
+        guard let specifier = PiModelSpecifier(raw: trimmed) else { return [] }
+        if let discoveredModels = resolvedPiDiscoveredModels() {
+            return discoveredModels.supportedThinkingLevels(for: specifier.providerQualifiedModelRaw)
+        }
+        return PiThinkingLevel.standardModelOrder
+    }
+
     static func piMenu(for options: [AgentModelOption]) -> PiMenu {
         let defaultOption = options.first { $0.isPlaceholderDefault }
         struct Entry {
@@ -731,6 +706,11 @@ enum AgentModelCatalog {
 
         let entries = options.enumerated().compactMap { index, option -> Entry? in
             guard !option.isPlaceholderDefault else { return nil }
+            if let rawThinkingLevel = PiModelSpecifier(raw: option.rawValue)?.thinkingLevel,
+               PiThinkingLevel.parse(rawThinkingLevel) == nil
+            {
+                return nil
+            }
             let normalized = normalizedPiProviderModel(option: option)
             return Entry(
                 option: option,
@@ -1097,7 +1077,12 @@ enum AgentModelCatalog {
                 return false
             }
             guard let optionThinkingLevel = optionSpecifier?.thinkingLevel else { return true }
-            return optionThinkingLevel.caseInsensitiveCompare(selectedSpecifier.thinkingLevel ?? "") == .orderedSame
+            guard let optionLevel = PiThinkingLevel.parse(optionThinkingLevel),
+                  let selectedLevel = PiThinkingLevel.parse(selectedSpecifier.thinkingLevel)
+            else {
+                return false
+            }
+            return optionLevel == selectedLevel
         }
 
         if agentKind == .codexExec {

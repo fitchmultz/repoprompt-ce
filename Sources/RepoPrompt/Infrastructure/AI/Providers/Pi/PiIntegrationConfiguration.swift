@@ -23,8 +23,12 @@ enum PiIntegrationConfiguration {
         return arguments
     }
 
+    static func managedRPCModelDiscoveryLaunchArguments() -> [String] {
+        managedRPCLaunchArguments() + ["--no-session", "--no-tools"]
+    }
+
     static func managedRPCPromptOnlyLaunchArguments() -> [String] {
-        managedRPCLaunchArguments() + ["--no-tools"]
+        managedRPCLaunchArguments() + ["--no-session", "--no-tools"]
     }
 
     static func managedRunEnvironment() -> [String: String] {

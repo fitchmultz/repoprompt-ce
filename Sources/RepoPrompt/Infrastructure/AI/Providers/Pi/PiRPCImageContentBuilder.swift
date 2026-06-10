@@ -2,16 +2,30 @@ import Foundation
 import UniformTypeIdentifiers
 
 enum PiRPCImageContentBuilder {
+    static let maxImageBytes = 10 * 1024 * 1024
+
     enum Error: LocalizedError, Equatable {
+        case unsupportedRemoteImageURL(String)
         case unreadableLocalImage(String)
+        case localImageTooLarge(path: String, byteCount: Int, maxBytes: Int)
 
         var errorDescription: String? {
             switch self {
+            case let .unsupportedRemoteImageURL(url):
+                "pi RPC image attachments must be local files; remote image URLs are not sent silently. Save the image locally and attach it again: \(url)"
             case let .unreadableLocalImage(path):
                 "Unable to read image attachment at \(path)."
+            case let .localImageTooLarge(path, byteCount, maxBytes):
+                "Image attachment at \(path) is too large for pi RPC (\(PiRPCImageContentBuilder.byteCountFormatter.string(fromByteCount: Int64(byteCount))) > \(PiRPCImageContentBuilder.byteCountFormatter.string(fromByteCount: Int64(maxBytes))))."
             }
         }
     }
+
+    private static let byteCountFormatter: ByteCountFormatter = {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return formatter
+    }()
 
     static func images(from attachments: [AgentImageAttachment]) throws -> [PiRPCClient.ImageContent] {
         try attachments.compactMap(image(from:))
@@ -26,11 +40,9 @@ enum PiRPCImageContentBuilder {
             return try image(fromLocalURL: url, fallbackTitle: attachment.title)
         case let .url(rawURL):
             let urlString = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !urlString.isEmpty,
-                  let url = URL(string: urlString),
-                  url.isFileURL
-            else {
-                return nil
+            guard !urlString.isEmpty else { return nil }
+            guard let url = URL(string: urlString), url.isFileURL else {
+                throw Error.unsupportedRemoteImageURL(urlString)
             }
             return try image(fromLocalURL: url.standardizedFileURL, fallbackTitle: attachment.title)
         }
@@ -42,6 +54,9 @@ enum PiRPCImageContentBuilder {
             data = try Data(contentsOf: url)
         } catch {
             throw Error.unreadableLocalImage(url.path)
+        }
+        guard data.count <= maxImageBytes else {
+            throw Error.localImageTooLarge(path: url.path, byteCount: data.count, maxBytes: maxImageBytes)
         }
         return PiRPCClient.ImageContent(
             data: data.base64EncodedString(),

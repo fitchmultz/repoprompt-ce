@@ -11,9 +11,12 @@ final class PiModelCatalogTests: XCTestCase {
         AgentPiModelRegistry.shared.test_reset()
         let snapshot = AgentPiModelRegistry.discoveredModels(
             from: [
-                .init(provider: "zai", id: "glm-5.1", displayName: "GLM 5.1", description: "Strong GLM", raw: [:]),
-                .init(provider: "cursor", id: "composer-2-5", displayName: "Composer 2.5", description: nil, raw: [:]),
-                .init(provider: "openai-codex", id: "gpt-5.5", displayName: "GPT-5.5", description: "Codex model", raw: [:])
+                .init(provider: "zai", id: "glm-5.1", displayName: "GLM 5.1", description: "Strong GLM", raw: ["reasoning": .bool(true)]),
+                .init(provider: "cursor", id: "composer-2-5", displayName: "Composer 2.5", description: nil, raw: ["reasoning": .bool(false)]),
+                .init(provider: "openai-codex", id: "gpt-5.5", displayName: "GPT 5.5", description: "Codex model", raw: [
+                    "reasoning": .bool(true),
+                    "thinkingLevelMap": .object(["minimal": .null, "xhigh": .string("xhigh")])
+                ])
             ],
             currentModel: .init(provider: "zai", id: "glm-5.1", displayName: "GLM 5.1", description: nil, raw: [:])
         )
@@ -27,12 +30,17 @@ final class PiModelCatalogTests: XCTestCase {
         XCTAssertTrue(options[0].isPlaceholderDefault)
         let zaiOption = try XCTUnwrap(options.first { $0.rawValue == "zai/glm-5.1" })
         XCTAssertTrue(zaiOption.isProviderDefault)
-        XCTAssertEqual(zaiOption.displayName, "zai/glm-5.1")
+        XCTAssertEqual(zaiOption.displayName, "GLM 5.1")
         XCTAssertEqual(zaiOption.description, "GLM 5.1 — Strong GLM")
-        XCTAssertEqual(AgentModelCatalog.displayName(for: "zai/glm-5.1", agentKind: .pi, availability: availability), "zai/glm-5.1")
-        XCTAssertEqual(AgentModelCatalog.displayName(for: "openai-codex/gpt-5.5:low", agentKind: .pi, availability: availability), "openai-codex/gpt-5.5 Low")
+        XCTAssertEqual(zaiOption.supportedPiThinkingLevels, [.off, .minimal, .low, .medium, .high])
+        XCTAssertEqual(AgentModelCatalog.displayName(for: "zai/glm-5.1", agentKind: .pi, availability: availability), "GLM 5.1")
+        XCTAssertEqual(AgentModelCatalog.displayName(for: "openai-codex/gpt-5.5:low", agentKind: .pi, availability: availability), "GPT 5.5 Low")
         XCTAssertTrue(AgentModelCatalog.isValid(rawModel: "zai/glm-5.1", for: .pi, availability: availability))
         XCTAssertTrue(AgentModelCatalog.isValid(rawModel: "openai-codex/gpt-5.5:low", for: .pi, availability: availability))
+        XCTAssertTrue(AgentModelCatalog.isValid(rawModel: "openai-codex/gpt-5.5:xhigh", for: .pi, availability: availability))
+        XCTAssertFalse(AgentModelCatalog.isValid(rawModel: "openai-codex/gpt-5.5:minimal", for: .pi, availability: availability))
+        XCTAssertFalse(AgentModelCatalog.isValid(rawModel: "openai-codex/gpt-5.5:bananas", for: .pi, availability: availability))
+        XCTAssertEqual(AgentModelCatalog.piThinkingLevelOptions(for: "openai-codex/gpt-5.5"), [.off, .low, .medium, .high, .xhigh])
         XCTAssertTrue(AgentModelCatalog.modelOptionIsSelected(
             optionRaw: "openai-codex/gpt-5.5",
             selectedRaw: "openai-codex/gpt-5.5:low",
@@ -50,6 +58,25 @@ final class PiModelCatalogTests: XCTestCase {
         ))
         XCTAssertFalse(AgentModelCatalog.isValid(rawModel: "missing/model", for: .pi, availability: availability))
         XCTAssertFalse(AgentModelCatalog.isValid(rawModel: "missing/gpt-5.5:low", for: .pi, availability: availability))
+    }
+
+    func testPiDefaultThinkingOptionsFollowCurrentDiscoveredModel() {
+        let snapshot = PiDiscoveredModels(
+            options: [
+                AgentModelOption(rawValue: "default", displayName: "Default", description: nil, isDefault: true),
+                AgentModelOption(
+                    rawValue: "openai-codex/gpt-5.5",
+                    displayName: "GPT 5.5",
+                    description: nil,
+                    isDefault: true,
+                    supportedPiThinkingLevels: [.off, .low, .medium, .high, .xhigh]
+                )
+            ],
+            currentModelRaw: "openai-codex/gpt-5.5"
+        )
+        XCTAssertTrue(AgentPiModelRegistry.shared.updateDiscoveredModels(snapshot))
+
+        XCTAssertEqual(AgentModelCatalog.piThinkingLevelOptions(for: "default"), [.off, .low, .medium, .high, .xhigh])
     }
 
     func testPiMenuGroupsDiscoveredModelsByProviderAlphabetically() {
@@ -95,6 +122,34 @@ final class PiModelCatalogTests: XCTestCase {
         XCTAssertEqual(menu.providerGroups[1].groups[0].options.map(\.displayName), ["Model Default", "Low", "High"])
     }
 
+    func testPiDynamicModelRecordBackfillsLegacySnapshotsWithStandardThinkingLevels() throws {
+        let json = #"""
+        {
+          "currentModelRaw": "zai/glm-5.1",
+          "options": [
+            {
+              "rawValue": "zai/glm-5.1",
+              "displayName": "GLM 5.1",
+              "isPlaceholderDefault": false,
+              "isProviderDefault": true
+            },
+            {
+              "rawValue": "openai-codex/gpt-5.5",
+              "displayName": "GPT-5.5",
+              "isPlaceholderDefault": false,
+              "isProviderDefault": false
+            }
+          ]
+        }
+        """#.data(using: .utf8)!
+
+        let record = try JSONDecoder().decode(PiDynamicModelSnapshotRecord.self, from: json)
+        let snapshot = try XCTUnwrap(PiDynamicModelStore.snapshot(from: record))
+
+        XCTAssertEqual(snapshot.option(matching: "zai/glm-5.1")?.supportedPiThinkingLevels, PiThinkingLevel.standardModelOrder)
+        XCTAssertEqual(snapshot.option(matching: "openai-codex/gpt-5.5")?.supportedPiThinkingLevels, [.off, .low, .medium, .high, .xhigh])
+    }
+
     func testPiDynamicModelStorePersistsSnapshot() throws {
         let suiteName = "PiModelCatalogTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
@@ -102,7 +157,13 @@ final class PiModelCatalogTests: XCTestCase {
         let snapshot = PiDiscoveredModels(
             options: [
                 AgentModelOption(rawValue: "default", displayName: "Default", description: nil, isDefault: true),
-                AgentModelOption(rawValue: "zai/glm-5.1", displayName: "GLM 5.1", description: "Strong GLM", isDefault: true)
+                AgentModelOption(
+                    rawValue: "zai/glm-5.1",
+                    displayName: "GLM 5.1",
+                    description: "Strong GLM",
+                    isDefault: true,
+                    supportedPiThinkingLevels: [.off, .low, .high]
+                )
             ],
             currentModelRaw: "zai/glm-5.1"
         )
@@ -113,5 +174,6 @@ final class PiModelCatalogTests: XCTestCase {
         XCTAssertEqual(loaded?.currentModelRaw, "zai/glm-5.1")
         XCTAssertEqual(loaded?.options.map(\.rawValue), ["default", "zai/glm-5.1"])
         XCTAssertEqual(loaded?.options.last?.description, "Strong GLM")
+        XCTAssertEqual(loaded?.options.last?.supportedPiThinkingLevels, [.off, .low, .high])
     }
 }

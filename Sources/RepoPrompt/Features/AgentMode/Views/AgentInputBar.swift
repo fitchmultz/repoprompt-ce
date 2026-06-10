@@ -143,7 +143,7 @@ struct AgentInputBar: View {
                 agentModeVM.selectedAgent = agent
                 if agent == .pi {
                     if let specifier = PiModelSpecifier(raw: rawModel) {
-                        agentModeVM.selectedReasoningEffortRaw = specifier.thinkingLevel
+                        agentModeVM.selectedReasoningEffortRaw = PiThinkingLevel.parse(specifier.thinkingLevel)?.rawValue
                         agentModeVM.selectModel(rawModel: specifier.providerQualifiedModelRaw)
                     } else {
                         agentModeVM.selectedReasoningEffortRaw = nil
@@ -155,7 +155,7 @@ struct AgentInputBar: View {
             },
             reasoningEffortOptionsForCurrentSelection: { agentModeVM.reasoningEffortOptionsForCurrentSelection() },
             selectReasoningEffort: { effort in agentModeVM.selectReasoningEffort(effort) },
-            piThinkingLevelOptions: { PiThinkingLevel.displayOrder },
+            piThinkingLevelOptions: { agentModeVM.piThinkingLevelOptionsForCurrentSelection() },
             selectPiThinkingLevel: { level in
                 if let specifier = PiModelSpecifier(raw: agentModeVM.selectedModelRaw),
                    specifier.thinkingLevel != nil
@@ -1007,7 +1007,7 @@ struct AgentComposerView: View, Equatable {
                     actions.selectPiThinkingLevel(nil)
                 } label: {
                     HStack {
-                        Text("Default")
+                        Text(PiThinkingLevel.noOverrideDisplayName)
                         if selectedLevel == nil {
                             Spacer()
                             Image(systemName: "checkmark")
@@ -1030,7 +1030,7 @@ struct AgentComposerView: View, Equatable {
                 }
             } label: {
                 HStack(spacing: 4) {
-                    Text(selectedLevel?.displayName ?? "Default")
+                    Text(selectedLevel?.displayName ?? PiThinkingLevel.noOverrideDisplayName)
                         .font(fontPreset.swiftUIFont(sizeAtNormal: 11))
                 }
                 .foregroundColor(.secondary)
@@ -1042,7 +1042,7 @@ struct AgentComposerView: View, Equatable {
             .menuStyle(.borderlessButton)
             .disabled(levels.isEmpty || modelControlsDisabled)
             .opacity(modelControlsDisabled ? 0.55 : 1.0)
-            .hoverTooltip(modelControlsDisabled ? modelControlsDisabledTooltip : "pi thinking level")
+            .hoverTooltip(modelControlsDisabled ? modelControlsDisabledTooltip : "pi thinking level override")
             .fixedSize()
         }
     }

@@ -40,7 +40,10 @@ final class PiAgentProviderKindTests: XCTestCase {
         let codexProfile = AgentMCPConnectionPolicyProfile.headless(agent: .codexExec, requestedTTL: 15)
         XCTAssertTrue(codexProfile.oneShot)
         XCTAssertEqual(codexProfile.ttl, 15)
-        XCTAssertFalse(codexProfile.requiresExpectedAgentPID)
+        XCTAssertEqual(
+            codexProfile.requiresExpectedAgentPID,
+            AgentProviderKind.codexExec.requiresExpectedPIDOwnedAgentModeMCPRouting
+        )
     }
 
     func testPiParticipatesInRecommendationProviderFilteringAndRoleDefaults() {

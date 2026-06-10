@@ -19,7 +19,7 @@ struct PiRPCModelDiscoveryClient: PiModelDiscoveryClient {
         clientFactory: @escaping ClientFactory = { workspacePath in
             PiRPCClient(config: .init(
                 workingDirectory: workspacePath,
-                launchArguments: PiIntegrationConfiguration.managedRPCLaunchArguments()
+                launchArguments: PiIntegrationConfiguration.managedRPCModelDiscoveryLaunchArguments()
             ))
         }
     ) {

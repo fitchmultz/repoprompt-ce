@@ -8,6 +8,7 @@ struct AgentModelOption: Identifiable, Hashable {
     let isProviderDefault: Bool
     let supportedReasoningEfforts: [CodexReasoningEffort]
     let defaultReasoningEffort: CodexReasoningEffort?
+    let supportedPiThinkingLevels: [PiThinkingLevel]
 
     init(
         rawValue: String,
@@ -16,7 +17,8 @@ struct AgentModelOption: Identifiable, Hashable {
         isPlaceholderDefault: Bool,
         isProviderDefault: Bool,
         supportedReasoningEfforts: [CodexReasoningEffort] = [],
-        defaultReasoningEffort: CodexReasoningEffort? = nil
+        defaultReasoningEffort: CodexReasoningEffort? = nil,
+        supportedPiThinkingLevels: [PiThinkingLevel] = []
     ) {
         self.rawValue = rawValue
         self.displayName = displayName
@@ -25,6 +27,7 @@ struct AgentModelOption: Identifiable, Hashable {
         self.isProviderDefault = isProviderDefault
         self.supportedReasoningEfforts = supportedReasoningEfforts
         self.defaultReasoningEffort = defaultReasoningEffort
+        self.supportedPiThinkingLevels = supportedPiThinkingLevels
     }
 
     init(
@@ -33,7 +36,8 @@ struct AgentModelOption: Identifiable, Hashable {
         description: String?,
         isDefault: Bool,
         supportedReasoningEfforts: [CodexReasoningEffort] = [],
-        defaultReasoningEffort: CodexReasoningEffort? = nil
+        defaultReasoningEffort: CodexReasoningEffort? = nil,
+        supportedPiThinkingLevels: [PiThinkingLevel] = []
     ) {
         let isPlaceholder =
             rawValue.caseInsensitiveCompare(AgentModel.defaultModel.rawValue) == .orderedSame
@@ -44,6 +48,7 @@ struct AgentModelOption: Identifiable, Hashable {
         isProviderDefault = !isPlaceholder && isDefault
         self.supportedReasoningEfforts = supportedReasoningEfforts
         self.defaultReasoningEffort = defaultReasoningEffort
+        self.supportedPiThinkingLevels = supportedPiThinkingLevels
     }
 
     var isDefault: Bool {

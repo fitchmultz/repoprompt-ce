@@ -396,7 +396,7 @@ struct CLIProvidersSettingsView: View {
                 ? "ACP auto-approve: on"
                 : "ACP auto-approve: off"
         case .pi:
-            return "Managed Bridge · pi built-ins use pi config"
+            return "Bridge only · pi built-ins not sandboxed by RepoPrompt"
         }
     }
 
@@ -1934,7 +1934,7 @@ struct CLIProvidersSettingsView: View {
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
 
-                    Text("RepoPrompt-managed pi runs add a generated RepoPrompt bridge extension at launch. RepoPrompt permissions apply to bridge tools; pi built-in tools continue to use pi's own runtime and configuration.")
+                    Text("RepoPrompt-managed pi runs add a generated RepoPrompt bridge extension at launch. RepoPrompt permissions apply only to bridge tools; pi built-in read/bash/edit/write/search tools are not sandboxed by RepoPrompt and continue to use pi's own runtime and configuration.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)

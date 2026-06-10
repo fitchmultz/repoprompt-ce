@@ -328,6 +328,7 @@ final class AgentModeViewModel: ObservableObject {
                 if !isModelRawValid(selectedModelRaw, for: selectedAgent) {
                     selectedModelRaw = defaultModelRaw(for: selectedAgent)
                 }
+                normalizePiThinkingSelectionForSession(session)
                 codexCoordinator.normalizeCodexSelectionForSession(session, preservingExplicitEffort: false)
                 updatePermissionBindingState(from: session)
                 scheduleSave(for: session.tabID)
@@ -363,6 +364,7 @@ final class AgentModeViewModel: ObservableObject {
             persistLastUsedModelIfNeeded(agent: selectedAgent, modelRaw: selectedModelRaw)
             if let session = activeSession {
                 session.selectedModelRaw = selectedModelRaw
+                normalizePiThinkingSelectionForSession(session)
                 codexCoordinator.normalizeCodexSelectionForSession(session, preservingExplicitEffort: false)
                 updatePermissionBindingState(from: session)
                 scheduleSave(for: session.tabID)
@@ -576,6 +578,7 @@ final class AgentModeViewModel: ObservableObject {
     private var uiRefreshTask: Task<Void, Never>?
     private var openCodeModelsSubscriptionTask: Task<Void, Never>?
     private var cursorModelsSubscriptionTask: Task<Void, Never>?
+    private var piModelsSubscriptionTask: Task<Void, Never>?
     private var skillCatalogDeltaObservationTask: Task<Void, Never>?
     private var skillCatalogRefreshDebounceTask: Task<Void, Never>?
     private var sessionListCacheTask: Task<Void, Never>?
@@ -642,6 +645,10 @@ final class AgentModeViewModel: ObservableObject {
 
         var test_isCursorModelPollingActive: Bool {
             cursorModelsSubscriptionTask != nil
+        }
+
+        var test_isPiModelPollingActive: Bool {
+            piModelsSubscriptionTask != nil
         }
 
         func test_setActiveSessionBindingsAreHydrated(_ value: Bool) {
@@ -928,6 +935,23 @@ final class AgentModeViewModel: ObservableObject {
         codexCoordinator.reasoningEffortOptions(forModelRaw: selectedModelRaw, agentKind: selectedAgent)
     }
 
+    func piThinkingLevelOptionsForCurrentSelection() -> [PiThinkingLevel] {
+        guard selectedAgent == .pi else { return [] }
+        return AgentModelCatalog.piThinkingLevelOptions(for: selectedModelRaw)
+    }
+
+    private func normalizePiThinkingSelectionForSession(_ session: TabSession) {
+        guard session.selectedAgent == .pi,
+              let selectedLevel = PiThinkingLevel.parse(session.selectedReasoningEffortRaw)
+        else { return }
+        let supportedLevels = AgentModelCatalog.piThinkingLevelOptions(for: session.selectedModelRaw)
+        guard !supportedLevels.contains(selectedLevel) else { return }
+        session.selectedReasoningEffortRaw = nil
+        if activeSession === session {
+            selectedReasoningEffortRaw = nil
+        }
+    }
+
     func updateCodexDynamicModels(_ models: [CodexAppServerClient.RemoteModel]) {
         if codexDynamicModels != models {
             codexDynamicModels = models
@@ -1099,6 +1123,7 @@ final class AgentModeViewModel: ObservableObject {
         codexCoordinator.updateCodexModelPolling()
         updateOpenCodeModelPolling()
         updateCursorModelPolling(startPolling: startCursorPolling)
+        updatePiModelPolling()
     }
 
     private func updateOpenCodeModelPolling() {
@@ -1164,6 +1189,40 @@ final class AgentModeViewModel: ObservableObject {
     private func stopCursorModelsSubscription() {
         cursorModelsSubscriptionTask?.cancel()
         cursorModelsSubscriptionTask = nil
+    }
+
+    private func updatePiModelPolling() {
+        guard selectedAgent == .pi,
+              AgentModelCatalog.isAgentAvailable(.pi, availability: agentAvailabilityContext)
+        else {
+            stopPiModelsSubscription()
+            return
+        }
+        startPiModelsSubscriptionIfNeeded()
+    }
+
+    private func startPiModelsSubscriptionIfNeeded() {
+        guard piModelsSubscriptionTask == nil else { return }
+        let workspacePath = workspacePathProvider()
+        piModelsSubscriptionTask = Task { [weak self, workspacePath] in
+            let stream = await PiModelPollingService.shared.subscribe(workspacePath: workspacePath)
+            for await _ in stream {
+                guard !Task.isCancelled else { return }
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    acpDynamicModelRevision &+= 1
+                    if let session = activeSession {
+                        normalizePiThinkingSelectionForSession(session)
+                    }
+                    syncComposerUIState()
+                }
+            }
+        }
+    }
+
+    private func stopPiModelsSubscription() {
+        piModelsSubscriptionTask?.cancel()
+        piModelsSubscriptionTask = nil
     }
 
     private func syncSelectedACPModelFromRegistryIfNeeded(for agent: AgentProviderKind) {
@@ -1634,6 +1693,7 @@ final class AgentModeViewModel: ObservableObject {
         uiRefreshTask?.cancel()
         openCodeModelsSubscriptionTask?.cancel()
         cursorModelsSubscriptionTask?.cancel()
+        piModelsSubscriptionTask?.cancel()
         skillCatalogDeltaObservationTask?.cancel()
         skillCatalogRefreshDebounceTask?.cancel()
         initialSystemWorkspaceSessionListRefreshDeferralFallbackTask?.cancel()
@@ -6093,9 +6153,26 @@ final class AgentModeViewModel: ObservableObject {
             let images = try PiRPCImageContentBuilder.images(from: steering.attachments)
             try await controller.steer(steering.providerText, images: images)
         } catch {
-            session.pendingInstructions.insert(steering.providerText, at: 0)
+            appendPiInstructionDeliveryError(
+                "pi steer failed: \(error.localizedDescription)",
+                session: session,
+                optimisticUserItemID: steering.optimisticUserItemID
+            )
             throw MCPError.internalError("pi steer failed: \(error.localizedDescription)")
         }
+    }
+
+    @MainActor
+    private func appendPiInstructionDeliveryError(
+        _ message: String,
+        session: TabSession,
+        optimisticUserItemID _: UUID?
+    ) {
+        let errorItem = AgentChatItem.error(message, sequenceIndex: session.nextSequenceIndex)
+        session.appendItem(errorItem)
+        session.isDirty = true
+        updateBindingsFromSession(session)
+        scheduleSave(for: session.tabID)
     }
 
     private func startQueuedProviderSteeringForMCPDispatch(
@@ -11189,6 +11266,13 @@ final class AgentModeViewModel: ObservableObject {
                 userItem: userItem,
                 userInputTokenEstimate: userInputTokenEstimate
             )
+        } else if session.selectedAgent == .pi, session.runState.isActive {
+            submitActivePiFollowUp(
+                session: session,
+                wrappedText: wrappedText,
+                attachmentsToSend: attachmentsToSend,
+                userItem: userItem
+            )
         } else {
             // Shared follow-up queue for providers that consume queued instructions at the next turn boundary.
             session.pendingInstructions.append(wrappedText)
@@ -11273,6 +11357,36 @@ final class AgentModeViewModel: ObservableObject {
         return true
     }
 
+    private func submitActivePiFollowUp(
+        session: TabSession,
+        wrappedText: String,
+        attachmentsToSend: [AgentImageAttachment],
+        userItem: AgentChatItem
+    ) {
+        Task { [weak self, weak session] in
+            guard let self, let session else { return }
+            guard let controller = session.piController else {
+                appendPiInstructionDeliveryError(
+                    "pi follow-up could not be queued because the native pi session is no longer available.",
+                    session: session,
+                    optimisticUserItemID: userItem.id
+                )
+                return
+            }
+            do {
+                let images = try PiRPCImageContentBuilder.images(from: attachmentsToSend)
+                try await controller.followUp(wrappedText, images: images)
+                await signalMCPInstructionDelivered(for: session)
+            } catch {
+                appendPiInstructionDeliveryError(
+                    "pi follow-up failed: \(error.localizedDescription)",
+                    session: session,
+                    optimisticUserItemID: userItem.id
+                )
+            }
+        }
+    }
+
     private func submitActiveProviderSteering(
         _ route: ActiveProviderSteeringRoute,
         session: TabSession,
@@ -11309,11 +11423,16 @@ final class AgentModeViewModel: ObservableObject {
                 } catch {
                     if let queuedIndex = session.pendingPiSteeringInstructions.firstIndex(where: { $0.id == steering.id }) {
                         let queued = session.pendingPiSteeringInstructions.remove(at: queuedIndex)
-                        session.pendingInstructions.insert(queued.providerText, at: 0)
+                        appendPiInstructionDeliveryError(
+                            "pi steer could not be queued: \(error.localizedDescription)",
+                            session: session,
+                            optimisticUserItemID: queued.optimisticUserItemID
+                        )
+                    } else {
+                        session.isDirty = true
+                        updateBindingsFromSession(session)
+                        scheduleSave(for: session.tabID)
                     }
-                    session.isDirty = true
-                    updateBindingsFromSession(session)
-                    scheduleSave(for: session.tabID)
                 }
             }
         case .acpPrompt:

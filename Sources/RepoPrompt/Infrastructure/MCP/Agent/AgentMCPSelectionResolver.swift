@@ -126,7 +126,7 @@ enum AgentMCPSelectionResolver {
         else {
             return (modelRaw, nil)
         }
-        return (specifier.providerQualifiedModelRaw, thinkingLevel)
+        return (specifier.providerQualifiedModelRaw, PiThinkingLevel.parse(thinkingLevel)?.rawValue)
     }
 
     @MainActor

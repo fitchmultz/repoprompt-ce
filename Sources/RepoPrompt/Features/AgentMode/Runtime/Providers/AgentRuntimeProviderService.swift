@@ -172,7 +172,7 @@ enum AgentProviderKind: String, CaseIterable, Hashable {
                 return "Claude Code routed through a custom Claude-compatible backend. Slots: Haiku → \(normalized.haiku), Sonnet → \(normalized.sonnet), Opus → \(normalized.opus)."
             }
         case .pi:
-            return "pi coding agent via native RPC. Preserves pi sessions, models, thinking levels, extensions, skills, and built-in tools while allowing RepoPrompt bridge tools when managed by Agent Mode."
+            return "pi coding agent via native RPC. Preserves pi sessions, models, thinking levels, extensions, skills, and built-in tools while allowing RepoPrompt bridge tools when managed by Agent Mode. RepoPrompt permissions apply to bridge tools only; pi built-ins use pi's own runtime config."
         }
     }
 

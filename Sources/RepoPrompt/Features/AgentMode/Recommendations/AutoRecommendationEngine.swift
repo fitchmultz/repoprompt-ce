@@ -291,7 +291,7 @@ final class AutoRecommendationEngine {
                 tradeoffs: [
                     "• Uses your configured pi model/provider",
                     "• Native RPC integration with RepoPrompt bridge tools",
-                    "• pi built-ins follow pi runtime configuration"
+                    "• RepoPrompt controls bridge tools; pi built-ins use pi config"
                 ]
             )
         }

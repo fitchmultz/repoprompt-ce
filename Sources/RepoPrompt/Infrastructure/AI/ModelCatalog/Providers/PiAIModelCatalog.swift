@@ -28,6 +28,14 @@ struct PiDiscoveredModels: Equatable {
         option(matching: rawModel) != nil
     }
 
+    func supportedThinkingLevels(for rawModel: String?) -> [PiThinkingLevel] {
+        option(matching: rawModel)?.supportedPiThinkingLevels ?? []
+    }
+
+    func supportsThinkingLevel(_ level: PiThinkingLevel, for rawModel: String?) -> Bool {
+        supportedThinkingLevels(for: rawModel).contains(level)
+    }
+
     static func normalizedRawModel(_ raw: String?) -> String? {
         guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
             return nil
@@ -42,6 +50,53 @@ struct PiDynamicModelRecord: Codable, Hashable {
     let description: String?
     let isPlaceholderDefault: Bool
     let isProviderDefault: Bool
+    let supportedThinkingLevels: [PiThinkingLevel]
+
+    init(
+        rawValue: String,
+        displayName: String,
+        description: String?,
+        isPlaceholderDefault: Bool,
+        isProviderDefault: Bool,
+        supportedThinkingLevels: [PiThinkingLevel] = []
+    ) {
+        self.rawValue = rawValue
+        self.displayName = displayName
+        self.description = description
+        self.isPlaceholderDefault = isPlaceholderDefault
+        self.isProviderDefault = isProviderDefault
+        self.supportedThinkingLevels = supportedThinkingLevels
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        rawValue = try container.decode(String.self, forKey: .rawValue)
+        displayName = try container.decode(String.self, forKey: .displayName)
+        description = try container.decodeIfPresent(String.self, forKey: .description)
+        isPlaceholderDefault = try container.decode(Bool.self, forKey: .isPlaceholderDefault)
+        isProviderDefault = try container.decode(Bool.self, forKey: .isProviderDefault)
+        supportedThinkingLevels = if container.contains(.supportedThinkingLevels) {
+            try container.decodeIfPresent([PiThinkingLevel].self, forKey: .supportedThinkingLevels) ?? []
+        } else {
+            Self.legacySupportedThinkingLevels(rawValue: rawValue, displayName: displayName)
+        }
+    }
+
+    private static func legacySupportedThinkingLevels(rawValue: String, displayName: String) -> [PiThinkingLevel] {
+        let normalized = "\(rawValue) \(displayName)"
+            .replacingOccurrences(of: "_", with: "-")
+            .lowercased()
+        if normalized.contains("gpt-5.5-pro") || normalized.contains("gpt 5.5 pro") || normalized.contains("gpt-5-5-pro") {
+            return [.medium, .high, .xhigh]
+        }
+        if normalized.contains("gpt-5.5") || normalized.contains("gpt 5.5") || normalized.contains("gpt-5-5") {
+            return [.off, .low, .medium, .high, .xhigh]
+        }
+        if normalized.contains("fable-5") || normalized.contains("fable 5") {
+            return PiThinkingLevel.displayOrder
+        }
+        return PiThinkingLevel.standardModelOrder
+    }
 }
 
 struct PiDynamicModelSnapshotRecord: Codable, Hashable {
@@ -113,7 +168,8 @@ enum PiDynamicModelStore {
             displayName: displayName.isEmpty ? rawValue : displayName,
             description: normalizedOptionalString(option.description),
             isPlaceholderDefault: option.isPlaceholderDefault,
-            isProviderDefault: option.isProviderDefault
+            isProviderDefault: option.isProviderDefault,
+            supportedThinkingLevels: option.supportedPiThinkingLevels
         )
     }
 
@@ -126,7 +182,8 @@ enum PiDynamicModelStore {
             displayName: displayName.isEmpty ? rawValue : displayName,
             description: normalizedOptionalString(record.description),
             isPlaceholderDefault: record.isPlaceholderDefault,
-            isProviderDefault: record.isProviderDefault
+            isProviderDefault: record.isProviderDefault,
+            supportedPiThinkingLevels: record.supportedThinkingLevels
         )
     }
 
@@ -157,7 +214,8 @@ enum PiDynamicModelStore {
             displayName: preferred.displayName,
             description: preferred.description ?? fallback.description,
             isPlaceholderDefault: existing.isPlaceholderDefault || candidate.isPlaceholderDefault,
-            isProviderDefault: existing.isProviderDefault || candidate.isProviderDefault
+            isProviderDefault: existing.isProviderDefault || candidate.isProviderDefault,
+            supportedThinkingLevels: preferredThinkingLevels(existing.supportedThinkingLevels, candidate.supportedThinkingLevels)
         )
     }
 
@@ -188,6 +246,11 @@ enum PiDynamicModelStore {
             return caseInsensitiveOrder == .orderedAscending ? lhsTrimmed : rhsTrimmed
         }
         return lhsTrimmed <= rhsTrimmed ? lhsTrimmed : rhsTrimmed
+    }
+
+    private static func preferredThinkingLevels(_ lhs: [PiThinkingLevel], _ rhs: [PiThinkingLevel]) -> [PiThinkingLevel] {
+        let merged = Set(lhs).union(rhs)
+        return PiThinkingLevel.displayOrder.filter { merged.contains($0) }
     }
 
     private static func normalizedCurrentModelRaw(_ raw: String?, options: [PiDynamicModelRecord]) -> String? {
@@ -315,15 +378,17 @@ final class AgentPiModelRegistry {
             let key = raw.lowercased()
             guard !seen.contains(key) else { continue }
             seen.insert(key)
+            let displayName = normalizedOptionalString(model.displayName) ?? raw
             options.append(AgentModelOption(
                 rawValue: raw,
-                displayName: raw,
+                displayName: displayName,
                 description: providerQualifiedDescription(
                     raw: raw,
-                    displayName: model.displayName,
+                    displayName: displayName,
                     description: model.description
                 ),
-                isDefault: currentRaw?.caseInsensitiveCompare(raw) == .orderedSame
+                isDefault: currentRaw?.caseInsensitiveCompare(raw) == .orderedSame,
+                supportedPiThinkingLevels: supportedThinkingLevels(for: model)
             ))
         }
         guard options.count > 1 else { return nil }
@@ -336,6 +401,22 @@ final class AgentPiModelRegistry {
         guard let provider = normalizedOptionalString(model.provider) else { return id }
         if id.hasPrefix("\(provider)/") { return id }
         return "\(provider)/\(id)"
+    }
+
+    static func supportedThinkingLevels(for model: PiRPCClient.RemoteModel) -> [PiThinkingLevel] {
+        guard model.raw["reasoning"]?.boolValue == true else { return [] }
+        var supported = Set(PiThinkingLevel.standardModelOrder)
+        if let map = model.raw["thinkingLevelMap"]?.objectValue {
+            for (rawLevel, value) in map {
+                guard let level = PiThinkingLevel.parse(rawLevel) else { continue }
+                if case .null = value {
+                    supported.remove(level)
+                } else {
+                    supported.insert(level)
+                }
+            }
+        }
+        return PiThinkingLevel.displayOrder.filter { supported.contains($0) }
     }
 
     private static func providerQualifiedDescription(raw: String, displayName: String, description: String?) -> String? {

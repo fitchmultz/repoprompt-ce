@@ -142,7 +142,7 @@ final class AIModelPreferenceRegressionTests: XCTestCase {
     func testPiOracleProviderLaunchesPromptOnlyRPC() throws {
         XCTAssertEqual(
             PiIntegrationConfiguration.managedRPCPromptOnlyLaunchArguments(),
-            ["--mode", "rpc", "--approve", "--no-tools"]
+            ["--mode", "rpc", "--approve", "--no-session", "--no-tools"]
         )
 
         let repoRoot = try RepoRoot.url(filePath: #filePath)
