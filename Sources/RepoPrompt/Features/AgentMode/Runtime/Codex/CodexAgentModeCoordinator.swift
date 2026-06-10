@@ -1167,6 +1167,15 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         preservingExplicitEffort: Bool
     ) {
         guard session.selectedAgent == .codexExec else {
+            if session.selectedAgent == .pi {
+                if session.tabID == viewModel?.currentTabID {
+                    viewModel?.applyCodexSelectionToBindings(
+                        modelRaw: session.selectedModelRaw,
+                        reasoningEffortRaw: session.selectedReasoningEffortRaw
+                    )
+                }
+                return
+            }
             session.selectedReasoningEffortRaw = nil
             if session.tabID == viewModel?.currentTabID {
                 viewModel?.applyCodexSelectionToBindings(

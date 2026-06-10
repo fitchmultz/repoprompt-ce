@@ -571,6 +571,13 @@ public enum AIModel: Equatable, Hashable {
         }
         if case let .piCustom(n) = self {
             if let option = AgentPiModelRegistry.shared.resolvedSnapshot()?.option(matching: n) {
+                guard option.rawValue.caseInsensitiveCompare(n) == .orderedSame else {
+                    return AgentModelCatalog.displayName(
+                        for: n,
+                        agentKind: .pi,
+                        availability: .init(piAvailable: true)
+                    )
+                }
                 return option.displayName
             }
             return n == AgentModel.defaultModel.rawValue ? AgentModel.defaultModel.displayName : n

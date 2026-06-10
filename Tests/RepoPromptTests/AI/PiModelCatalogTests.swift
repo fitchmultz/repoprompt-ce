@@ -23,11 +23,12 @@ final class PiModelCatalogTests: XCTestCase {
         let availability = AgentModelCatalog.AvailabilityContext(piAvailable: true)
         let options = AgentModelCatalog.options(for: .pi, availability: availability)
 
-        XCTAssertEqual(options.map(\.rawValue), ["default", "zai/glm-5.1", "cursor/composer-2-5", "openai-codex/gpt-5.5"])
+        XCTAssertEqual(options.map(\.rawValue), ["default", "cursor/composer-2-5", "openai-codex/gpt-5.5", "zai/glm-5.1"])
         XCTAssertTrue(options[0].isPlaceholderDefault)
-        XCTAssertTrue(options[1].isProviderDefault)
-        XCTAssertEqual(options[1].displayName, "zai/glm-5.1")
-        XCTAssertEqual(options[1].description, "GLM 5.1 — Strong GLM")
+        let zaiOption = try XCTUnwrap(options.first { $0.rawValue == "zai/glm-5.1" })
+        XCTAssertTrue(zaiOption.isProviderDefault)
+        XCTAssertEqual(zaiOption.displayName, "zai/glm-5.1")
+        XCTAssertEqual(zaiOption.description, "GLM 5.1 — Strong GLM")
         XCTAssertEqual(AgentModelCatalog.displayName(for: "zai/glm-5.1", agentKind: .pi, availability: availability), "zai/glm-5.1")
         XCTAssertEqual(AgentModelCatalog.displayName(for: "openai-codex/gpt-5.5:low", agentKind: .pi, availability: availability), "openai-codex/gpt-5.5 Low")
         XCTAssertTrue(AgentModelCatalog.isValid(rawModel: "zai/glm-5.1", for: .pi, availability: availability))
@@ -37,11 +38,21 @@ final class PiModelCatalogTests: XCTestCase {
             selectedRaw: "openai-codex/gpt-5.5:low",
             agentKind: .pi
         ))
+        XCTAssertTrue(AgentModelCatalog.modelOptionIsSelected(
+            optionRaw: "openai-codex/gpt-5.5:low",
+            selectedRaw: "openai-codex/gpt-5.5:low",
+            agentKind: .pi
+        ))
+        XCTAssertFalse(AgentModelCatalog.modelOptionIsSelected(
+            optionRaw: "openai-codex/gpt-5.5:high",
+            selectedRaw: "openai-codex/gpt-5.5:low",
+            agentKind: .pi
+        ))
         XCTAssertFalse(AgentModelCatalog.isValid(rawModel: "missing/model", for: .pi, availability: availability))
         XCTAssertFalse(AgentModelCatalog.isValid(rawModel: "missing/gpt-5.5:low", for: .pi, availability: availability))
     }
 
-    func testPiMenuGroupsDiscoveredModelsByProvider() {
+    func testPiMenuGroupsDiscoveredModelsByProviderAlphabetically() {
         let menu = AgentModelCatalog.piMenu(for: [
             AgentModelOption(rawValue: "default", displayName: "Default", description: nil, isDefault: true),
             AgentModelOption(rawValue: "zai/glm-5.1", displayName: "GLM 5.1", description: nil, isDefault: true),
@@ -50,10 +61,38 @@ final class PiModelCatalogTests: XCTestCase {
         ])
 
         XCTAssertEqual(menu.defaultOption?.rawValue, "default")
-        XCTAssertEqual(menu.providerGroups.map(\.providerID), ["zai", "cursor", "openai-codex"])
-        XCTAssertEqual(menu.providerGroups.map(\.displayName), ["Z.ai", "Cursor", "OpenAI Codex"])
-        XCTAssertEqual(menu.providerGroups.first?.options.first?.displayName, "zai/glm-5.1")
-        XCTAssertEqual(menu.providerGroups.last?.options.first?.displayName, "openai-codex/gpt-5.5")
+        XCTAssertEqual(menu.providerGroups.map(\.providerID), ["cursor", "openai-codex", "zai"])
+        XCTAssertEqual(menu.providerGroups.map(\.displayName), ["Cursor", "OpenAI Codex", "Z.ai"])
+        XCTAssertEqual(menu.providerGroups[0].options.first?.displayName, "Composer 2.5")
+        XCTAssertEqual(menu.providerGroups[1].options.first?.displayName, "GPT 5.5")
+        XCTAssertEqual(menu.providerGroups[2].options.first?.displayName, "GLM 5.1")
+    }
+
+    func testPiMenuStripsProviderPrefixFromRawQualifiedDisplayNames() {
+        let menu = AgentModelCatalog.piMenu(for: [
+            AgentModelOption(rawValue: "anthropic/claude-opus-4-5", displayName: "anthropic/claude-opus-4-5", description: nil, isDefault: false),
+            AgentModelOption(rawValue: "openai-codex/gpt-5.5", displayName: "openai-codex/gpt-5.5", description: nil, isDefault: false)
+        ])
+
+        XCTAssertEqual(menu.providerGroups.map(\.displayName), ["Anthropic", "OpenAI Codex"])
+        XCTAssertEqual(menu.providerGroups[0].options.map(\.displayName), ["Claude Opus 4 5"])
+        XCTAssertEqual(menu.providerGroups[1].options.map(\.displayName), ["GPT 5.5"])
+    }
+
+    func testPiMenuGroupsThinkingVariantsUnderBaseModel() {
+        let menu = AgentModelCatalog.piMenu(for: [
+            AgentModelOption(rawValue: "openai-codex/gpt-5.5", displayName: "openai-codex/gpt-5.5", description: nil, isDefault: false),
+            AgentModelOption(rawValue: "openai-codex/gpt-5.5:low", displayName: "openai-codex/gpt-5.5:low", description: nil, isDefault: false),
+            AgentModelOption(rawValue: "openai-codex/gpt-5.5:high", displayName: "openai-codex/gpt-5.5:high", description: nil, isDefault: false),
+            AgentModelOption(rawValue: "anthropic/claude-opus-4-5:medium", displayName: "Claude Opus 4.5 Medium", description: nil, isDefault: false)
+        ])
+
+        XCTAssertEqual(menu.providerGroups.map(\.displayName), ["Anthropic", "OpenAI Codex"])
+        XCTAssertEqual(menu.providerGroups[0].groups.map(\.displayName), ["Claude Opus 4.5"])
+        XCTAssertEqual(menu.providerGroups[0].groups[0].options.map(\.displayName), ["Medium"])
+        XCTAssertEqual(menu.providerGroups[1].groups.map(\.displayName), ["GPT 5.5"])
+        XCTAssertTrue(menu.providerGroups[1].groups[0].rendersAsSubmenu)
+        XCTAssertEqual(menu.providerGroups[1].groups[0].options.map(\.displayName), ["Model Default", "Low", "High"])
     }
 
     func testPiDynamicModelStorePersistsSnapshot() throws {

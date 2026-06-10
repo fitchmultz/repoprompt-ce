@@ -14,8 +14,13 @@ struct PiDiscoveredModels: Equatable {
 
     func option(matching raw: String?) -> AgentModelOption? {
         guard let normalized = Self.normalizedRawModel(raw) else { return nil }
+        if let exact = options.first(where: { Self.normalizedRawModel($0.rawValue) == normalized }) {
+            return exact
+        }
+        guard let specifier = PiModelSpecifier(raw: raw) else { return nil }
+        let baseNormalized = Self.normalizedRawModel(specifier.providerQualifiedModelRaw)
         return options.first {
-            Self.normalizedRawModel($0.rawValue) == normalized
+            Self.normalizedRawModel($0.rawValue) == baseNormalized
         }
     }
 
@@ -128,9 +133,6 @@ enum PiDynamicModelStore {
     private static func canonicalModelRecordSort(_ lhs: PiDynamicModelRecord, _ rhs: PiDynamicModelRecord) -> Bool {
         if lhs.isPlaceholderDefault != rhs.isPlaceholderDefault {
             return lhs.isPlaceholderDefault && !rhs.isPlaceholderDefault
-        }
-        if lhs.isProviderDefault != rhs.isProviderDefault {
-            return lhs.isProviderDefault && !rhs.isProviderDefault
         }
         let lhsProvider = providerID(from: lhs.rawValue) ?? ""
         let rhsProvider = providerID(from: rhs.rawValue) ?? ""

@@ -1,5 +1,51 @@
 import Foundation
 
+enum PiThinkingLevel: String, CaseIterable, Hashable {
+    case off
+    case minimal
+    case low
+    case medium
+    case high
+    case xhigh
+
+    static let displayOrder: [PiThinkingLevel] = [.off, .minimal, .low, .medium, .high, .xhigh]
+
+    static func parse(_ raw: String?) -> PiThinkingLevel? {
+        let normalized = raw?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "_", with: "-")
+        guard let normalized, !normalized.isEmpty else { return nil }
+        switch normalized {
+        case "off", "none":
+            return .off
+        case "minimal":
+            return .minimal
+        case "low":
+            return .low
+        case "medium":
+            return .medium
+        case "high":
+            return .high
+        case "xhigh", "x-high":
+            return .xhigh
+        default:
+            return nil
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .off: "Off"
+        case .minimal: "Minimal"
+        case .low: "Low"
+        case .medium: "Medium"
+        case .high: "High"
+        case .xhigh: "XHigh"
+        }
+    }
+}
+
 enum AgentModelCatalog {
     struct AvailabilityContext {
         let claudeCodeAvailable: Bool
@@ -185,17 +231,37 @@ enum AgentModelCatalog {
     struct PiMenuOption: Identifiable, Hashable {
         let option: AgentModelOption
         let displayName: String
+        let thinkingLevel: PiThinkingLevel?
+        let isBaseOption: Bool
 
         var id: String {
             option.rawValue
         }
     }
 
+    struct PiModelMenuGroup: Identifiable, Hashable {
+        let providerID: String?
+        let baseModelRaw: String
+        let displayName: String
+        let options: [PiMenuOption]
+        let rendersAsSubmenu: Bool
+        let sortIndex: Int
+
+        var id: String {
+            let providerKey = providerID?.lowercased() ?? "_default"
+            return "\(providerKey)/\(baseModelRaw.lowercased())"
+        }
+    }
+
     struct PiProviderMenuGroup: Identifiable, Hashable {
         let providerID: String?
         let displayName: String
-        let options: [PiMenuOption]
+        let groups: [PiModelMenuGroup]
         let sortIndex: Int
+
+        var options: [PiMenuOption] {
+            groups.flatMap(\.options)
+        }
 
         var id: String {
             providerID?.lowercased() ?? "_default"
@@ -657,8 +723,9 @@ enum AgentModelCatalog {
         struct Entry {
             let option: AgentModelOption
             let providerID: String?
-            let providerDisplayName: String
+            let baseModelRaw: String
             let modelDisplayName: String
+            let thinkingLevel: PiThinkingLevel?
             let index: Int
         }
 
@@ -668,36 +735,80 @@ enum AgentModelCatalog {
             return Entry(
                 option: option,
                 providerID: normalized.providerID,
-                providerDisplayName: normalized.providerDisplayName,
+                baseModelRaw: normalized.baseModelRaw,
                 modelDisplayName: normalized.modelDisplayName,
+                thinkingLevel: normalized.thinkingLevel,
                 index: index
             )
         }
-        let grouped = Dictionary(grouping: entries, by: { $0.providerID?.lowercased() ?? "_unknown" })
-        let providerGroups = grouped.values.compactMap { groupEntries -> PiProviderMenuGroup? in
+
+        let groupedModels = Dictionary(grouping: entries, by: { entry in
+            let providerKey = entry.providerID?.lowercased() ?? "_unknown"
+            return "\(providerKey)/\(entry.baseModelRaw.lowercased())"
+        })
+
+        let modelGroups = groupedModels.values.compactMap { groupEntries -> PiModelMenuGroup? in
             guard let representative = groupEntries.min(by: { $0.index < $1.index }) else { return nil }
-            let sortedOptions = groupEntries.sorted { lhs, rhs in
-                if lhs.option.isProviderDefault != rhs.option.isProviderDefault {
-                    return lhs.option.isProviderDefault && !rhs.option.isProviderDefault
-                }
-                if lhs.modelDisplayName != rhs.modelDisplayName {
-                    return lhs.modelDisplayName.localizedCaseInsensitiveCompare(rhs.modelDisplayName) == .orderedAscending
+            let rendersAsSubmenu = groupEntries.count > 1 || groupEntries.contains { $0.thinkingLevel != nil }
+            let sortedEntries = groupEntries.sorted { lhs, rhs in
+                let leftRank = piThinkingLevelSortRank(lhs.thinkingLevel)
+                let rightRank = piThinkingLevelSortRank(rhs.thinkingLevel)
+                if leftRank != rightRank {
+                    return leftRank < rightRank
                 }
                 return lhs.index < rhs.index
-            }.map { entry in
-                PiMenuOption(option: entry.option, displayName: entry.modelDisplayName)
+            }
+            let menuOptions = sortedEntries.map { entry in
+                let displayName = rendersAsSubmenu
+                    ? piThinkingMenuOptionDisplayName(for: entry.thinkingLevel)
+                    : entry.modelDisplayName
+                return PiMenuOption(
+                    option: entry.option,
+                    displayName: displayName,
+                    thinkingLevel: entry.thinkingLevel,
+                    isBaseOption: entry.thinkingLevel == nil
+                )
+            }
+            return PiModelMenuGroup(
+                providerID: representative.providerID,
+                baseModelRaw: representative.baseModelRaw,
+                displayName: representative.modelDisplayName,
+                options: menuOptions,
+                rendersAsSubmenu: rendersAsSubmenu,
+                sortIndex: representative.index
+            )
+        }
+
+        let groupedProviders = Dictionary(grouping: modelGroups, by: { $0.providerID?.lowercased() ?? "_unknown" })
+        let providerGroups = groupedProviders.values.compactMap { groups -> PiProviderMenuGroup? in
+            guard let representative = groups.min(by: { $0.sortIndex < $1.sortIndex }) else { return nil }
+            let sortedGroups = groups.sorted { lhs, rhs in
+                let displayComparison = ModelPickerStringOrdering.compare(
+                    lhs.displayName,
+                    rhs.displayName,
+                    caseInsensitiveASCII: true
+                )
+                if displayComparison != .orderedSame {
+                    return displayComparison == .orderedAscending
+                }
+                return lhs.baseModelRaw.localizedCaseInsensitiveCompare(rhs.baseModelRaw) == .orderedAscending
             }
             return PiProviderMenuGroup(
                 providerID: representative.providerID,
-                displayName: representative.providerDisplayName,
-                options: sortedOptions,
-                sortIndex: representative.index
+                displayName: normalizedPiProviderDisplayName(providerID: representative.providerID),
+                groups: sortedGroups,
+                sortIndex: representative.sortIndex
             )
         }.sorted { lhs, rhs in
-            if lhs.sortIndex != rhs.sortIndex {
-                return lhs.sortIndex < rhs.sortIndex
+            let displayComparison = ModelPickerStringOrdering.compare(
+                lhs.displayName,
+                rhs.displayName,
+                caseInsensitiveASCII: true
+            )
+            if displayComparison != .orderedSame {
+                return displayComparison == .orderedAscending
             }
-            return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
+            return (lhs.providerID ?? "").localizedCaseInsensitiveCompare(rhs.providerID ?? "") == .orderedAscending
         }
         return PiMenu(defaultOption: defaultOption, providerGroups: providerGroups)
     }
@@ -980,8 +1091,13 @@ enum AgentModelCatalog {
 
         if agentKind == .pi {
             guard let selectedSpecifier = PiModelSpecifier(raw: selected) else { return false }
-            let optionBase = PiModelSpecifier(raw: option)?.providerQualifiedModelRaw ?? option
-            return optionBase.caseInsensitiveCompare(selectedSpecifier.providerQualifiedModelRaw) == .orderedSame
+            let optionSpecifier = PiModelSpecifier(raw: option)
+            let optionBase = optionSpecifier?.providerQualifiedModelRaw ?? option
+            guard optionBase.caseInsensitiveCompare(selectedSpecifier.providerQualifiedModelRaw) == .orderedSame else {
+                return false
+            }
+            guard let optionThinkingLevel = optionSpecifier?.thinkingLevel else { return true }
+            return optionThinkingLevel.caseInsensitiveCompare(selectedSpecifier.thinkingLevel ?? "") == .orderedSame
         }
 
         if agentKind == .codexExec {
@@ -1205,23 +1321,88 @@ enum AgentModelCatalog {
         option: AgentModelOption
     ) -> (
         providerID: String?,
-        providerDisplayName: String,
-        modelDisplayName: String
+        baseModelRaw: String,
+        modelDisplayName: String,
+        thinkingLevel: PiThinkingLevel?
     ) {
         let rawValue = option.rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let displayName = option.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let parts = rawValue.split(separator: "/", maxSplits: 1).map(String.init)
-        let providerID = parts.count == 2 ? parts[0].trimmingCharacters(in: .whitespacesAndNewlines) : nil
-        let modelID = parts.count == 2 ? parts[1].trimmingCharacters(in: .whitespacesAndNewlines) : rawValue
-        let providerDisplayName = providerID.map(humanizedPiProviderName) ?? "pi"
-        let modelDisplayName: String = if providerID?.isEmpty == false {
-            rawValue
-        } else {
-            displayName.isEmpty || displayName == rawValue
-                ? humanizedPiModelName(modelID)
-                : displayName
+        let specifier = PiModelSpecifier(raw: rawValue)
+        let providerID = specifier?.provider
+        let modelID = specifier?.modelID ?? rawValue
+        let baseModelRaw = specifier?.providerQualifiedModelRaw ?? rawValue
+        let thinkingLevel = PiThinkingLevel.parse(specifier?.thinkingLevel)
+        let modelDisplayName = piMenuModelDisplayName(
+            displayName: displayName,
+            rawValue: rawValue,
+            providerID: providerID,
+            modelID: modelID,
+            baseModelRaw: baseModelRaw,
+            thinkingLevel: thinkingLevel
+        )
+        return (providerID?.isEmpty == false ? providerID : nil, baseModelRaw, modelDisplayName, thinkingLevel)
+    }
+
+    private static func normalizedPiProviderDisplayName(providerID: String?) -> String {
+        providerID.map(humanizedPiProviderName) ?? "pi"
+    }
+
+    private static func piMenuModelDisplayName(
+        displayName: String,
+        rawValue: String,
+        providerID: String?,
+        modelID: String,
+        baseModelRaw: String,
+        thinkingLevel: PiThinkingLevel?
+    ) -> String {
+        let fallback = humanizedPiModelName(modelID)
+        let rawDisplay = displayName.isEmpty ? rawValue : displayName
+        let providerPrefix = providerID.map { "\($0)/" } ?? ""
+        let strippedProviderDisplay = providerPrefix.isEmpty
+            ? rawDisplay
+            : rawDisplay.replacingOccurrences(
+                of: "^\(NSRegularExpression.escapedPattern(for: providerPrefix))",
+                with: "",
+                options: [.regularExpression, .caseInsensitive]
+            )
+        let strippedThinkingDisplay = stripPiThinkingSuffix(
+            from: strippedProviderDisplay,
+            thinkingLevel: thinkingLevel
+        )
+        if rawDisplay.localizedCaseInsensitiveCompare(rawValue) == .orderedSame || rawDisplay.isEmpty {
+            return humanizedPiModelName(baseModelRaw.split(separator: "/", maxSplits: 1).last.map(String.init) ?? modelID)
         }
-        return (providerID?.isEmpty == false ? providerID : nil, providerDisplayName, modelDisplayName)
+        let trimmed = strippedThinkingDisplay.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? fallback : trimmed
+    }
+
+    private static func stripPiThinkingSuffix(
+        from label: String,
+        thinkingLevel: PiThinkingLevel?
+    ) -> String {
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let thinkingLevel else { return trimmed }
+        let suffixes = [
+            ":\(thinkingLevel.rawValue)",
+            " \(thinkingLevel.displayName)",
+            "-\(thinkingLevel.rawValue)",
+            "_\(thinkingLevel.rawValue)"
+        ]
+        let lowered = trimmed.lowercased()
+        for suffix in suffixes where lowered.hasSuffix(suffix.lowercased()) {
+            return String(trimmed.dropLast(suffix.count))
+                .trimmingCharacters(in: CharacterSet(charactersIn: " -_/·:"))
+        }
+        return trimmed
+    }
+
+    private static func piThinkingLevelSortRank(_ level: PiThinkingLevel?) -> Int {
+        guard let level else { return -1 }
+        return PiThinkingLevel.displayOrder.firstIndex(of: level) ?? Int.max
+    }
+
+    private static func piThinkingMenuOptionDisplayName(for level: PiThinkingLevel?) -> String {
+        level?.displayName ?? "Model Default"
     }
 
     private static func humanizedPiProviderName(_ providerID: String) -> String {
@@ -1265,15 +1446,7 @@ enum AgentModelCatalog {
 
     private static func piThinkingLevelDisplayName(_ raw: String) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        switch trimmed.lowercased() {
-        case "off": return "Off"
-        case "minimal": return "Minimal"
-        case "low": return "Low"
-        case "medium": return "Medium"
-        case "high": return "High"
-        case "xhigh", "x-high": return "XHigh"
-        default: return trimmed
-        }
+        return PiThinkingLevel.parse(trimmed)?.displayName ?? trimmed
     }
 
     private enum OpenCodeVariant: String {

@@ -107,8 +107,16 @@ struct AgentModelOptionsMenuContent: View {
             }
             ForEach(piMenu.providerGroups) { providerGroup in
                 Menu(providerGroup.displayName) {
-                    ForEach(providerGroup.options) { menuOption in
-                        modelOptionButton(menuOption.option, title: menuOption.displayName)
+                    ForEach(providerGroup.groups) { group in
+                        if group.rendersAsSubmenu {
+                            Menu(group.displayName) {
+                                ForEach(group.options) { menuOption in
+                                    modelOptionButton(menuOption.option, title: menuOption.displayName)
+                                }
+                            }
+                        } else if let menuOption = group.options.first {
+                            modelOptionButton(menuOption.option, title: menuOption.displayName)
+                        }
                     }
                 }
             }
@@ -432,7 +440,31 @@ enum AgentModelStableMenuItems {
         items.append(contentsOf: piMenu.providerGroups.map { providerGroup in
             StableMenuItem.submenu(
                 providerGroup.displayName,
-                items: providerGroup.options.map { menuOption in
+                items: providerGroup.groups.map { group in
+                    piModelGroupItem(
+                        agentKind: agentKind,
+                        group: group,
+                        selectedAgent: selectedAgent,
+                        selectedModelRaw: selectedModelRaw,
+                        onSelect: onSelect
+                    )
+                }
+            )
+        })
+        return items
+    }
+
+    private static func piModelGroupItem(
+        agentKind: AgentProviderKind,
+        group: AgentModelCatalog.PiModelMenuGroup,
+        selectedAgent: AgentProviderKind,
+        selectedModelRaw: String,
+        onSelect: @escaping (AgentProviderKind, AgentModelOption) -> Void
+    ) -> StableMenuItem {
+        if group.rendersAsSubmenu {
+            return StableMenuItem.submenu(
+                group.displayName,
+                items: group.options.map { menuOption in
                     modelItem(
                         menuOption.option,
                         title: menuOption.displayName,
@@ -443,8 +475,18 @@ enum AgentModelStableMenuItems {
                     )
                 }
             )
-        })
-        return items
+        }
+        if let menuOption = group.options.first {
+            return modelItem(
+                menuOption.option,
+                title: menuOption.displayName,
+                agentKind: agentKind,
+                selectedAgent: selectedAgent,
+                selectedModelRaw: selectedModelRaw,
+                onSelect: onSelect
+            )
+        }
+        return .separator
     }
 
     private static func modelItem(

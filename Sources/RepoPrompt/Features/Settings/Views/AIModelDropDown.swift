@@ -152,6 +152,8 @@ struct AIModelDropdown: View {
                     guard providerGroup.rendersAsSubmenu else { return modelItems }
                     return [.submenu(providerGroup.displayName, items: modelItems)]
                 }
+            } else if provider == .pi {
+                aiModelPiMenuItems(for: models)
             } else {
                 models.map(aiModelMenuItem)
             }
@@ -294,6 +296,79 @@ struct AIModelDropdown: View {
         return .separator
     }
 
+    private func aiModelPiMenuItems(for models: [AIModel]) -> [StableMenuItem] {
+        let options = models.compactMap { model -> AgentModelOption? in
+            guard model.providerType == .pi else { return nil }
+            let raw = model.modelName.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !raw.isEmpty else { return nil }
+            let sourceOption = AgentPiModelRegistry.shared.resolvedSnapshot()?.option(matching: raw)
+            return AgentModelOption(
+                rawValue: raw,
+                displayName: sourceOption?.displayName ?? raw,
+                description: sourceOption?.description,
+                isPlaceholderDefault: sourceOption?.isPlaceholderDefault
+                    ?? (raw.caseInsensitiveCompare(AgentModel.defaultModel.rawValue) == .orderedSame),
+                isProviderDefault: sourceOption?.isProviderDefault ?? false
+            )
+        }
+        let piMenu = AgentModelCatalog.piMenu(for: options)
+        var items: [StableMenuItem] = []
+        if let defaultOption = piMenu.defaultOption {
+            items.append(aiModelPiMenuItem(defaultOption))
+        }
+        if !items.isEmpty, !piMenu.providerGroups.isEmpty {
+            items.append(.separator)
+        }
+        items.append(contentsOf: piMenu.providerGroups.map { providerGroup in
+            StableMenuItem.submenu(
+                providerGroup.displayName,
+                items: providerGroup.groups.map(aiModelPiModelGroupItem)
+            )
+        })
+        return items
+    }
+
+    private func aiModelPiModelGroupItem(_ group: AgentModelCatalog.PiModelMenuGroup) -> StableMenuItem {
+        if group.rendersAsSubmenu {
+            return StableMenuItem.submenu(
+                group.displayName,
+                items: group.options.map { aiModelPiMenuItem($0.option, title: $0.displayName) }
+            )
+        }
+        if let option = group.options.first {
+            return aiModelPiMenuItem(option.option, title: option.displayName)
+        }
+        return .separator
+    }
+
+    private func aiModelPiMenuItem(_ option: AgentModelOption, title: String? = nil) -> StableMenuItem {
+        StableMenuItem.action(
+            truncateHeadIfNeeded(title ?? option.displayName),
+            isSelected: piModelOptionIsSelected(option.rawValue)
+        ) {
+            destination.apply(AIModel.piCustom(name: option.rawValue).rawValue)
+        }
+    }
+
+    private func piModelOptionIsSelected(_ optionRaw: String) -> Bool {
+        guard let current = currentPiModelName else { return false }
+        return AgentModelCatalog.modelOptionIsSelected(
+            optionRaw: optionRaw,
+            selectedRaw: current,
+            agentKind: .pi
+        )
+    }
+
+    private var currentPiModelName: String? {
+        let raw = destination.currentRawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return nil }
+        if raw.hasPrefix("pi_custom_") {
+            return String(raw.dropFirst("pi_custom_".count))
+        }
+        guard let model = AIModel.fromModelName(raw), model.providerType == .pi else { return nil }
+        return model.modelName
+    }
+
     private func aiModelMenuItem(_ model: AIModel) -> StableMenuItem {
         StableMenuItem.action(
             truncateHeadIfNeeded(model.displayName),
@@ -346,6 +421,15 @@ struct AIModelDropdown: View {
     ) -> String {
         if availableModels.isEmpty {
             return "No models available"
+        }
+
+        if currentModel.hasPrefix("pi_custom_") {
+            let piModelRaw = String(currentModel.dropFirst("pi_custom_".count))
+            return AgentModelCatalog.displayName(
+                for: piModelRaw,
+                agentKind: .pi,
+                availability: .init(piAvailable: true)
+            )
         }
 
         // Check custom OpenRouter models

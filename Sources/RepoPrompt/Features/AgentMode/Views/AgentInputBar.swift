@@ -27,6 +27,8 @@ struct AgentComposerActions {
     let selectAgentModel: (_ agent: AgentProviderKind, _ rawModel: String) -> Void
     let reasoningEffortOptionsForCurrentSelection: () -> [CodexReasoningEffort]
     let selectReasoningEffort: (_ effort: CodexReasoningEffort?) -> Void
+    let piThinkingLevelOptions: () -> [PiThinkingLevel]
+    let selectPiThinkingLevel: (_ level: PiThinkingLevel?) -> Void
     let setAutoEditEnabled: (_ enabled: Bool) -> Void
     let setProviderPermissionLevel: (_ id: AgentProviderPermissionLevelID) -> Void
     let setCodexBashToolEnabled: (_ enabled: Bool) -> Void
@@ -139,10 +141,29 @@ struct AgentInputBar: View {
             canSelectAgentInCurrentChat: { agent in agentModeVM.canSelectAgentInCurrentChat(agent) },
             selectAgentModel: { agent, rawModel in
                 agentModeVM.selectedAgent = agent
-                agentModeVM.selectModel(rawModel: rawModel)
+                if agent == .pi {
+                    if let specifier = PiModelSpecifier(raw: rawModel) {
+                        agentModeVM.selectedReasoningEffortRaw = specifier.thinkingLevel
+                        agentModeVM.selectModel(rawModel: specifier.providerQualifiedModelRaw)
+                    } else {
+                        agentModeVM.selectedReasoningEffortRaw = nil
+                        agentModeVM.selectModel(rawModel: rawModel)
+                    }
+                } else {
+                    agentModeVM.selectModel(rawModel: rawModel)
+                }
             },
             reasoningEffortOptionsForCurrentSelection: { agentModeVM.reasoningEffortOptionsForCurrentSelection() },
             selectReasoningEffort: { effort in agentModeVM.selectReasoningEffort(effort) },
+            piThinkingLevelOptions: { PiThinkingLevel.displayOrder },
+            selectPiThinkingLevel: { level in
+                if let specifier = PiModelSpecifier(raw: agentModeVM.selectedModelRaw),
+                   specifier.thinkingLevel != nil
+                {
+                    agentModeVM.selectModel(rawModel: specifier.providerQualifiedModelRaw)
+                }
+                agentModeVM.selectedReasoningEffortRaw = level?.rawValue
+            },
             setAutoEditEnabled: { enabled in agentModeVM.setAutoEditEnabled(enabled) },
             setProviderPermissionLevel: { id in agentModeVM.setProviderPermissionLevel(id) },
             setCodexBashToolEnabled: { enabled in agentModeVM.setCodexBashToolEnabled(enabled) },
@@ -627,6 +648,7 @@ struct AgentComposerView: View, Equatable {
                     if props.hasAvailableAgentProviders {
                         agentProviderModelPicker
                         reasoningEffortPicker
+                        piThinkingLevelPicker
                         claudeEffortPicker
                         codexToolsButton
                         claudeToolsButton
@@ -853,6 +875,17 @@ struct AgentComposerView: View, Equatable {
 
     private func inputBarModelMenuItems(for agent: AgentProviderKind) -> [StableMenuItem] {
         let options = inputBarModelOptions(for: agent)
+        if agent == .pi {
+            return AgentModelStableMenuItems.modelItems(
+                agentKind: agent,
+                options: options,
+                selectedAgent: props.selectedAgent,
+                selectedModelRaw: props.selectedModelRaw,
+                includePlaceholderDefault: false
+            ) { selectedAgent, selectedOption in
+                actions.selectAgentModel(selectedAgent, selectedOption.rawValue)
+            }
+        }
         guard agent == .openCode else {
             return options.map { inputBarModelMenuItem(agent: agent, model: $0) }
         }
@@ -959,6 +992,57 @@ struct AgentComposerView: View, Equatable {
             .disabled(efforts.isEmpty || modelControlsDisabled)
             .opacity(modelControlsDisabled ? 0.55 : 1.0)
             .hoverTooltip(modelControlsDisabled ? modelControlsDisabledTooltip : "Codex reasoning effort")
+            .fixedSize()
+        }
+    }
+
+    @ViewBuilder
+    private var piThinkingLevelPicker: some View {
+        if props.selectedAgent == .pi {
+            let levels = actions.piThinkingLevelOptions()
+            let selectedLevel = PiThinkingLevel.parse(props.selectedReasoningEffortRaw)
+                ?? PiThinkingLevel.parse(PiModelSpecifier(raw: props.selectedModelRaw)?.thinkingLevel)
+            Menu {
+                Button {
+                    actions.selectPiThinkingLevel(nil)
+                } label: {
+                    HStack {
+                        Text("Default")
+                        if selectedLevel == nil {
+                            Spacer()
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+                Divider()
+                ForEach(levels, id: \.rawValue) { level in
+                    Button {
+                        actions.selectPiThinkingLevel(level)
+                    } label: {
+                        HStack {
+                            Text(level.displayName)
+                            if selectedLevel == level {
+                                Spacer()
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text(selectedLevel?.displayName ?? "Default")
+                        .font(fontPreset.swiftUIFont(sizeAtNormal: 11))
+                }
+                .foregroundColor(.secondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(pickerChipColor)
+                .cornerRadius(4)
+            }
+            .menuStyle(.borderlessButton)
+            .disabled(levels.isEmpty || modelControlsDisabled)
+            .opacity(modelControlsDisabled ? 0.55 : 1.0)
+            .hoverTooltip(modelControlsDisabled ? modelControlsDisabledTooltip : "pi thinking level")
             .fixedSize()
         }
     }
