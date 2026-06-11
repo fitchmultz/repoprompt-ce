@@ -127,10 +127,33 @@ async function callRepoPromptTool(
   };
 }
 
+function registerRepoPromptWindowStatusTool(pi: ExtensionAPI) {
+  pi.registerTool({
+    name: "repoprompt_window_status",
+    label: "RepoPrompt window status",
+    description: "List RepoPrompt CE windows, tabs, workspaces, and the current bridge routing binding.",
+    promptSnippet: "List RepoPrompt CE windows/tabs/workspaces and current bridge routing binding",
+    promptGuidelines: [
+      "Use repoprompt_window_status to discover the current RepoPrompt CE window, workspace, tab, and routing binding before choosing a window-scoped RepoPrompt tool.",
+      "Use repoprompt_window_status instead of shelling out to repoprompt-mcp when a pi run needs RepoPrompt window or tab routing status.",
+    ],
+    parameters: {
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    },
+    async execute(_toolCallId: string, _params: unknown, signal?: AbortSignal) {
+      return await callRepoPromptTool(pi, "bind_context", { op: "list" }, signal);
+    },
+  });
+}
+
 export default async function repoPromptBridge(pi: ExtensionAPI) {
   if (!REPOPROMPT_IS_MANAGED_WINDOW_BRIDGE && process.env[REPOPROMPT_MANAGED_RUN_ENV] === "1") {
     return;
   }
+
+  registerRepoPromptWindowStatusTool(pi);
 
   const tools = await loadRepoPromptTools(pi);
   for (const tool of tools) {

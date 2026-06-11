@@ -162,6 +162,8 @@ Bridge constants:
 
 Bridge tool results include `details.bridgeVersion`, `details.tool`, `details.windowID`, `details.exitCode`, and `details.truncated` for downstream rendering and diagnostics.
 
+The bridge also registers a fixed read-only `repoprompt_window_status` tool. It calls RepoPrompt MCP `bind_context` with `op=list` and exists as a stable pi-facing routing discovery tool when provider/tool adapters fail to expose or select the raw `bind_context` name. Agents should use `repoprompt_window_status` instead of shelling out to `repoprompt-mcp` when they need the current RepoPrompt window, tab, workspace, or binding status.
+
 ### MCP routing and permissions
 
 RepoPrompt owns the MCP permission boundary for RepoPrompt tools. The pi bridge only exposes tools and calls `repoprompt-mcp`; RepoPrompt still controls routing, active window selection, auto-approval, and Agent Mode permission UI.
