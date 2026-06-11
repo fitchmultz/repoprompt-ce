@@ -12,6 +12,19 @@ const REPOPROMPT_TOOL_ARGS_PREFIX = JSON.parse("__REPOPROMPT_TOOL_ARGS_PREFIX_JS
 const SCHEMA_LOAD_TIMEOUT_MS = 60_000;
 const TOOL_EXEC_TIMEOUT_MS = 600_000;
 const MAX_RESULT_CHARS = 50 * 1024;
+const MANAGED_BRIDGE_DYNAMIC_TOOL_ALLOWLIST = new Set([
+  "workspace_context",
+  "get_file_tree",
+  "get_code_structure",
+  "read_file",
+  "file_search",
+  "agent_manage",
+  "ask_oracle",
+  "oracle_chat_log",
+  "ask_user",
+  "set_status",
+  "app_settings",
+]);
 
 type JSONRecord = Record<string, unknown>;
 
@@ -97,6 +110,19 @@ function repoPromptToolArgs(toolName: string, params: JSONRecord): string[] {
   return [...REPOPROMPT_TOOL_ARGS_PREFIX, "-c", toolName, "-j", JSON.stringify(params ?? {})];
 }
 
+function sanitizedBindContextParams(params: unknown): JSONRecord {
+  const record = isRecord(params) ? params : {};
+  const op = typeof record.op === "string" ? record.op.trim().toLowerCase() : "";
+  if (op !== "list" && op !== "status") {
+    throw new Error("Managed pi bridge bind_context supports only read-only op=list or op=status.");
+  }
+  const sanitized: JSONRecord = { op };
+  if (typeof record.window_id === "number" && Number.isInteger(record.window_id)) {
+    sanitized.window_id = record.window_id;
+  }
+  return sanitized;
+}
+
 async function callRepoPromptTool(
   pi: ExtensionAPI,
   toolName: string,
@@ -127,6 +153,32 @@ async function callRepoPromptTool(
   };
 }
 
+function registerRepoPromptBindContextTool(pi: ExtensionAPI) {
+  if (!REPOPROMPT_IS_MANAGED_WINDOW_BRIDGE) return;
+  pi.registerTool({
+    name: "bind_context",
+    label: "RepoPrompt bind context",
+    description: "Read RepoPrompt CE window, tab, workspace, and current bridge routing binding state. Managed pi runs allow only op=list and op=status.",
+    promptSnippet: "Inspect RepoPrompt CE window/tab routing binding",
+    promptGuidelines: [
+      "Use bind_context with op=list or op=status to inspect RepoPrompt routing state.",
+      "Do not use bind_context op=bind from managed pi Agent Mode runs; mutating routing is blocked.",
+    ],
+    parameters: {
+      type: "object",
+      properties: {
+        op: { type: "string", enum: ["list", "status"] },
+        window_id: { type: "integer" },
+      },
+      required: ["op"],
+      additionalProperties: false,
+    },
+    async execute(_toolCallId: string, params: unknown, signal?: AbortSignal) {
+      return await callRepoPromptTool(pi, "bind_context", sanitizedBindContextParams(params), signal);
+    },
+  });
+}
+
 function registerRepoPromptWindowStatusTool(pi: ExtensionAPI) {
   pi.registerTool({
     name: "repoprompt_window_status",
@@ -153,11 +205,15 @@ export default async function repoPromptBridge(pi: ExtensionAPI) {
     return;
   }
 
+  registerRepoPromptBindContextTool(pi);
   registerRepoPromptWindowStatusTool(pi);
 
   const tools = await loadRepoPromptTools(pi);
   for (const tool of tools) {
     const toolName = requireToolName(tool.name);
+    if (REPOPROMPT_IS_MANAGED_WINDOW_BRIDGE && !MANAGED_BRIDGE_DYNAMIC_TOOL_ALLOWLIST.has(toolName)) {
+      continue;
+    }
     const description = tool.description?.trim() || `Call RepoPrompt MCP tool ${toolName} through the current RepoPrompt CE window.`;
     pi.registerTool({
       name: toolName,

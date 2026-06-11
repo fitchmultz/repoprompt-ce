@@ -37,9 +37,9 @@ enum PiRepoPromptBridgeExtensionInstaller {
         }
     }
 
-    static let extensionVersion = "2"
-
+    static let extensionVersion = "6"
     private static let bridgeClientName = "pi"
+    private static let bridgeExecutionClientName = "pi-schema"
     private static let managedMarker = "// RepoPrompt CE managed pi bridge extension"
     private static let globalExtensionFileName = "repoprompt-bridge.ts"
 
@@ -170,11 +170,12 @@ enum PiRepoPromptBridgeExtensionInstaller {
         guard let windowID else {
             return ["--tools-schema", "--compact"]
         }
-        return ["--client-name", bridgeClientName, "--tools-schema", "--compact", "-w", String(windowID)]
+        return ["--client-name", bridgeExecutionClientName, "--tools-schema", "--compact", "-w", String(windowID)]
     }
 
     static func toolArgsPrefix(windowID: Int?) -> [String] {
-        var args = ["--client-name", bridgeClientName, "--raw-json"]
+        let clientName = windowID == nil ? bridgeClientName : bridgeExecutionClientName
+        var args = ["--client-name", clientName, "--raw-json"]
         if let windowID {
             args.append(contentsOf: ["-w", String(windowID)])
         }

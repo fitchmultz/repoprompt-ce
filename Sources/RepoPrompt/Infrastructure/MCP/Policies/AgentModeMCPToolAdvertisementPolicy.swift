@@ -28,6 +28,8 @@ enum AgentModeMCPToolAdvertisementPolicy {
         // App settings are safe allowlisted preferences and should be visible to agent-mode subagents;
         // discovery/context-builder runs remain restricted by DiscoverMCPToolPolicy itself.
         capabilities.remove(.appSettings)
+        // Keep routing discovery out of dynamic Agent Mode schema export; the pi bridge registers
+        // its own read-only bind_context wrapper while actual execution policy allows list/status.
         // Add conversation log hiding — explore agents don't need oracle_chat_log
         capabilities.insert(.conversationLog)
         // Hide context mutation tools (manage_selection, prompt) and context render (workspace_context)
@@ -35,12 +37,12 @@ enum AgentModeMCPToolAdvertisementPolicy {
         capabilities.insert(.contextMutate)
         capabilities.insert(.contextRender)
 
-        return MCPToolCapabilities.toolNames(for: capabilities)
+        return MCPToolCapabilities.toolNames(for: capabilities).union(["manage_workspaces"])
     }()
 
     /// Tools hidden from non-explore role agents (engineer, pair, design) by default.
     /// The run policy can opt back into agent_run/agent_manage for allowed orchestrator sessions.
-    private static let nonExploreRoleHiddenTools: Set<String> = MCPToolCapabilities.toolNames(for: [.agentExternalControl])
+    private static let nonExploreRoleHiddenTools: Set<String> = MCPToolCapabilities.toolNames(for: [.agentExternalControl]).union(["bind_context"])
 
     // MARK: - Public API
 

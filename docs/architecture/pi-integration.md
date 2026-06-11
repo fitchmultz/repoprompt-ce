@@ -164,6 +164,10 @@ Bridge tool results include `details.bridgeVersion`, `details.tool`, `details.wi
 
 The bridge also registers a fixed read-only `repoprompt_window_status` tool. It calls RepoPrompt MCP `bind_context` with `op=list` and exists as a stable pi-facing routing discovery tool when provider/tool adapters fail to expose or select the raw `bind_context` name. Agents should use `repoprompt_window_status` instead of shelling out to `repoprompt-mcp` when they need the current RepoPrompt window, tab, workspace, or binding status.
 
+Agent Mode connections must allow `bind_context` execution for read-only `op=list` and `op=status` so pi can inspect its own tab/window binding. Mutating `bind_context` operations and workspace-level routing mutation through `manage_workspaces` remain restricted during Agent Mode runs.
+
+The managed pi bridge registers an explicit read-only `bind_context` wrapper plus the `repoprompt_window_status` alias. Bridge schema discovery and tool calls use the non-agent `pi-schema` client name to avoid PID-gated startup deadlocks, so the bridge exposes only an explicit dynamic allowlist of read-only/context/control tools (`workspace_context`, tree/code/read/search, `agent_manage`, oracle chat/log, user/status, app settings). Mutable file/workspace/routing tools such as `apply_edits`, `file_actions`, `manage_selection`, `prompt`, `manage_workspaces`, and raw dynamic `bind_context` stay hidden; the wrapper preserves the read-only routing boundary for `bind_context`.
+
 ### MCP routing and permissions
 
 RepoPrompt owns the MCP permission boundary for RepoPrompt tools. The pi bridge only exposes tools and calls `repoprompt-mcp`; RepoPrompt still controls routing, active window selection, auto-approval, and Agent Mode permission UI.

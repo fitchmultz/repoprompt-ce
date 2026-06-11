@@ -539,6 +539,17 @@ actor ServerNetworkManager {
         return false
     }
 
+    nonisolated static func isAgentModeBindContextOperationAllowed(args: [String: Value]) -> Bool {
+        guard let op = args["op"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else {
+            return false
+        }
+        return op == "list" || op == "status"
+    }
+
+    nonisolated static func agentModeBindContextRestrictionMessage() -> String {
+        "Agent Mode MCP connections may use bind_context for read-only list/status routing discovery. Mutating bind_context operations are disabled for Agent Mode runs."
+    }
+
     nonisolated static func multiWindowSelectionGuidance() -> String {
         "Multiple RepoPrompt windows detected. Bind your connection to a tab context to route tool calls:\n\n" +
             "**Recommended: Bind by exact workspace root paths (auto-resolves to the matching workspace/window tab context)**\n" +
@@ -10313,6 +10324,13 @@ actor ServerNetworkManager {
                     EditFlowPerf.Dimensions(toolName: toolName)
                 )
                 defer { EditFlowPerf.end(EditFlowPerf.Stage.MCPToolCall.policyGating, policyState) }
+                if toolName == "bind_context",
+                   policy.purpose == .agentModeRun,
+                   !Self.isAgentModeBindContextOperationAllowed(args: dispatchArguments)
+                {
+                    log.notice("Connection \(connectionID) attempted mutating bind_context operation during Agent Mode run")
+                    return Self.toolErrorResult(rawJSON: capturedRawJSON, message: Self.agentModeBindContextRestrictionMessage())
+                }
                 if policy.restricted.contains(toolName) {
                     log.notice("Connection \(connectionID) attempted to call restricted tool \(toolName)")
                     return Self.toolErrorResult(rawJSON: capturedRawJSON, message: "Tool '\(toolName)' is disabled for this connection.")

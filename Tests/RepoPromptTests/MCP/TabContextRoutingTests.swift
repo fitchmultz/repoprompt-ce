@@ -579,6 +579,40 @@ final class TabContextRoutingTests: XCTestCase {
         XCTAssertTrue(ServerNetworkManager.shouldBypassLogicalContextPreResolution(for: "bind_context"))
     }
 
+    func testAgentModePolicyAllowsBindContextButStillRestrictsWorkspaceRoutingMutation() {
+        XCTAssertFalse(AgentModeMCPToolPolicy.restrictedTools.contains("bind_context"))
+        XCTAssertTrue(AgentModeMCPToolPolicy.restrictedTools.contains("manage_workspaces"))
+    }
+
+    func testAgentModeBindContextPolicyAllowsOnlyReadOnlyDiscoveryOperations() {
+        XCTAssertTrue(ServerNetworkManager.isAgentModeBindContextOperationAllowed(args: ["op": .string("list")]))
+        XCTAssertTrue(ServerNetworkManager.isAgentModeBindContextOperationAllowed(args: ["op": .string("status")]))
+        XCTAssertTrue(ServerNetworkManager.isAgentModeBindContextOperationAllowed(args: ["op": .string(" LIST ")]))
+        XCTAssertFalse(ServerNetworkManager.isAgentModeBindContextOperationAllowed(args: ["op": .string("bind")]))
+        XCTAssertFalse(ServerNetworkManager.isAgentModeBindContextOperationAllowed(args: ["op": .string("unknown")]))
+        XCTAssertFalse(ServerNetworkManager.isAgentModeBindContextOperationAllowed(args: [:]))
+        XCTAssertTrue(ServerNetworkManager.agentModeBindContextRestrictionMessage().contains("read-only"))
+    }
+
+    func testAgentModeAdvertisementHidesBindContextFromDynamicSchemaExport() {
+        for role in [AgentModelCatalog.TaskLabelKind.explore, .engineer, .pair, .design] {
+            XCTAssertFalse(
+                AgentModeMCPToolAdvertisementPolicy.shouldAdvertise(
+                    toolName: "bind_context",
+                    taskLabelKind: role
+                ),
+                "bind_context dynamic schema should stay hidden for \(role.rawValue); the pi bridge registers its read-only wrapper explicitly"
+            )
+        }
+        XCTAssertFalse(
+            AgentModeMCPToolAdvertisementPolicy.shouldAdvertise(
+                toolName: "manage_workspaces",
+                taskLabelKind: .explore
+            )
+        )
+        XCTAssertTrue(AgentModeMCPToolPolicy.restrictedTools.contains("manage_workspaces"))
+    }
+
     func testMigratedToolContextPreResolutionPersistsWindowAffinity() {
         XCTAssertFalse(ServerNetworkManager.shouldUseGenericTabBindingCompatibility(for: "workspace_context"))
         XCTAssertFalse(ServerNetworkManager.shouldUseGenericTabBindingCompatibility(for: "manage_selection"))

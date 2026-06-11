@@ -5,7 +5,7 @@ final class PiRepoPromptBridgeExtensionInstallerTests: XCTestCase {
     func testBridgeCommandArgumentsIncludeClientNameWindowAndJSONCallPayload() {
         XCTAssertEqual(
             PiRepoPromptBridgeExtensionInstaller.schemaArgs(windowID: 42),
-            ["--client-name", "pi", "--tools-schema", "--compact", "-w", "42"]
+            ["--client-name", "pi-schema", "--tools-schema", "--compact", "-w", "42"]
         )
         XCTAssertEqual(
             PiRepoPromptBridgeExtensionInstaller.schemaArgs(windowID: nil),
@@ -13,7 +13,7 @@ final class PiRepoPromptBridgeExtensionInstallerTests: XCTestCase {
         )
         XCTAssertEqual(
             PiRepoPromptBridgeExtensionInstaller.toolArgs(toolName: "get_file_tree", paramsJSON: "{}", windowID: 42),
-            ["--client-name", "pi", "--raw-json", "-w", "42", "-c", "get_file_tree", "-j", "{}"]
+            ["--client-name", "pi-schema", "--raw-json", "-w", "42", "-c", "get_file_tree", "-j", "{}"]
         )
     }
 
@@ -29,12 +29,18 @@ final class PiRepoPromptBridgeExtensionInstallerTests: XCTestCase {
         XCTAssertTrue(source.contains("name: toolName"))
         XCTAssertTrue(source.contains("parameters: asParameterSchema(tool.inputSchema)"))
         XCTAssertTrue(source.contains("repoPromptSchemaArgs()"))
-        XCTAssertTrue(source.contains("const REPOPROMPT_SCHEMA_ARGS = JSON.parse(\"[\\\"--client-name\\\",\\\"pi\\\",\\\"--tools-schema\\\",\\\"--compact\\\",\\\"-w\\\",\\\"42\\\"]\") as string[]"))
+        XCTAssertTrue(source.contains("const REPOPROMPT_SCHEMA_ARGS = JSON.parse(\"[\\\"--client-name\\\",\\\"pi-schema\\\",\\\"--tools-schema\\\",\\\"--compact\\\",\\\"-w\\\",\\\"42\\\"]\") as string[]"))
         XCTAssertTrue(source.contains("repoPromptToolArgs(toolName, params)"))
+        XCTAssertTrue(source.contains("name: \"bind_context\""))
+        XCTAssertTrue(source.contains("enum: [\"list\", \"status\"]"))
+        XCTAssertTrue(source.contains("sanitizedBindContextParams"))
+        XCTAssertTrue(source.contains("MANAGED_BRIDGE_DYNAMIC_TOOL_ALLOWLIST"))
+        XCTAssertTrue(source.contains("\"workspace_context\""))
+        XCTAssertTrue(source.contains("!MANAGED_BRIDGE_DYNAMIC_TOOL_ALLOWLIST.has(toolName)"))
         XCTAssertTrue(source.contains("name: \"repoprompt_window_status\""))
         XCTAssertTrue(source.contains("callRepoPromptTool(pi, \"bind_context\", { op: \"list\" }, signal)"))
         XCTAssertTrue(source.contains("Use repoprompt_window_status instead of shelling out to repoprompt-mcp"))
-        XCTAssertTrue(source.contains("const REPOPROMPT_TOOL_ARGS_PREFIX = JSON.parse(\"[\\\"--client-name\\\",\\\"pi\\\",\\\"--raw-json\\\",\\\"-w\\\",\\\"42\\\"]\") as string[]"))
+        XCTAssertTrue(source.contains("const REPOPROMPT_TOOL_ARGS_PREFIX = JSON.parse(\"[\\\"--client-name\\\",\\\"pi-schema\\\",\\\"--raw-json\\\",\\\"-w\\\",\\\"42\\\"]\") as string[]"))
         XCTAssertTrue(source.contains("const REPOPROMPT_CLIENT_NAME = \"pi\""))
         XCTAssertTrue(source.contains("const REPOPROMPT_WINDOW_ID: string | undefined = \"42\""))
         XCTAssertTrue(source.contains("const REPOPROMPT_IS_MANAGED_WINDOW_BRIDGE = REPOPROMPT_WINDOW_ID !== undefined"))
