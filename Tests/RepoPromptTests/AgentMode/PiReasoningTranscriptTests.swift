@@ -102,6 +102,40 @@ private final class PiReasoningNoopCodexController: CodexSessionControlling {
     }
 
     func setThreadName(_: String, threadID _: String?) async throws {}
+
+    func startUserTurn(
+        text _: String,
+        images _: [AgentImageAttachment],
+        model _: String?,
+        reasoningEffort _: String?,
+        serviceTier _: String?
+    ) async throws -> CodexTurnStartReceipt {
+        CodexTurnStartReceipt(provisionalSubmissionID: "fake-turn")
+    }
+
+    func steerUserTurn(
+        text _: String,
+        images _: [AgentImageAttachment],
+        expectedTurnID: String
+    ) async throws -> CodexTurnSteerReceipt {
+        CodexTurnSteerReceipt(acceptedTurnID: expectedTurnID)
+    }
+
+    func prepareLifecycleAuthorityReconciliationAfterAcceptedMismatch(
+        expectedCurrentTurnID _: String,
+        acceptedDispatchTurnID _: String
+    ) async -> Bool {
+        false
+    }
+
+    func interruptUserTurn(expectedTurnID: String) async throws -> CodexTurnInterruptReceipt {
+        CodexTurnInterruptReceipt(interruptedTurnID: expectedTurnID)
+    }
+
+    func reconcileAndInterruptCurrentTurn() async throws -> CodexTurnInterruptReceipt {
+        CodexTurnInterruptReceipt(interruptedTurnID: "fake-turn")
+    }
+
     func sendUserMessage(_: String) async throws {}
     func sendUserTurn(text _: String, images _: [AgentImageAttachment]) async throws {}
     func sendUserTurn(text _: String, images _: [AgentImageAttachment], model _: String?, reasoningEffort _: String?) async throws {}

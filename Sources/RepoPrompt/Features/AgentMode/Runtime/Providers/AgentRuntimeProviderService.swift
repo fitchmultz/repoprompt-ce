@@ -137,7 +137,7 @@ enum AgentProviderKind: String, CaseIterable, Hashable {
         switch self {
         case .cursor:
             false
-        case .claudeCode, .codexExec, .openCode, .claudeCodeGLM, .kimiCode, .customClaudeCompatible:
+        case .claudeCode, .codexExec, .openCode, .claudeCodeGLM, .kimiCode, .customClaudeCompatible, .pi:
             true
         }
     }
