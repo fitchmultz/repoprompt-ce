@@ -25,6 +25,38 @@ public extension String {
         return "…\(text[startIndex...])"
     }
 
+    internal static func truncateQualifiedModelLabel(_ text: String, maxLength: Int = 40) -> String {
+        guard text.count > maxLength else { return text }
+        let separator = " · "
+        let components = text.components(separatedBy: separator)
+        guard components.count > 1 else {
+            return truncateModelName(text, maxLength: maxLength)
+        }
+
+        let fullPrefix = components.dropLast().joined(separator: separator) + separator
+        if let truncated = truncateQualifiedModelLabel(text, prefix: fullPrefix, maxLength: maxLength) {
+            return truncated
+        }
+
+        let providerPrefix = components[0] + separator
+        if let truncated = truncateQualifiedModelLabel(text, prefix: providerPrefix, maxLength: maxLength) {
+            return truncated
+        }
+
+        let prefixBudget = Swift.max(1, maxLength - 9)
+        let prefix = String(providerPrefix.prefix(prefixBudget))
+        return "\(prefix)…"
+    }
+
+    private static func truncateQualifiedModelLabel(_ text: String, prefix: String, maxLength: Int) -> String? {
+        let ellipsisLength = 1
+        let minimumTailLength = 8
+        let tailBudget = maxLength - prefix.count - ellipsisLength
+        guard tailBudget >= minimumTailLength else { return nil }
+        let suffixStart = text.index(text.endIndex, offsetBy: -tailBudget)
+        return "\(prefix)…\(text[suffixStart...])"
+    }
+
     internal func similarity(to other: String) -> Double {
         similarityFast(to: other)
     }

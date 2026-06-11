@@ -612,7 +612,7 @@ struct MCPServerPopoverContent: View {
                     AgentModelSelectionSummaryLabel(
                         agentKind: promptViewModel.contextBuilderAgent,
                         rawModel: promptViewModel.contextBuilderAgentModelRaw,
-                        title: "\(promptViewModel.contextBuilderAgent.displayName) · \(promptViewModel.contextBuilderAgentModelDisplayName)",
+                        title: promptViewModel.contextBuilderAgentSelectionDisplayName,
                         iconFont: .caption
                     )
                 }

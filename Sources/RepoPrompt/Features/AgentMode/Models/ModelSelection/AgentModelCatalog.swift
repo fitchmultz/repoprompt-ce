@@ -475,6 +475,49 @@ enum AgentModelCatalog {
         return isAvailable(known, for: agentKind, availability: availability)
     }
 
+    static func qualifiedDisplayName(
+        for rawModel: String,
+        agentKind: AgentProviderKind,
+        availability: AvailabilityContext = .current,
+        codexDynamicModels: [CodexAppServerClient.RemoteModel]? = nil,
+        defaults: UserDefaults = .standard,
+        includeEffortSuffix: Bool = true,
+        separator: String = " · "
+    ) -> String {
+        qualifiedDisplayComponents(
+            for: rawModel,
+            agentKind: agentKind,
+            availability: availability,
+            codexDynamicModels: codexDynamicModels,
+            defaults: defaults,
+            includeEffortSuffix: includeEffortSuffix
+        )
+        .joined(separator: separator)
+    }
+
+    static func qualifiedDisplayComponents(
+        for rawModel: String,
+        agentKind: AgentProviderKind,
+        availability: AvailabilityContext = .current,
+        codexDynamicModels: [CodexAppServerClient.RemoteModel]? = nil,
+        defaults: UserDefaults = .standard,
+        includeEffortSuffix: Bool = true
+    ) -> [String] {
+        let modelName = displayName(
+            for: rawModel,
+            agentKind: agentKind,
+            availability: availability,
+            codexDynamicModels: codexDynamicModels,
+            defaults: defaults,
+            includeEffortSuffix: includeEffortSuffix
+        )
+        if agentKind == .pi {
+            return [agentKind.displayName] + piProviderDisplayComponents(for: rawModel, fallbackModelName: modelName)
+        }
+        return [agentKind.displayName, modelName]
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    }
+
     static func displayName(
         for rawModel: String,
         agentKind: AgentProviderKind,
@@ -1458,6 +1501,15 @@ enum AgentModelCatalog {
 
     private static func piThinkingMenuOptionDisplayName(for level: PiThinkingLevel?) -> String {
         level?.displayName ?? "Model Default"
+    }
+
+    private static func piProviderDisplayComponents(for rawModel: String, fallbackModelName: String) -> [String] {
+        let normalized = rawModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let specifier = PiModelSpecifier(raw: normalized),
+              let provider = specifier.provider?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !provider.isEmpty
+        else { return [fallbackModelName] }
+        return [humanizedPiProviderName(provider), fallbackModelName]
     }
 
     private static func humanizedPiProviderName(_ providerID: String) -> String {

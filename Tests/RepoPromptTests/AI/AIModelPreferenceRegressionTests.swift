@@ -35,7 +35,94 @@ final class AIModelPreferenceRegressionTests: XCTestCase {
             customOpenRouterModels: []
         )
 
-        XCTAssertEqual(displayName, availableModels[0].displayName)
+        XCTAssertEqual(displayName, "Codex CLI · GPT-5.5 Low")
+    }
+
+    @MainActor
+    func testDropdownSelectedLabelsAreProviderQualified() {
+        AgentPiModelRegistry.shared.test_reset()
+        defer { AgentPiModelRegistry.shared.test_reset() }
+        _ = AgentPiModelRegistry.shared.updateDiscoveredModels(PiDiscoveredModels(
+            options: [AgentModelOption(rawValue: "openai-codex/gpt-5.5", displayName: "GPT-5.5", description: nil, isDefault: false)],
+            currentModelRaw: "openai-codex/gpt-5.5"
+        ))
+
+        let rows: [(rawValue: String, models: [AIModel], expected: String)] = [
+            (
+                AIModel.claudeCodeModel(specifier: "claude-fable-5:low").rawValue,
+                [.claudeCodeModel(specifier: "claude-fable-5:low")],
+                "Claude Code · Fable 5 Low"
+            ),
+            (
+                AIModel.codexCustom(name: "gpt-5.5-low").rawValue,
+                [.codexCustom(name: "gpt-5.5-low")],
+                "Codex CLI · GPT-5.5 Low"
+            ),
+            (
+                AIModel.claudeCodeModel(specifier: "compatible:glmzai:sonnet").rawValue,
+                [.claudeCodeModel(specifier: "compatible:glmzai:sonnet")],
+                "CC Zai · Sonnet"
+            ),
+            (
+                AIModel.piCustom(name: "openai-codex/gpt-5.5:low").rawValue,
+                [.piCustom(name: "openai-codex/gpt-5.5:low")],
+                "pi · OpenAI Codex · GPT-5.5 Low"
+            )
+        ]
+
+        for row in rows {
+            let displayName = AIModelDropdown.displayName(
+                forRawValue: row.rawValue,
+                destinationID: "planningModel",
+                availableModels: row.models,
+                customOpenRouterModels: []
+            )
+            XCTAssertEqual(displayName, row.expected, row.rawValue)
+        }
+    }
+
+    func testQualifiedLabelTruncationPreservesProviderPrefix() {
+        XCTAssertEqual(
+            String.truncateQualifiedModelLabel("pi · OpenAI Codex · GPT-5.5 Super Long Experimental Preview Low", maxLength: 34),
+            "pi · OpenAI Codex · …l Preview Low"
+        )
+        XCTAssertEqual(
+            String.truncateQualifiedModelLabel("Codex CLI · GPT-5.5 Super Long Experimental Preview Low", maxLength: 34),
+            "Codex CLI · …erimental Preview Low"
+        )
+    }
+
+    func testAgentSelectionLabelsIncludePiProviderPath() {
+        AgentPiModelRegistry.shared.test_reset()
+        defer { AgentPiModelRegistry.shared.test_reset() }
+        _ = AgentPiModelRegistry.shared.updateDiscoveredModels(PiDiscoveredModels(
+            options: [AgentModelOption(rawValue: "openai-codex/gpt-5.5", displayName: "GPT-5.5", description: nil, isDefault: false)],
+            currentModelRaw: "openai-codex/gpt-5.5"
+        ))
+
+        XCTAssertEqual(
+            ModelSelectionDisplayFormatter.agentQualifiedDisplayName(
+                for: "openai-codex/gpt-5.5:low",
+                agentKind: .pi,
+                availability: .init(piAvailable: true)
+            ),
+            "pi · OpenAI Codex · GPT-5.5 Low"
+        )
+        XCTAssertEqual(
+            ModelSelectionDisplayFormatter.agentQualifiedDisplayName(
+                for: "claude-fable-5:low",
+                agentKind: .claudeCode,
+                availability: .init(claudeCodeAvailable: true)
+            ),
+            "Claude Code · Fable 5 Low"
+        )
+        XCTAssertEqual(
+            ModelSelectionDisplayFormatter.agentQualifiedDisplayName(
+                for: "gpt-5.5-low",
+                agentKind: .codexExec
+            ),
+            "Codex CLI · GPT-5.5 Low"
+        )
     }
 
     @MainActor

@@ -604,7 +604,7 @@ private func cancelContextBuilderRun(
 
 @MainActor
 private func contextBuilderCardDetailLine(contextBuilderAgentVM: ContextBuilderAgentViewModel) -> String? {
-    var detail = "Context Builder: \(contextBuilderAgentVM.runModelDisplayName)"
+    var detail = "Context Builder: \(contextBuilderAgentVM.runAgentSelectionDisplayName)"
     if let followUpType = nonEmptyContextBuilderValue(contextBuilderAgentVM.mcpResponseType) {
         if let followUpModel = nonEmptyContextBuilderValue(contextBuilderAgentVM.mcpPlanModel) {
             detail += " → \(followUpType): \(followUpModel)"

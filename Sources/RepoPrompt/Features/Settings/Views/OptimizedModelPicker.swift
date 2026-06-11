@@ -27,22 +27,20 @@ struct OptimizedModelPicker: View {
 
     private var selectedLabel: String {
         let currentValue = destination.currentRawValue
-        // 1. Try to find in available models
-        if let match = availableModels.first(where: { $0.rawValue == currentValue }) {
-            if let descriptor = ClaudeCodeAIModelCatalog.compatibleBackendDescriptor(for: match) {
+        guard !currentValue.isEmpty else { return "Select a model" }
+        guard availableModels.contains(where: { $0.rawValue == currentValue }) || AIModel.fromModelName(currentValue) != nil else {
+            return currentValue
+        }
+        return ModelSelectionDisplayFormatter.aiModelQualifiedDisplayName(
+            forRawValue: currentValue,
+            destinationID: destination.id,
+            availableModels: availableModels,
+            customOpenRouterModels: [],
+            compatibleClaudeBackendDisplayName: { model in
+                guard let descriptor = ClaudeCodeAIModelCatalog.compatibleBackendDescriptor(for: model) else { return nil }
                 return compatibleClaudeBackendOptionDisplayName(for: descriptor)
             }
-            return match.displayName
-        }
-        // 2. Try parsing (handles tier variants not in current list)
-        if let parsed = AIModel.fromModelName(currentValue) {
-            if let descriptor = ClaudeCodeAIModelCatalog.compatibleBackendDescriptor(for: parsed) {
-                return compatibleClaudeBackendOptionDisplayName(for: descriptor)
-            }
-            return parsed.displayName
-        }
-        // 3. Fallback
-        return currentValue.isEmpty ? "Select a model" : currentValue
+        )
     }
 
     // MARK: - Initializers
@@ -91,7 +89,7 @@ struct OptimizedModelPicker: View {
                 Text(selectedLabel)
                     .font(font)
                     .lineLimit(1)
-                    .truncationMode(.head)
+                    .truncationMode(.tail)
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 4)

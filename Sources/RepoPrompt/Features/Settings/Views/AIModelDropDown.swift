@@ -87,7 +87,7 @@ struct AIModelDropdown: View {
         ) {
             HStack(spacing: 5) {
                 Text(truncateHeadIfNeeded(displayedModelName))
-                    .truncationMode(.head)
+                    .truncationMode(.tail)
                 Image(systemName: "chevron.down")
                     .font(.system(size: 8, weight: .semibold))
                     .foregroundColor(.secondary)
@@ -424,37 +424,13 @@ struct AIModelDropdown: View {
             return "No models available"
         }
 
-        if currentModel.hasPrefix("pi_custom_") {
-            let piModelRaw = String(currentModel.dropFirst("pi_custom_".count))
-            return AgentModelCatalog.displayName(
-                for: piModelRaw,
-                agentKind: .pi,
-                availability: .init(piAvailable: true)
-            )
-        }
-
-        // Check custom OpenRouter models
-        if let customModel = customOpenRouterModels.first(where: { currentModel == "openrouter_custom_\($0)" }) {
-            return "oRouter/\(customModel)"
-        }
-
-        // Check available models
-        if let selectedModel = availableModels.first(where: { $0.rawValue == currentModel }) {
-            return compatibleClaudeBackendDisplayName(selectedModel) ?? selectedModel.displayName
-        }
-
-        // Try parsing (handles tier variants not in current list)
-        if let parsed = AIModel.fromModelName(currentModel) {
-            return compatibleClaudeBackendDisplayName(parsed) ?? parsed.displayName
-        }
-
-        if destinationID == "planningModel" {
-            let trimmedRawValue = currentModel.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmedRawValue.isEmpty ? "Select an Oracle model" : "Invalid Oracle model"
-        }
-
-        // Fallback to first available for non-Oracle destinations.
-        return availableModels.first?.displayName ?? "Select a model"
+        return ModelSelectionDisplayFormatter.aiModelQualifiedDisplayName(
+            forRawValue: currentModel,
+            destinationID: destinationID,
+            availableModels: availableModels,
+            customOpenRouterModels: customOpenRouterModels,
+            compatibleClaudeBackendDisplayName: compatibleClaudeBackendDisplayName
+        )
     }
 
     // MARK: - Helpers
@@ -464,17 +440,7 @@ struct AIModelDropdown: View {
             return text
         }
 
-        if let lastSlashIndex = text.lastIndex(of: "/") {
-            let trimmedText = String(text[lastSlashIndex...]).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            if trimmedText.count <= maxModelNameLength {
-                return trimmedText
-            }
-            let startIndex = trimmedText.index(trimmedText.endIndex, offsetBy: -maxModelNameLength)
-            return "…\(trimmedText[startIndex...])"
-        }
-
-        let startIndex = text.index(text.endIndex, offsetBy: -maxModelNameLength)
-        return "…\(text[startIndex...])"
+        return String.truncateQualifiedModelLabel(text, maxLength: maxModelNameLength)
     }
 
     private func handleConfigureAction() {

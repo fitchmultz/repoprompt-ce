@@ -264,14 +264,14 @@ final class MCPContextBuilderToolProvider: MCPWindowToolProviding {
                 let temporarilyDisabled = settingsStore.mcpTemporarilyDisablePresets()
 
                 if !useModelPresets {
-                    return promptManager.planningModel.displayName
+                    return promptManager.planningModelSelectionDisplayName
                 }
 
                 let allPresets = ModelPresetsManager.shared.presets
                 let effectivePresets = temporarilyDisabled ? [] : allPresets
 
                 if effectivePresets.isEmpty {
-                    return promptManager.planningModel.displayName
+                    return promptManager.planningModelSelectionDisplayName
                 }
 
                 let modeFiltered = effectivePresets.filter { preset in
@@ -279,10 +279,10 @@ final class MCPContextBuilderToolProvider: MCPWindowToolProviding {
                 }
                 for preset in modeFiltered {
                     if promptManager.isModelAvailable(preset.model) {
-                        return preset.model.displayName
+                        return ModelSelectionDisplayFormatter.aiModelQualifiedDisplayName(for: preset.model)
                     }
                 }
-                return promptManager.planningModel.displayName
+                return promptManager.planningModelSelectionDisplayName
             } : nil
 
             let sendStageProgress = dependencies.sendStageProgress

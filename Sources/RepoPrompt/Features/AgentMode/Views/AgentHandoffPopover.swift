@@ -71,7 +71,11 @@ struct AgentHandoffPopover: View {
     }
 
     private var selectedModelDisplayName: String {
-        selectedModelOption?.displayName ?? selectedModelRaw
+        ModelSelectionDisplayFormatter.agentQualifiedDisplayName(
+            for: selectedModelRaw,
+            agentKind: selectedAgent,
+            includeEffortSuffix: true
+        )
     }
 
     private var canPerformHandoff: Bool {
@@ -82,7 +86,7 @@ struct AgentHandoffPopover: View {
         guard availableAgents.contains(selectedAgent) else {
             return availableAgents.isEmpty ? "No connected CLI providers" : "Choose agent"
         }
-        return "\(selectedAgent.displayName) \u{00B7} \(selectedModelDisplayName)"
+        return selectedModelDisplayName
     }
 
     private var isSelectedCodexFastModel: Bool {

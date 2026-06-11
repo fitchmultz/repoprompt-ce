@@ -98,7 +98,7 @@ struct RecommendationWizardPopoverView: View {
                     dismissedRow(
                         icon: "doc.text.magnifyingglass",
                         title: "Context Builder",
-                        detail: "Recommended: \(cbRec.recommendedAgent.displayName)",
+                        detail: "Recommended: \(contextBuilderRecommendationDisplayName(cbRec))",
                         kind: .contextBuilderAgent
                     )
                 }
@@ -473,7 +473,7 @@ private struct IntroStepView: View {
                     recommendationPreviewRow(
                         icon: "doc.text.magnifyingglass",
                         title: "Context Builder",
-                        detail: "\(cbRec.recommendedAgent.displayName) + \(cbRec.recommendedModel.displayName)",
+                        detail: contextBuilderRecommendationDisplayName(cbRec),
                         kind: .contextBuilderAgent,
                         isMuted: cbRec.isMuted
                     )
@@ -720,6 +720,20 @@ private func roleDefaultsSummary(_ defaults: [MCPAgentRoleDefault]) -> String {
     defaults.map { "\($0.roleLabel.capitalized) → \($0.modelDisplayName)" }.joined(separator: " · ")
 }
 
+private func contextBuilderRecommendationDisplayName(_ recommendation: ContextBuilderRecommendation) -> String {
+    ModelSelectionDisplayFormatter.agentQualifiedDisplayName(
+        for: recommendation.recommendedModel.rawValue,
+        agentKind: recommendation.recommendedAgent
+    )
+}
+
+private func contextBuilderRecommendationModelDisplayName(_ recommendation: ContextBuilderRecommendation) -> String {
+    AgentModelCatalog.displayName(
+        for: recommendation.recommendedModel.rawValue,
+        agentKind: recommendation.recommendedAgent
+    )
+}
+
 // MARK: - Best Practices Table View (Shared)
 
 private struct BestPracticesTableView: View {
@@ -917,7 +931,7 @@ private struct ContextBuilderStepView: View {
                             Text("Recommended Model")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
-                            Text(rec.recommendedModel.displayName)
+                            Text(contextBuilderRecommendationModelDisplayName(rec))
                                 .font(.headline)
                         }
                     }
@@ -1228,7 +1242,7 @@ private struct SummaryStepView: View {
                 appliedRow(
                     icon: "doc.text.magnifyingglass",
                     title: "Context Builder",
-                    detail: "\(cbRec.recommendedAgent.displayName) + \(cbRec.recommendedModel.displayName)"
+                    detail: contextBuilderRecommendationDisplayName(cbRec)
                 )
             }
 
@@ -1268,7 +1282,7 @@ private struct SummaryStepView: View {
                 satisfiedRow(
                     icon: "doc.text.magnifyingglass",
                     title: "Context Builder",
-                    detail: "\(cbRec.recommendedAgent.displayName) + \(cbRec.recommendedModel.displayName)"
+                    detail: contextBuilderRecommendationDisplayName(cbRec)
                 )
             }
 
@@ -1328,7 +1342,7 @@ private struct SummaryStepView: View {
                 mutedRow(
                     icon: "doc.text.magnifyingglass",
                     title: "Context Builder",
-                    detail: "Recommended: \(cbRec.recommendedAgent.displayName)",
+                    detail: "Recommended: \(contextBuilderRecommendationDisplayName(cbRec))",
                     kind: .contextBuilderAgent
                 )
             }

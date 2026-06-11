@@ -749,12 +749,10 @@ struct AgentComposerView: View, Equatable {
     }
 
     private var providerChipTitle: String {
-        let modelDisplayName = inputBarSelectedModelDisplayName
-        let truncatedModelName = String.truncateModelName(
-            modelDisplayName,
-            maxLength: 28
+        String.truncateQualifiedModelLabel(
+            inputBarSelectedModelDisplayName,
+            maxLength: 34
         )
-        return "\(props.selectedAgent.displayName) · \(truncatedModelName)"
     }
 
     private var isSelectedCodexFastModel: Bool {

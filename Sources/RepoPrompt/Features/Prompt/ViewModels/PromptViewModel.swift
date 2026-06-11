@@ -444,8 +444,24 @@ class PromptViewModel: ObservableObject {
         set { selectContextBuilderAgentModel(rawModel: newValue.rawValue) }
     }
 
+    var planningModelSelectionDisplayName: String {
+        ModelSelectionDisplayFormatter.aiModelQualifiedDisplayName(for: planningModel)
+    }
+
+    var preferredModelSelectionDisplayName: String {
+        ModelSelectionDisplayFormatter.aiModelQualifiedDisplayName(for: preferredAIModel)
+    }
+
     var contextBuilderAgentModelDisplayName: String {
         AgentModelCatalog.displayName(
+            for: contextBuilderAgentModelRaw,
+            agentKind: contextBuilderAgent,
+            availability: agentAvailabilityContext
+        )
+    }
+
+    var contextBuilderAgentSelectionDisplayName: String {
+        ModelSelectionDisplayFormatter.agentQualifiedDisplayName(
             for: contextBuilderAgentModelRaw,
             agentKind: contextBuilderAgent,
             availability: agentAvailabilityContext

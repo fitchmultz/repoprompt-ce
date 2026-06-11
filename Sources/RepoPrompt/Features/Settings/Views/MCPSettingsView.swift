@@ -399,7 +399,7 @@ struct MCPSettingsView: View {
                         .frame(width: 18, alignment: .center)
                         .foregroundColor(.accentColor)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("\(promptVM.contextBuilderAgent.displayName) · \(promptVM.contextBuilderAgentModelDisplayName)")
+                        Text(promptVM.contextBuilderAgentSelectionDisplayName)
                             .font(fontPreset.font).bold()
                             .foregroundColor(.primary)
                         Text("Used by the context_builder MCP tool. Configure in Agent Models.")

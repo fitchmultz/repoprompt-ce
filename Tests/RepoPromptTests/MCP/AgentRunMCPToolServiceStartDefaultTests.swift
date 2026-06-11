@@ -257,7 +257,7 @@ final class AgentRunMCPToolServiceStartDefaultTests: XCTestCase {
             settingsStore: store
         ))
         XCTAssertEqual(resolution.effective, selection)
-        XCTAssertEqual(resolution.effectiveDisplayName, "pi GPT 5.5 Low")
+        XCTAssertEqual(resolution.effectiveDisplayName, "pi · OpenAI Codex · GPT 5.5 Low")
 
         let resolved = try AgentMCPSelectionResolver.resolve(
             modelID: "explore",

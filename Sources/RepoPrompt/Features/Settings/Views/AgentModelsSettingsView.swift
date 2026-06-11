@@ -305,7 +305,7 @@ struct AgentModelsSettingsView: View {
                             AgentModelSelectionSummaryLabel(
                                 agentKind: promptVM.contextBuilderAgent,
                                 rawModel: promptVM.contextBuilderAgentModelRaw,
-                                title: "\(promptVM.contextBuilderAgent.displayName) · \(promptVM.contextBuilderAgentModelDisplayName)",
+                                title: promptVM.contextBuilderAgentSelectionDisplayName,
                                 iconFont: .caption
                             )
                             .font(.callout)

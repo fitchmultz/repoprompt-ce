@@ -1018,12 +1018,12 @@ final class AgentModeViewModel: ObservableObject {
         rawModel: String,
         agentKind: AgentProviderKind
     ) -> String {
-        AgentModelCatalog.displayName(
+        ModelSelectionDisplayFormatter.agentQualifiedDisplayName(
             for: rawModel,
             agentKind: agentKind,
             availability: agentAvailabilityContext,
             codexDynamicModels: codexDynamicModels,
-            includeEffortSuffix: false
+            includeEffortSuffix: true
         )
     }
 

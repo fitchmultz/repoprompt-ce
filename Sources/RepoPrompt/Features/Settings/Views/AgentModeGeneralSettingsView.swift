@@ -87,14 +87,14 @@ struct AgentModeGeneralSettingsView: View {
             linkRow(
                 icon: "brain",
                 title: "Oracle Model",
-                detail: "The analysis model for planning and review. Reasons over your current file selection and chat history — no tools, no file edits. Currently: \(promptVM.planningModel.displayName).",
+                detail: "The analysis model for planning and review. Reasons over your current file selection and chat history — no tools, no file edits. Currently: \(promptVM.planningModelSelectionDisplayName).",
                 tab: .agentModels
             )
 
             linkRow(
                 icon: "sparkles",
                 title: "Context Builder Agent",
-                detail: "Curates Oracle's file selection. Explores your codebase and aggregates the most relevant files so Oracle can reason efficiently when producing plans. Currently: \(promptVM.contextBuilderAgent.displayName) · \(promptVM.contextBuilderAgentModelDisplayName).",
+                detail: "Curates Oracle's file selection. Explores your codebase and aggregates the most relevant files so Oracle can reason efficiently when producing plans. Currently: \(promptVM.contextBuilderAgentSelectionDisplayName).",
                 tab: .agentModels
             )
 

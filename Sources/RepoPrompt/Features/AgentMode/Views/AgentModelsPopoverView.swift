@@ -182,7 +182,7 @@ struct AgentModelsPopoverView: View {
                 AgentModelSelectionSummaryLabel(
                     agentKind: promptViewModel.contextBuilderAgent,
                     rawModel: promptViewModel.contextBuilderAgentModelRaw,
-                    title: "\(promptViewModel.contextBuilderAgent.displayName) · \(promptViewModel.contextBuilderAgentModelDisplayName)",
+                    title: promptViewModel.contextBuilderAgentSelectionDisplayName,
                     iconFont: fontPreset.swiftUIFont(sizeAtNormal: 10, weight: .semibold)
                 )
                 .font(fontPreset.swiftUIFont(sizeAtNormal: 12))

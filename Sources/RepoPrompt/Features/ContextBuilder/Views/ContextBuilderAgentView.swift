@@ -126,7 +126,7 @@ struct ContextBuilderAgentView: View {
 
     /// The model that will be used for plan generation
     private var planModelName: String {
-        oracleViewModel.promptViewModel.preferredAIModel.displayName
+        oracleViewModel.promptViewModel.preferredModelSelectionDisplayName
     }
 
     /// Text describing what MCP will do after Context Builder completes
@@ -783,7 +783,7 @@ struct ContextBuilderAgentView: View {
                         AgentModelSelectionSummaryLabel(
                             agentKind: viewModel.selectedAgent,
                             rawModel: viewModel.selectedModelRaw,
-                            title: "\(viewModel.selectedAgent.displayName) · \(viewModel.selectedModelDisplayName)",
+                            title: viewModel.selectedAgentSelectionDisplayName,
                             iconFont: .caption
                         )
                         .font(.callout)
@@ -875,7 +875,7 @@ struct ContextBuilderAgentView: View {
                         AgentModelSelectionSummaryLabel(
                             agentKind: runAgent,
                             rawModel: viewModel.runModelRaw ?? viewModel.selectedModelRaw,
-                            title: "\(runAgent.displayName) · \(viewModel.runModelDisplayName)",
+                            title: viewModel.runAgentSelectionDisplayName,
                             iconFont: .caption2
                         )
                         .font(.caption2)

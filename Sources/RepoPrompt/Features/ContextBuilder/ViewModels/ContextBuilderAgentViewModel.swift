@@ -791,10 +791,30 @@ final class ContextBuilderAgentViewModel: ObservableObject {
         )
     }
 
+    var selectedAgentSelectionDisplayName: String {
+        ModelSelectionDisplayFormatter.agentQualifiedDisplayName(
+            for: selectedModelRaw,
+            agentKind: selectedAgent,
+            availability: agentAvailabilityContext,
+            codexDynamicModels: codexDynamicModels
+        )
+    }
+
     var runModelDisplayName: String {
         let rawModel = runModelRaw ?? selectedModelRaw
         let agent = runAgentKind ?? selectedAgent
         return AgentModelCatalog.displayName(
+            for: rawModel,
+            agentKind: agent,
+            availability: agentAvailabilityContext,
+            codexDynamicModels: codexDynamicModels
+        )
+    }
+
+    var runAgentSelectionDisplayName: String {
+        let rawModel = runModelRaw ?? selectedModelRaw
+        let agent = runAgentKind ?? selectedAgent
+        return ModelSelectionDisplayFormatter.agentQualifiedDisplayName(
             for: rawModel,
             agentKind: agent,
             availability: agentAvailabilityContext,

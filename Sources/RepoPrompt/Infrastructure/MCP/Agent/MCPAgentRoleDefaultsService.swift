@@ -167,7 +167,12 @@ enum MCPAgentRoleDefaultsService {
             return nil
         }
 
-        let recommendedDisplayName = "\(recommended.agent.displayName) \(AgentModelCatalog.displayName(for: recommended.modelRaw, agentKind: recommended.agent, codexDynamicModels: codexDynamicModels))"
+        let recommendedDisplayName = ModelSelectionDisplayFormatter.agentQualifiedDisplayName(
+            for: recommended.modelRaw,
+            agentKind: recommended.agent,
+            availability: recommendedAvailability,
+            codexDynamicModels: codexDynamicModels
+        )
 
         // Check for stored override
         let effective: AgentModelCatalog.NormalizedAgentSelection
@@ -196,7 +201,12 @@ enum MCPAgentRoleDefaultsService {
             }
         }
 
-        let effectiveDisplayName = "\(effective.agent.displayName) \(AgentModelCatalog.displayName(for: effective.modelRaw, agentKind: effective.agent, codexDynamicModels: codexDynamicModels))"
+        let effectiveDisplayName = ModelSelectionDisplayFormatter.agentQualifiedDisplayName(
+            for: effective.modelRaw,
+            agentKind: effective.agent,
+            availability: availability,
+            codexDynamicModels: codexDynamicModels
+        )
 
         return RoleDefaultResolution(
             role: kind,

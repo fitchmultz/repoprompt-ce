@@ -129,11 +129,11 @@ final class AgentModelsSettingsViewModel: ObservableObject {
     }
 
     var currentOracleModelName: String {
-        promptVM.planningModel.displayName
+        promptVM.planningModelSelectionDisplayName
     }
 
     var currentBuiltinChatModelName: String {
-        promptVM.preferredAIModel.displayName
+        promptVM.preferredModelSelectionDisplayName
     }
 
     var recommendedOracleModelName: String? {
@@ -141,14 +141,18 @@ final class AgentModelsSettingsViewModel: ObservableObject {
               let option = rec.option(for: rec.defaultBackend) else { return nil }
         let model = option.modelString ?? ""
         if let resolved = AIModel.fromModelName(model) {
-            return resolved.displayName
+            return ModelSelectionDisplayFormatter.aiModelQualifiedDisplayName(for: resolved)
         }
         return option.displayName
     }
 
     var recommendedContextBuilderDescription: String? {
         guard let rec = recommendations.contextBuilder else { return nil }
-        return "\(rec.recommendedAgent.displayName) · \(rec.recommendedModel.displayName)"
+        return ModelSelectionDisplayFormatter.agentQualifiedDisplayName(
+            for: rec.recommendedModel.rawValue,
+            agentKind: rec.recommendedAgent,
+            availability: availability
+        )
     }
 
     var isOracleRecommendationSatisfied: Bool {
@@ -472,16 +476,11 @@ final class AgentModelsSettingsViewModel: ObservableObject {
         guard let agentRaw, let agent = AgentProviderKind(rawValue: agentRaw) else {
             return "Not configured"
         }
-        let modelDisplay: String = {
-            guard let raw = modelRaw, !raw.isEmpty else {
-                return AgentModel.defaultModel.displayName
-            }
-            return AgentModelCatalog.displayName(
-                for: raw,
-                agentKind: agent,
-                availability: availability
-            )
-        }()
-        return "\(agent.displayName) · \(modelDisplay)"
+        let raw = modelRaw?.isEmpty == false ? modelRaw ?? "" : AgentModel.defaultModel.rawValue
+        return ModelSelectionDisplayFormatter.agentQualifiedDisplayName(
+            for: raw,
+            agentKind: agent,
+            availability: availability
+        )
     }
 }
