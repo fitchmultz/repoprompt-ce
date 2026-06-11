@@ -70,6 +70,22 @@ actor PiRPCClient {
         }
     }
 
+    struct ProtocolDiagnostic: Equatable {
+        enum Kind: String, Equatable {
+            case malformedJSON
+            case missingEventType
+            case unknownEventType
+            case malformedEventPayload
+            case lateResponse
+        }
+
+        var kind: Kind
+        var eventType: String?
+        var message: String
+        var payloadPreview: String?
+        var occurrence: Int
+    }
+
     enum Event: Equatable {
         case agentStart
         case agentEnd(messages: [[String: PiJSONValue]])
@@ -87,6 +103,7 @@ actor PiRPCClient {
         case extensionUIRequest(PiExtensionUIRequest)
         case extensionError(String)
         case transportClosed(reason: String)
+        case protocolDiagnostic(ProtocolDiagnostic)
         case unhandled(type: String, payload: [String: PiJSONValue])
     }
 
@@ -194,6 +211,7 @@ actor PiRPCClient {
     private var eventsStream: AsyncStream<Event>
     private var eventsContinuation: AsyncStream<Event>.Continuation?
     private var isShuttingDown = false
+    private var protocolDiagnosticCounts: [String: Int] = [:]
     private var expectedAgentPIDRegistration: ExpectedAgentPIDRegistration?
     private var registeredExpectedAgentPID: RegisteredExpectedAgentPID?
     private var didPassSupportedVersionCheck = false
@@ -338,6 +356,7 @@ actor PiRPCClient {
         process = spawned
         await registerExpectedAgentPIDIfNeeded(for: spawned.pid)
         stdoutFramer = LineFramer()
+        protocolDiagnosticCounts.removeAll(keepingCapacity: true)
         stderrTail.removeAll(keepingCapacity: false)
         do {
             try startStdoutReader(handle: spawned.stdout)
@@ -366,6 +385,7 @@ actor PiRPCClient {
         let expectedAgentPIDToClear = takeRegisteredExpectedAgentPIDForDeferredClear()
         process = nil
         didPassSupportedVersionCheck = false
+        protocolDiagnosticCounts.removeAll(keepingCapacity: false)
         stdoutConsumerTask?.cancel()
         stderrConsumerTask?.cancel()
         stdoutConsumerTask = nil
@@ -608,8 +628,14 @@ actor PiRPCClient {
             guard let value = try PiJSONValue.decodeObject(from: trimmed) else { return }
             await routeInbound(value)
         } catch {
+            let preview = Self.preview(trimmed)
+            emitProtocolDiagnostic(
+                kind: .malformedJSON,
+                eventType: nil,
+                message: "pi RPC skipped malformed JSON line.",
+                payloadPreview: preview
+            )
             if config.enableDebugLogging {
-                let preview = String(data: trimmed.prefix(512), encoding: .utf8) ?? "<non-utf8>"
                 print("[PiRPCClient] skipped invalid JSON line: \(preview)")
             }
         }
@@ -617,6 +643,12 @@ actor PiRPCClient {
 
     private func routeInbound(_ payload: [String: PiJSONValue]) async {
         guard let type = payload["type"]?.stringValue else {
+            emitProtocolDiagnostic(
+                kind: .missingEventType,
+                eventType: nil,
+                message: "pi RPC event did not include a type string.",
+                payload: payload
+            )
             emit(.unhandled(type: "", payload: payload))
             return
         }
@@ -628,17 +660,38 @@ actor PiRPCClient {
             if let request = Self.parseExtensionUIRequest(payload) {
                 emit(.extensionUIRequest(request))
             } else {
+                emitProtocolDiagnostic(
+                    kind: .malformedEventPayload,
+                    eventType: type,
+                    message: "pi RPC extension_ui_request payload was missing required id or method.",
+                    payload: payload
+                )
                 emit(.unhandled(type: type, payload: payload))
             }
             return
         }
-        emit(Self.parseEvent(type: type, payload: payload))
+        let event = Self.parseEvent(type: type, payload: payload)
+        if case let .unhandled(unhandledType, unhandledPayload) = event {
+            emitProtocolDiagnostic(
+                kind: .unknownEventType,
+                eventType: unhandledType,
+                message: "pi RPC emitted an unknown or unsupported event type: \(unhandledType).",
+                payload: unhandledPayload
+            )
+        }
+        emit(event)
     }
 
     private func handleResponse(_ payload: [String: PiJSONValue]) {
         guard let id = payload["id"]?.stringValue,
               let pending = pendingRequests.removeValue(forKey: id)
         else {
+            emitProtocolDiagnostic(
+                kind: .lateResponse,
+                eventType: payload["command"]?.stringValue,
+                message: "pi RPC emitted a response with no pending request.",
+                payload: payload
+            )
             return
         }
         timeoutTasks[id]?.cancel()
@@ -688,11 +741,22 @@ actor PiRPCClient {
         }
     }
 
-    private func handleRequestTimeout(id: String, command: String) {
+    private func handleRequestTimeout(id: String, command: String) async {
         guard let pending = pendingRequests.removeValue(forKey: id) else { return }
         timeoutTasks[id]?.cancel()
         timeoutTasks.removeValue(forKey: id)
         pending.continuation.resume(throwing: ClientError.requestTimedOut(id: id, command: command))
+        guard Self.invalidatesProcessOnTimeout(command: command) else { return }
+        await shutdown()
+    }
+
+    private static func invalidatesProcessOnTimeout(command: String) -> Bool {
+        switch command {
+        case "prompt", "steer", "follow_up", "abort", "switch_session", "new_session", "set_model", "set_thinking_level":
+            true
+        default:
+            false
+        }
     }
 
     private func makeRequestID(command: String) -> String {
@@ -700,8 +764,119 @@ actor PiRPCClient {
         return "rp-pi-\(command)-\(nextRequestNumber)"
     }
 
+    private func emitProtocolDiagnostic(
+        kind: ProtocolDiagnostic.Kind,
+        eventType: String?,
+        message: String,
+        payload: [String: PiJSONValue]
+    ) {
+        emitProtocolDiagnostic(
+            kind: kind,
+            eventType: eventType,
+            message: message,
+            payloadPreview: Self.payloadPreview(payload)
+        )
+    }
+
+    private func emitProtocolDiagnostic(
+        kind: ProtocolDiagnostic.Kind,
+        eventType: String?,
+        message: String,
+        payloadPreview: String?
+    ) {
+        let key = "\(kind.rawValue):\(eventType ?? "")"
+        let occurrence = (protocolDiagnosticCounts[key] ?? 0) + 1
+        protocolDiagnosticCounts[key] = occurrence
+        guard occurrence <= 3 else { return }
+        let diagnostic = ProtocolDiagnostic(
+            kind: kind,
+            eventType: eventType,
+            message: message,
+            payloadPreview: payloadPreview,
+            occurrence: occurrence
+        )
+        if config.enableDebugLogging {
+            let preview = payloadPreview.map { " preview=\($0)" } ?? ""
+            print("[PiRPCClient][protocol] \(message) kind=\(kind.rawValue) eventType=\(eventType ?? "<none>") occurrence=\(occurrence)\(preview)")
+        }
+        emit(.protocolDiagnostic(diagnostic))
+    }
+
     private func emit(_ event: Event) {
         _ = eventsContinuation?.yield(event)
+    }
+
+    private static func payloadPreview(_ payload: [String: PiJSONValue]) -> String? {
+        let redacted = redact(payload)
+        guard JSONSerialization.isValidJSONObject(redacted),
+              let data = try? JSONSerialization.data(withJSONObject: redacted, options: [.sortedKeys])
+        else { return nil }
+        return preview(data)
+    }
+
+    private static func preview(_ data: Data, maxBytes: Int = 512) -> String {
+        let prefix = data.prefix(maxBytes)
+        let text = String(data: prefix, encoding: .utf8) ?? "<non-utf8>"
+        let preview = data.count > maxBytes ? text + "…" : text
+        return redactedTextPreview(preview)
+    }
+
+    private static func redactedTextPreview(_ text: String) -> String {
+        let lowercased = text.lowercased()
+        let sensitiveFragments = [
+            "authorization",
+            "bearer ",
+            "api_key",
+            "apikey",
+            "api-key",
+            "password",
+            "secret",
+            "token"
+        ]
+        if sensitiveFragments.contains(where: { lowercased.contains($0) }) {
+            return "[REDACTED sensitive pi RPC preview]"
+        }
+        let sensitivePatterns = [
+            #"sk-[A-Za-z0-9][A-Za-z0-9._-]{8,}"#,
+            #"github_pat_[A-Za-z0-9_]{12,}"#,
+            #"gh[pousr]_[A-Za-z0-9_]{12,}"#,
+            #"xox[baprs]-[A-Za-z0-9-]{12,}"#,
+            #"AKIA[0-9A-Z]{16}"#,
+            #"[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}"#
+        ]
+        guard sensitivePatterns.contains(where: { pattern in
+            text.range(of: pattern, options: .regularExpression) != nil
+        }) else { return text }
+        return "[REDACTED sensitive pi RPC preview]"
+    }
+
+    private static func redact(_ payload: [String: PiJSONValue]) -> [String: Any] {
+        var redacted: [String: Any] = [:]
+        for (key, value) in payload {
+            redacted[key] = isSensitiveKey(key) ? "[REDACTED]" : redact(value)
+        }
+        return redacted
+    }
+
+    private static func redact(_ value: PiJSONValue) -> Any {
+        switch value {
+        case let .object(object):
+            redact(object)
+        case let .array(array):
+            array.map(redact)
+        case .string, .number, .bool, .null:
+            value.toAny()
+        }
+    }
+
+    private static func isSensitiveKey(_ key: String) -> Bool {
+        let lowercased = key.lowercased()
+        return lowercased.contains("authorization")
+            || lowercased.contains("password")
+            || lowercased.contains("secret")
+            || lowercased.contains("token")
+            || lowercased.contains("api_key")
+            || lowercased.contains("apikey")
     }
 
     private static func makeEventsStream() -> (stream: AsyncStream<Event>, continuation: AsyncStream<Event>.Continuation) {

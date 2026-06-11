@@ -41,7 +41,7 @@ final class PiModelCatalogTests: XCTestCase {
         XCTAssertFalse(AgentModelCatalog.isValid(rawModel: "openai-codex/gpt-5.5:minimal", for: .pi, availability: availability))
         XCTAssertFalse(AgentModelCatalog.isValid(rawModel: "openai-codex/gpt-5.5:bananas", for: .pi, availability: availability))
         XCTAssertEqual(AgentModelCatalog.piThinkingLevelOptions(for: "openai-codex/gpt-5.5"), [.off, .low, .medium, .high, .xhigh])
-        XCTAssertTrue(AgentModelCatalog.modelOptionIsSelected(
+        XCTAssertFalse(AgentModelCatalog.modelOptionIsSelected(
             optionRaw: "openai-codex/gpt-5.5",
             selectedRaw: "openai-codex/gpt-5.5:low",
             agentKind: .pi
@@ -120,6 +120,56 @@ final class PiModelCatalogTests: XCTestCase {
         XCTAssertEqual(menu.providerGroups[1].groups.map(\.displayName), ["GPT 5.5"])
         XCTAssertTrue(menu.providerGroups[1].groups[0].rendersAsSubmenu)
         XCTAssertEqual(menu.providerGroups[1].groups[0].options.map(\.displayName), ["Model Default", "Low", "High"])
+    }
+
+    func testPiMenuSynthesizesThinkingVariantsOnlyWhenRequested() throws {
+        let options = [
+            AgentModelOption(rawValue: "default", displayName: "Default", description: nil, isDefault: true),
+            AgentModelOption(
+                rawValue: "openai-codex/gpt-5.5",
+                displayName: "GPT 5.5",
+                description: nil,
+                isDefault: false,
+                supportedPiThinkingLevels: [.off, .low, .high]
+            ),
+            AgentModelOption(
+                rawValue: "cursor/composer-2-5",
+                displayName: "Composer 2.5",
+                description: nil,
+                isDefault: false
+            )
+        ]
+
+        let modelOnlyMenu = AgentModelCatalog.piMenu(for: options)
+        let modelOnlyCodexGroup = modelOnlyMenu.providerGroups
+            .first { $0.displayName == "OpenAI Codex" }?
+            .groups.first
+        XCTAssertEqual(modelOnlyCodexGroup?.displayName, "GPT 5.5")
+        XCTAssertEqual(modelOnlyCodexGroup?.options.map(\.option.rawValue), ["openai-codex/gpt-5.5"])
+        XCTAssertFalse(modelOnlyCodexGroup?.rendersAsSubmenu ?? true)
+
+        let combinedMenu = AgentModelCatalog.piMenu(for: options, includeThinkingLevelOptions: true)
+        XCTAssertEqual(combinedMenu.defaultOption?.rawValue, "default")
+        let codexGroup = try XCTUnwrap(
+            combinedMenu.providerGroups
+                .first { $0.displayName == "OpenAI Codex" }?
+                .groups.first
+        )
+        XCTAssertEqual(codexGroup.displayName, "GPT 5.5")
+        XCTAssertTrue(codexGroup.rendersAsSubmenu)
+        XCTAssertEqual(codexGroup.options.map(\.displayName), ["Model Default", "Off", "Low", "High"])
+        XCTAssertEqual(codexGroup.options.map(\.option.rawValue), [
+            "openai-codex/gpt-5.5",
+            "openai-codex/gpt-5.5:off",
+            "openai-codex/gpt-5.5:low",
+            "openai-codex/gpt-5.5:high"
+        ])
+
+        let cursorGroup = combinedMenu.providerGroups
+            .first { $0.displayName == "Cursor" }?
+            .groups.first
+        XCTAssertEqual(cursorGroup?.options.map(\.option.rawValue), ["cursor/composer-2-5"])
+        XCTAssertFalse(cursorGroup?.rendersAsSubmenu ?? true)
     }
 
     func testPiDynamicModelRecordBackfillsLegacySnapshotsWithStandardThinkingLevels() throws {

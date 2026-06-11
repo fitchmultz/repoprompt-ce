@@ -36,14 +36,6 @@ final class AgentModePiSteeringAttachmentTests: XCTestCase {
             "Agent Mode pi model polling must subscribe to the pi polling service."
         )
 
-        let runnerURL = try RepoRoot.url()
-            .appendingPathComponent("Sources/RepoPrompt/Features/AgentMode/Runtime/Runners/PiIntegratedAgentModeRunner.swift")
-        let runnerSource = try String(contentsOf: runnerURL, encoding: .utf8)
-        XCTAssertTrue(runnerSource.contains("PiRPCImageContentBuilder.images(from: attachments)"))
-        XCTAssertTrue(runnerSource.contains("controller.sendUserMessage(initialMessageForRun, images: images)"))
-        XCTAssertTrue(runnerSource.contains("latestPendingMessageCount = state.pendingMessageCount ?? 0"))
-        XCTAssertTrue(runnerSource.contains("if status == .completed, latestPendingMessageCount > 0"))
-
         let permissionsURL = try RepoRoot.url()
             .appendingPathComponent("Sources/RepoPrompt/Features/AgentMode/Runtime/ProviderBindings/PiAgentToolPreferences.swift")
         let permissionsSource = try String(contentsOf: permissionsURL, encoding: .utf8)

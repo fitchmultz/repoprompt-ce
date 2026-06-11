@@ -62,7 +62,13 @@ enum AgentMCPSelectionResolver {
             if let defaultKind = defaultTaskLabel,
                let resolved = resolveRoleSelection(defaultKind, availability: availability, roleSelectionProvider: roleSelectionProvider)
             {
-                return ResolvedSelection(agentRaw: resolved.agent.rawValue, modelRaw: resolved.modelRaw, taskLabelKind: defaultKind)
+                let normalizedPiSelection = normalizedPiSelection(agent: resolved.agent, modelRaw: resolved.modelRaw)
+                return ResolvedSelection(
+                    agentRaw: resolved.agent.rawValue,
+                    modelRaw: normalizedPiSelection.modelRaw,
+                    reasoningEffortRaw: normalizedPiSelection.reasoningEffortRaw,
+                    taskLabelKind: defaultKind
+                )
             }
             return ResolvedSelection(agentRaw: nil, modelRaw: nil, taskLabelKind: nil)
         }
@@ -74,7 +80,13 @@ enum AgentMCPSelectionResolver {
                 guard let resolved = resolveRoleSelection(entry.kind, availability: availability, roleSelectionProvider: roleSelectionProvider) else {
                     throw MCPError.invalidParams("No available agent/model for task label '\(trimmed)'.")
                 }
-                return ResolvedSelection(agentRaw: resolved.agent.rawValue, modelRaw: resolved.modelRaw, taskLabelKind: entry.kind)
+                let normalizedPiSelection = normalizedPiSelection(agent: resolved.agent, modelRaw: resolved.modelRaw)
+                return ResolvedSelection(
+                    agentRaw: resolved.agent.rawValue,
+                    modelRaw: normalizedPiSelection.modelRaw,
+                    reasoningEffortRaw: normalizedPiSelection.reasoningEffortRaw,
+                    taskLabelKind: entry.kind
+                )
             }
             let knownLabels = AgentModelCatalog.taskLabels.map(\.label).joined(separator: ", ")
             throw MCPError.invalidParams(

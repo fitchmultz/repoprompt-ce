@@ -119,6 +119,94 @@ final class PiRPCClientTests: XCTestCase {
         XCTAssertTrue(collected.contains(.turnEnd(message: nil, toolResults: [])))
     }
 
+    func testMutatingRequestTimeoutInvalidatesRPCProcessAndNextCommandRestarts() async throws {
+        let scriptURL = try makeFakePiTimeoutScript(ignoredCommands: ["set_model"])
+        let client = PiRPCClient(config: .init(
+            commandName: scriptURL.path,
+            additionalPathHints: [],
+            requestTimeout: 0.2,
+            launchArguments: [],
+            requiresSupportedVersionCheck: false
+        ))
+        addTeardownBlock { await client.shutdown() }
+
+        do {
+            _ = try await client.setModel(provider: "zai", modelID: "glm-5.1")
+            XCTFail("Expected mutating set_model to time out")
+        } catch let error as PiRPCClient.ClientError {
+            XCTAssertEqual(error, .requestTimedOut(id: "rp-pi-set_model-1", command: "set_model"))
+        }
+        let isRunningAfterTimeout = await client.isRunning
+        XCTAssertFalse(isRunningAfterTimeout)
+
+        let state = try await client.getState()
+        XCTAssertEqual(state.sessionID, "timeout-session")
+        let isRunningAfterRestart = await client.isRunning
+        XCTAssertTrue(isRunningAfterRestart)
+    }
+
+    func testReadOnlyRequestTimeoutLeavesRPCProcessRunningForSubsequentCommands() async throws {
+        let scriptURL = try makeFakePiTimeoutScript(ignoredCommands: ["get_state"])
+        let client = PiRPCClient(config: .init(
+            commandName: scriptURL.path,
+            additionalPathHints: [],
+            requestTimeout: 0.2,
+            launchArguments: [],
+            requiresSupportedVersionCheck: false
+        ))
+        addTeardownBlock { await client.shutdown() }
+
+        do {
+            _ = try await client.getState()
+            XCTFail("Expected read-only get_state to time out")
+        } catch let error as PiRPCClient.ClientError {
+            XCTAssertEqual(error, .requestTimedOut(id: "rp-pi-get_state-1", command: "get_state"))
+        }
+        let isRunningAfterTimeout = await client.isRunning
+        XCTAssertTrue(isRunningAfterTimeout)
+
+        let models = try await client.getAvailableModels()
+        XCTAssertEqual(models.map(\.id), ["glm-5.1"])
+        let isRunningAfterFollowup = await client.isRunning
+        XCTAssertTrue(isRunningAfterFollowup)
+    }
+
+    func testProtocolDiagnosticsSurfaceMalformedAndUnknownEventsWithRedactedPreviewAndThrottle() async throws {
+        let scriptURL = try makeFakePiProtocolDiagnosticsScript()
+        let client = PiRPCClient(config: .init(
+            commandName: scriptURL.path,
+            additionalPathHints: [],
+            requestTimeout: 2,
+            launchArguments: [],
+            requiresSupportedVersionCheck: false
+        ))
+        addTeardownBlock { await client.shutdown() }
+
+        let events = await client.events
+        let collector = Task { () -> [PiRPCClient.ProtocolDiagnostic] in
+            var diagnostics: [PiRPCClient.ProtocolDiagnostic] = []
+            for await event in events {
+                if case let .protocolDiagnostic(diagnostic) = event {
+                    diagnostics.append(diagnostic)
+                    if diagnostics.count == 7 { break }
+                }
+            }
+            return diagnostics
+        }
+
+        _ = try await client.getState()
+        let diagnostics = await collector.value
+
+        XCTAssertTrue(diagnostics.contains { $0.kind == .malformedJSON && $0.payloadPreview == "not-json" })
+        XCTAssertTrue(diagnostics.contains { $0.kind == .malformedJSON && $0.payloadPreview == "[REDACTED sensitive pi RPC preview]" })
+        XCTAssertTrue(diagnostics.contains { $0.kind == .missingEventType && $0.payloadPreview?.contains("missing type") == true })
+        XCTAssertTrue(diagnostics.contains { $0.kind == .malformedEventPayload && $0.eventType == "extension_ui_request" })
+        let unknownDiagnostics = diagnostics.filter { $0.kind == .unknownEventType && $0.eventType == "future_event" }
+        XCTAssertEqual(unknownDiagnostics.map(\.occurrence), [1, 2, 3])
+        XCTAssertTrue(unknownDiagnostics.allSatisfy { $0.payloadPreview?.contains("REDACTED") == true })
+        XCTAssertFalse(unknownDiagnostics.contains { $0.payloadPreview?.contains("sk-fixture-redaction-value") == true })
+    }
+
     func testClientSurfacesFailedRPCResponse() async throws {
         let scriptURL = try makeFakePiRPCScript()
         let client = PiRPCClient(config: .init(
@@ -374,6 +462,104 @@ final class PiRPCClientTests: XCTestCase {
                     "command": "set_thinking_level",
                     "success": False,
                     "error": "bad thinking level"
+                })
+            else:
+                emit({"type": "response", "id": request_id, "command": command, "success": True})
+        """#
+        try script.write(to: scriptURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
+        return scriptURL
+    }
+
+    private func makeFakePiTimeoutScript(ignoredCommands: Set<String>) throws -> URL {
+        let directory = try makeTemporaryDirectory()
+        let scriptURL = directory.appendingPathComponent("fake_pi_timeout_rpc.py")
+        let ignoredCommandsJSON = try String(
+            data: JSONSerialization.data(withJSONObject: Array(ignoredCommands).sorted(), options: []),
+            encoding: .utf8
+        ) ?? "[]"
+        let script = #"""
+        #!/usr/bin/env python3
+        import json
+        import sys
+
+        IGNORED_COMMANDS = set(__IGNORED_COMMANDS__)
+
+        def emit(payload):
+            print(json.dumps(payload), flush=True)
+
+        for line in sys.stdin:
+            try:
+                request = json.loads(line)
+            except Exception:
+                continue
+            request_id = request.get("id")
+            command = request.get("type")
+            if command in IGNORED_COMMANDS:
+                continue
+            if command == "get_state":
+                emit({
+                    "type": "response",
+                    "id": request_id,
+                    "command": "get_state",
+                    "success": True,
+                    "data": {
+                        "sessionId": "timeout-session",
+                        "isStreaming": False,
+                        "isCompacting": False
+                    }
+                })
+            elif command == "get_available_models":
+                emit({
+                    "type": "response",
+                    "id": request_id,
+                    "command": "get_available_models",
+                    "success": True,
+                    "data": {"models": [{"provider": "zai", "id": "glm-5.1", "displayName": "GLM 5.1"}]}
+                })
+            else:
+                emit({"type": "response", "id": request_id, "command": command, "success": True})
+        """#.replacingOccurrences(of: "__IGNORED_COMMANDS__", with: ignoredCommandsJSON)
+        try script.write(to: scriptURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
+        return scriptURL
+    }
+
+    private func makeFakePiProtocolDiagnosticsScript() throws -> URL {
+        let directory = try makeTemporaryDirectory()
+        let scriptURL = directory.appendingPathComponent("fake_pi_protocol_diagnostics.py")
+        let script = #"""
+        #!/usr/bin/env python3
+        import json
+        import sys
+
+        def emit(payload):
+            print(json.dumps(payload), flush=True)
+
+        for line in sys.stdin:
+            try:
+                request = json.loads(line)
+            except Exception:
+                continue
+            request_id = request.get("id")
+            command = request.get("type")
+            if command == "get_state":
+                print("not-json", flush=True)
+                print('{"value":"sk-fixture-redaction-value"', flush=True)
+                emit({"message": "missing type"})
+                emit({"type": "extension_ui_request", "id": "broken-ui"})
+                for _ in range(4):
+                    emit({"type": "future_event", "note": "sk-fixture-redaction-value", "payload": {"message": "new shape"}})
+                emit({
+                    "type": "response",
+                    "id": request_id,
+                    "command": "get_state",
+                    "success": True,
+                    "data": {
+                        "sessionId": "session-123",
+                        "isStreaming": False,
+                        "isCompacting": False
+                    }
                 })
             else:
                 emit({"type": "response", "id": request_id, "command": command, "success": True})

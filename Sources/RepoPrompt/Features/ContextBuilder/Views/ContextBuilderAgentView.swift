@@ -907,7 +907,8 @@ struct ContextBuilderAgentView: View {
                 agentKind: agent,
                 options: viewModel.modelOptions(for: agent),
                 selectedAgent: viewModel.selectedAgent,
-                selectedModelRaw: viewModel.selectedModelRaw
+                selectedModelRaw: viewModel.selectedModelRaw,
+                includePiThinkingLevelOptions: true
             ) { selectedAgent, selectedOption in
                 viewModel.selectedAgent = selectedAgent
                 viewModel.selectModel(rawModel: selectedOption.rawValue)

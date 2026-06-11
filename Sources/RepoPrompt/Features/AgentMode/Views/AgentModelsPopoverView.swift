@@ -215,7 +215,8 @@ struct AgentModelsPopoverView: View {
                 agentKind: agent,
                 options: promptViewModel.contextBuilderModelOptions(for: agent),
                 selectedAgent: promptViewModel.contextBuilderAgent,
-                selectedModelRaw: promptViewModel.contextBuilderAgentModelRaw
+                selectedModelRaw: promptViewModel.contextBuilderAgentModelRaw,
+                includePiThinkingLevelOptions: true
             ) { selectedAgent, selectedOption in
                 promptViewModel.contextBuilderAgent = selectedAgent
                 promptViewModel.selectContextBuilderAgentModel(rawModel: selectedOption.rawValue)
@@ -348,7 +349,8 @@ struct AgentModelsPopoverView: View {
                 selectedModelRaw: resolution.effective.modelRaw,
                 includePlaceholderDefault: false,
                 flattenSingleCodexGroups: true,
-                groupOpenCode: false
+                groupOpenCode: false,
+                includePiThinkingLevelOptions: true
             ) { selectedAgent, selectedOption in
                 let selection = AgentModelCatalog.NormalizedAgentSelection(
                     agent: selectedAgent,

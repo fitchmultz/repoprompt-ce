@@ -1,6 +1,6 @@
 # Agent Provider Plugin Seam
 
-Current as of 2026-05-13. This document is contributor-facing: use it when you are wiring a new autonomous-agent provider, editing the Claude-compatible runtime, or moving code across the core ↔ plugin boundary.
+Current as of 2026-05-13. This document is contributor-facing: use it when you are wiring a new autonomous-agent provider, editing the Claude-compatible runtime, or moving code across the core ↔ plugin boundary. For RepoPrompt's app-integrated pi provider, see [`pi-integration.md`](pi-integration.md).
 
 ## Scope and goals
 

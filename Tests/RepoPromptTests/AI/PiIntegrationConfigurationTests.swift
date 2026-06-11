@@ -2,30 +2,6 @@
 import XCTest
 
 final class PiIntegrationConfigurationTests: XCTestCase {
-    func testPiAgentModeRunnerHasFirstEventWatchdog() throws {
-        let repoRoot = try RepoRoot.url(filePath: #filePath)
-        let sourcePath = "Sources/RepoPrompt/Features/AgentMode/Runtime/Runners/PiIntegratedAgentModeRunner.swift"
-        let contents = try String(contentsOf: repoRoot.appendingPathComponent(sourcePath), encoding: .utf8)
-
-        XCTAssertTrue(contents.contains("firstProviderEventTimeoutNanoseconds"), sourcePath)
-        XCTAssertTrue(contents.contains("first provider event timeout"), sourcePath)
-        XCTAssertTrue(contents.contains("pi.firstProviderEventTimeout"), sourcePath)
-        XCTAssertTrue(contents.contains("didReceivePostPromptProviderEvent = true"), sourcePath)
-        XCTAssertTrue(contents.contains("case let .sessionState(state):"), sourcePath)
-        XCTAssertTrue(contents.contains("latestPendingMessageCount = state.pendingMessageCount ?? 0"), sourcePath)
-        XCTAssertTrue(contents.contains("applySessionState(state, to: session)"), sourcePath)
-        XCTAssertTrue(contents.contains("pi accepted the prompt but did not produce any response events within 60 seconds."), sourcePath)
-    }
-
-    func testPiAgentModeRunnerPersistsProviderModelIdentityFromSessionState() throws {
-        let repoRoot = try RepoRoot.url(filePath: #filePath)
-        let sourcePath = "Sources/RepoPrompt/Features/AgentMode/Runtime/Runners/PiIntegratedAgentModeRunner.swift"
-        let contents = try String(contentsOf: repoRoot.appendingPathComponent(sourcePath), encoding: .utf8)
-
-        XCTAssertTrue(contents.contains("state.model.flatMap(AgentPiModelRegistry.rawModel)"), sourcePath)
-        XCTAssertTrue(contents.contains("session.selectedModelRaw = modelRaw"), sourcePath)
-    }
-
     private var temporaryURLs: [URL] = []
 
     override func tearDown() {

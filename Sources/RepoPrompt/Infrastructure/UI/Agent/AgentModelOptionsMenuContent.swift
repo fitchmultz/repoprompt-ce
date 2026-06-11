@@ -196,6 +196,7 @@ enum AgentModelStableMenuItems {
         includePlaceholderDefault: Bool = true,
         flattenSingleCodexGroups: Bool = false,
         groupOpenCode: Bool = true,
+        includePiThinkingLevelOptions: Bool = false,
         onSelect: @escaping (AgentProviderKind, AgentModelOption) -> Void
     ) -> StableMenuItem {
         StableMenuItem.submenu(
@@ -208,6 +209,7 @@ enum AgentModelStableMenuItems {
                 includePlaceholderDefault: includePlaceholderDefault,
                 flattenSingleCodexGroups: flattenSingleCodexGroups,
                 groupOpenCode: groupOpenCode,
+                includePiThinkingLevelOptions: includePiThinkingLevelOptions,
                 onSelect: onSelect
             )
         )
@@ -221,6 +223,7 @@ enum AgentModelStableMenuItems {
         includePlaceholderDefault: Bool = true,
         flattenSingleCodexGroups: Bool = false,
         groupOpenCode: Bool = true,
+        includePiThinkingLevelOptions: Bool = false,
         onSelect: @escaping (AgentProviderKind, AgentModelOption) -> Void
     ) -> [StableMenuItem] {
         if agentKind == .codexExec {
@@ -266,6 +269,7 @@ enum AgentModelStableMenuItems {
                 options: visibleOptions,
                 selectedAgent: selectedAgent,
                 selectedModelRaw: selectedModelRaw,
+                includeThinkingLevelOptions: includePiThinkingLevelOptions,
                 onSelect: onSelect
             )
         }
@@ -422,9 +426,10 @@ enum AgentModelStableMenuItems {
         options: [AgentModelOption],
         selectedAgent: AgentProviderKind,
         selectedModelRaw: String,
+        includeThinkingLevelOptions: Bool,
         onSelect: @escaping (AgentProviderKind, AgentModelOption) -> Void
     ) -> [StableMenuItem] {
-        let piMenu = AgentModelCatalog.piMenu(for: options)
+        let piMenu = AgentModelCatalog.piMenu(for: options, includeThinkingLevelOptions: includeThinkingLevelOptions)
         var items: [StableMenuItem] = []
         if let defaultOption = piMenu.defaultOption {
             items.append(

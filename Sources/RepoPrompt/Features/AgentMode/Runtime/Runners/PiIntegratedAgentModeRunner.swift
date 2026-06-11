@@ -2,8 +2,6 @@ import Foundation
 
 @MainActor
 final class PiIntegratedAgentModeRunner {
-    private static let firstProviderEventTimeoutNanoseconds: UInt64 = 60 * 1_000_000_000
-
     private let windowID: Int
     private let hooks: AgentModeRunService.Hooks
     private let terminalCommitBarrier: AgentRunTerminalCommitBarrier
@@ -198,7 +196,7 @@ final class PiIntegratedAgentModeRunner {
             )
             await lease.releaseWithoutRoutingWait()
             didReleaseLease = true
-            applySessionRef(ref, to: session)
+            PiRunSessionStateMapper.applySessionRef(ref, to: session)
             hooks.recordPendingHandoffSendOutcome(session, true)
             hooks.stageConsumedAttachmentFilesForDeferredCleanup(attachments, session)
             hooks.markAttachmentsConsumed(session, attachmentReservationID)
@@ -216,7 +214,7 @@ final class PiIntegratedAgentModeRunner {
             }
             let eventTask = Task { @MainActor [weak self, weak session] in
                 guard let self, let session else { return }
-                var latestPendingMessageCount = 0
+                var completionGate = PiRunCompletionGate()
                 for await event in events {
                     guard session.isCurrentRunAttempt(ownership, expectedRunID: runID) else { return }
                     switch event {
@@ -224,19 +222,11 @@ final class PiIntegratedAgentModeRunner {
                         markPostPromptProviderEvent(session: session)
                         await hooks.handleHeadlessStreamResult(result, session, runID, runAttemptID)
                     case let .sessionState(state):
-                        latestPendingMessageCount = state.pendingMessageCount ?? 0
-                        applySessionState(state, to: session)
+                        completionGate.recordSessionState(state)
+                        PiRunSessionStateMapper.applySessionState(state, to: session)
                     case let .turnCompleted(_, status):
                         markPostPromptProviderEvent(session: session)
-                        if status == .completed, latestPendingMessageCount > 0 {
-                            latestPendingMessageCount -= 1
-                            continue
-                        }
-                        let terminalState: AgentSessionRunState = switch status {
-                        case .completed: .completed
-                        case .cancelled: .cancelled
-                        case .failed: .failed
-                        }
+                        guard let terminalState = completionGate.terminalState(for: status) else { continue }
                         await commitTerminal(
                             terminalState,
                             source: "pi.turnCompleted",
@@ -257,6 +247,8 @@ final class PiIntegratedAgentModeRunner {
                             notifyTurnComplete: false
                         )
                         return
+                    case .diagnostic:
+                        break
                     }
                 }
             }
@@ -264,17 +256,19 @@ final class PiIntegratedAgentModeRunner {
             let images = try PiRPCImageContentBuilder.images(from: attachments)
             _ = try await controller.sendUserMessage(initialMessageForRun, images: images)
             firstEventWatchdogTask = Task { @MainActor in
-                try? await Task.sleep(nanoseconds: Self.firstProviderEventTimeoutNanoseconds)
+                try? await Task.sleep(nanoseconds: PiFirstProviderEventWatchdog.timeoutNanoseconds)
                 guard !Task.isCancelled,
-                      !didReceivePostPromptProviderEvent,
-                      !didCommitTerminal,
-                      session.isCurrentRunAttempt(ownership, expectedRunID: runID)
+                      PiFirstProviderEventWatchdog.shouldFire(
+                          didReceivePostPromptProviderEvent: didReceivePostPromptProviderEvent,
+                          didCommitTerminal: didCommitTerminal,
+                          isCurrentRunAttempt: session.isCurrentRunAttempt(ownership, expectedRunID: runID)
+                      )
                 else { return }
                 _ = await controller.interruptTurn(reason: "first provider event timeout")
                 await commitTerminal(
                     .failed,
-                    source: "pi.firstProviderEventTimeout",
-                    errorText: "pi accepted the prompt but did not produce any response events within 60 seconds.",
+                    source: PiFirstProviderEventWatchdog.source,
+                    errorText: PiFirstProviderEventWatchdog.errorText,
                     notifyTurnComplete: false
                 )
             }
@@ -303,21 +297,13 @@ final class PiIntegratedAgentModeRunner {
         runID: UUID,
         terminalState: AgentSessionRunState? = nil
     ) -> AgentRunAttemptTerminalResources.Teardown {
-        if session.piController === controller {
-            session.piController = nil
-        }
-        if session.runID == runID {
-            session.runID = nil
-        }
-        AgentModeProcessRunIdentity.clearProcessRunID(for: session)
-        let windowID = windowID
-        return {
-            if terminalState == .cancelled {
-                _ = await controller.interruptTurn(reason: "cancel")
-            }
-            await Self.cleanupManagedMCPRouting(windowID: windowID, runID: runID)
-            await controller.shutdown()
-        }
+        PiRunTerminalCleanup.makeTeardown(
+            session: session,
+            controller: controller,
+            runID: runID,
+            windowID: windowID,
+            terminalState: terminalState
+        )
     }
 
     private func handleBlockingExtensionUIRequest(
@@ -325,14 +311,14 @@ final class PiIntegratedAgentModeRunner {
         session: AgentModeViewModel.TabSession,
         controller: PiNativeSessionController
     ) async {
-        guard let interaction = makeExtensionUIInteraction(from: request) else {
+        guard let interaction = PiExtensionUIInteractionMapper.interaction(from: request) else {
             await cancelExtensionUIRequest(request, controller: controller)
             return
         }
 
         do {
             let response = try await hooks.askUserInteraction(session.tabID, interaction)
-            let rpcResponse = makeExtensionUIResponse(for: request, from: response)
+            let rpcResponse = PiExtensionUIInteractionMapper.response(for: request, from: response)
             try await controller.respondToExtensionUIRequest(rpcResponse)
         } catch {
             await cancelExtensionUIRequest(request, controller: controller)
@@ -348,171 +334,5 @@ final class PiIntegratedAgentModeRunner {
         } catch {
             // The follow-up error will surface through the pi event stream or transport close.
         }
-    }
-
-    private func makeExtensionUIInteraction(
-        from request: PiRPCClient.PiExtensionUIRequest
-    ) -> AgentAskUserInteraction? {
-        let timeoutSeconds = extensionUITimeoutSeconds(from: request)
-        let context = extensionUIContext(from: request)
-        let title = request.title?.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty ?? "pi Extension Request"
-
-        switch request.method {
-        case "select":
-            let options = extensionUIOptions(from: request)
-            guard !options.isEmpty else { return nil }
-            return AgentAskUserInteraction(
-                title: title,
-                context: context,
-                timeoutSeconds: timeoutSeconds,
-                questions: [
-                    AgentAskUserQuestion(
-                        id: "value",
-                        question: request.message?.nonEmpty ?? title,
-                        options: options.map { AgentAskUserOption(label: $0) },
-                        allowsMultiple: false,
-                        allowsCustom: false
-                    )
-                ]
-            )
-        case "confirm":
-            return AgentAskUserInteraction(
-                title: title,
-                context: context,
-                timeoutSeconds: timeoutSeconds,
-                questions: [
-                    AgentAskUserQuestion(
-                        id: "confirmed",
-                        question: request.message?.nonEmpty ?? title,
-                        options: [
-                            AgentAskUserOption(label: "Yes"),
-                            AgentAskUserOption(label: "No")
-                        ],
-                        allowsMultiple: false,
-                        allowsCustom: false
-                    )
-                ]
-            )
-        case "input", "editor":
-            let prompt = request.message?.nonEmpty ?? request.raw["placeholder"]?.stringValue?.nonEmpty ?? title
-            return AgentAskUserInteraction(
-                title: title,
-                context: context,
-                timeoutSeconds: timeoutSeconds,
-                questions: [
-                    AgentAskUserQuestion(
-                        id: "value",
-                        question: prompt,
-                        context: extensionUIPrefillContext(from: request),
-                        options: [],
-                        allowsMultiple: false,
-                        allowsCustom: true
-                    )
-                ]
-            )
-        default:
-            return nil
-        }
-    }
-
-    private func makeExtensionUIResponse(
-        for request: PiRPCClient.PiExtensionUIRequest,
-        from response: AgentAskUserResponse
-    ) -> PiExtensionUIResponse {
-        if response.timedOut || response.skipped {
-            return .cancelled(id: request.id)
-        }
-        switch request.method {
-        case "confirm":
-            let answer = response.answersByQuestionID["confirmed"]?.answers.first?.lowercased()
-            guard let answer else { return .cancelled(id: request.id) }
-            return .confirmed(id: request.id, answer == "yes" || answer == "true" || answer == "allow")
-        case "select", "input", "editor":
-            guard let value = response.answersByQuestionID["value"]?.answers.first?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !value.isEmpty
-            else {
-                return .cancelled(id: request.id)
-            }
-            return .value(id: request.id, value)
-        default:
-            return .cancelled(id: request.id)
-        }
-    }
-
-    private func extensionUITimeoutSeconds(from request: PiRPCClient.PiExtensionUIRequest) -> TimeInterval {
-        guard let timeoutMS = request.raw["timeout"]?.intValue, timeoutMS > 0 else {
-            return ContextBuilderDefaults.questionTimeoutSeconds
-        }
-        return max(1, TimeInterval(timeoutMS) / 1000.0)
-    }
-
-    private func extensionUIOptions(from request: PiRPCClient.PiExtensionUIRequest) -> [String] {
-        request.raw["options"]?.arrayValue?.compactMap { value in
-            if let string = value.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !string.isEmpty {
-                return string
-            }
-            if let object = value.objectValue {
-                return object["label"]?.stringValue?.nonEmpty
-                    ?? object["value"]?.stringValue?.nonEmpty
-                    ?? object["title"]?.stringValue?.nonEmpty
-            }
-            return nil
-        } ?? []
-    }
-
-    private func extensionUIContext(from request: PiRPCClient.PiExtensionUIRequest) -> String? {
-        var lines: [String] = []
-        if let message = request.message?.nonEmpty, message != request.title {
-            lines.append(message)
-        }
-        if let statusText = request.statusText?.nonEmpty {
-            lines.append(statusText)
-        }
-        lines.append("Requested by pi extension UI method: \(request.method).")
-        return lines.joined(separator: "\n\n")
-    }
-
-    private func extensionUIPrefillContext(from request: PiRPCClient.PiExtensionUIRequest) -> String? {
-        guard let prefill = request.raw["prefill"]?.stringValue?.nonEmpty else { return nil }
-        return "Prefill from pi:\n\(prefill)"
-    }
-
-    private static func cleanupManagedMCPRouting(windowID: Int, runID: UUID) async {
-        if let clientName = AgentProviderKind.pi.mcpClientNameHint {
-            await ServerNetworkManager.shared.clearClientConnectionPolicy(
-                for: clientName,
-                windowID: windowID,
-                runID: runID
-            )
-        }
-        await ServerNetworkManager.shared.cleanupRunRoutingState(for: runID, windowID: windowID)
-        await AgentRunCoordinator.shared.cleanupRouting(runID: runID)
-    }
-
-    private func applySessionState(_ state: PiRPCClient.SessionState, to session: AgentModeViewModel.TabSession) {
-        session.providerSessionID = state.sessionID
-        session.piSessionFile = state.sessionFile
-        if let modelRaw = state.model.flatMap(AgentPiModelRegistry.rawModel) {
-            session.selectedModelRaw = modelRaw
-        }
-        session.selectedReasoningEffortRaw = state.thinkingLevel
-        session.isDirty = true
-    }
-
-    private func applySessionRef(_ ref: PiNativeSessionController.SessionRef, to session: AgentModeViewModel.TabSession) {
-        session.providerSessionID = ref.sessionID
-        session.piSessionFile = ref.sessionFile
-        if let modelRaw = ref.model?.trimmingCharacters(in: .whitespacesAndNewlines), !modelRaw.isEmpty {
-            session.selectedModelRaw = modelRaw
-        }
-        session.selectedReasoningEffortRaw = ref.thinkingLevel
-        session.isDirty = true
-    }
-}
-
-private extension String {
-    var nonEmpty: String? {
-        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
     }
 }

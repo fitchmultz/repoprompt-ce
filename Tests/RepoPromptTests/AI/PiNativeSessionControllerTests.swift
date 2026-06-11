@@ -213,6 +213,43 @@ final class PiNativeSessionControllerTests: XCTestCase {
         XCTAssertNil(commands.first { $0["type"] as? String == "follow_up" }?["images"])
     }
 
+    func testProtocolDiagnosticsAreForwardedToNativeEvents() async throws {
+        let directory = try makeTemporaryDirectory()
+        let scriptURL = try makeFakePiControllerScript(recordURL: directory.appendingPathComponent("commands.jsonl"))
+        let client = PiRPCClient(config: .init(
+            commandName: scriptURL.path,
+            additionalPathHints: [],
+            requestTimeout: 2,
+            launchArguments: [],
+            requiresSupportedVersionCheck: false
+        ))
+        let controller = PiNativeSessionController(client: client, options: .init(requestTimeout: 2))
+        addTeardownBlock { await controller.shutdown() }
+        _ = try await controller.startOrResume(existing: nil)
+
+        let stream = await controller.events
+        let collector = Task { () -> [PiNativeSessionController.Event] in
+            var events: [PiNativeSessionController.Event] = []
+            for await event in stream {
+                events.append(event)
+                if case .turnCompleted = event { break }
+            }
+            return events
+        }
+
+        _ = try await controller.sendUserMessage("protocol-drift")
+        let events = await collector.value
+        let diagnostics = events.compactMap { event -> PiRPCClient.ProtocolDiagnostic? in
+            if case let .diagnostic(diagnostic) = event { return diagnostic }
+            return nil
+        }
+
+        XCTAssertEqual(diagnostics.first?.kind, .unknownEventType)
+        XCTAssertEqual(diagnostics.first?.eventType, "future_event")
+        XCTAssertTrue(diagnostics.first?.payloadPreview?.contains("REDACTED") == true)
+        XCTAssertFalse(diagnostics.first?.payloadPreview?.contains("sk-fixture-redaction-value") == true)
+    }
+
     func testAgentEndRefreshesSessionStateForProviderSideSessionChanges() async throws {
         let directory = try makeTemporaryDirectory()
         let recordURL = directory.appendingPathComponent("commands.jsonl")
@@ -476,6 +513,9 @@ final class PiNativeSessionControllerTests: XCTestCase {
                     inner = '{"roots_count":1,"tree":"repoprompt-ce","uses_legend":false}'
                     emit({"type": "tool_execution_start", "toolCallId": "call-1", "toolName": "get_file_tree", "args": {"type": "roots"}})
                     emit({"type": "tool_execution_end", "toolCallId": "call-1", "toolName": "get_file_tree", "result": {"content": [{"type": "text", "text": inner}], "details": {"bridgeVersion": "2", "tool": "get_file_tree", "exitCode": 0}}, "isError": False})
+                elif request.get("message") == "protocol-drift":
+                    emit({"type": "future_event", "note": "sk-fixture-redaction-value", "payload": {"message": "new shape"}})
+                    emit({"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": "continued after drift"}})
                 else:
                     emit({"type": "message_update", "assistantMessageEvent": {"type": "thinking_delta", "contentIndex": 0, "delta": "thinking..."}})
                     emit({"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "contentIndex": 1, "delta": "hello back"}})

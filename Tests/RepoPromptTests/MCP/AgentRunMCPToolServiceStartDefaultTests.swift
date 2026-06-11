@@ -222,20 +222,7 @@ final class AgentRunMCPToolServiceStartDefaultTests: XCTestCase {
     }
 
     func testExplicitPiModelIDAcceptsThinkingSuffixAndExtractsEffort() throws {
-        let snapshot = PiDiscoveredModels(
-            options: [
-                AgentModelOption(rawValue: "default", displayName: "Default", description: nil, isDefault: true),
-                AgentModelOption(
-                    rawValue: "openai-codex/gpt-5.5",
-                    displayName: "openai-codex/gpt-5.5",
-                    description: nil,
-                    isDefault: true,
-                    supportedPiThinkingLevels: [.off, .low, .medium, .high]
-                )
-            ],
-            currentModelRaw: "openai-codex/gpt-5.5"
-        )
-        XCTAssertTrue(AgentPiModelRegistry.shared.updateDiscoveredModels(snapshot))
+        installPiSnapshot()
 
         let resolved = try AgentMCPSelectionResolver.resolve(
             modelID: "pi:openai-codex/gpt-5.5:low",
@@ -247,6 +234,78 @@ final class AgentRunMCPToolServiceStartDefaultTests: XCTestCase {
         XCTAssertEqual(resolved.agentRaw, AgentProviderKind.pi.rawValue)
         XCTAssertEqual(resolved.modelRaw, "openai-codex/gpt-5.5")
         XCTAssertEqual(resolved.reasoningEffortRaw, "low")
+    }
+
+    func testRoleDefaultPiModelIDPreservesThinkingSuffixAndResolverExtractsEffort() throws {
+        installPiSnapshot()
+        let store = InMemoryRoleDefaultsStore()
+        let availability = AgentModelCatalog.AvailabilityContext(piAvailable: true)
+        let selection = AgentModelCatalog.NormalizedAgentSelection(
+            agent: .pi,
+            modelRaw: "openai-codex/gpt-5.5:low"
+        )
+
+        XCTAssertTrue(MCPAgentRoleDefaultsService.setSelection(
+            selection,
+            for: .explore,
+            availability: availability,
+            settingsStore: store
+        ))
+        let resolution = try XCTUnwrap(MCPAgentRoleDefaultsService.effectiveSelection(
+            for: .explore,
+            availability: availability,
+            settingsStore: store
+        ))
+        XCTAssertEqual(resolution.effective, selection)
+        XCTAssertEqual(resolution.effectiveDisplayName, "pi GPT 5.5 Low")
+
+        let resolved = try AgentMCPSelectionResolver.resolve(
+            modelID: "explore",
+            availability: availability,
+            roleSelectionProvider: { role, availability in
+                MCPAgentRoleDefaultsService.effectiveNormalizedSelection(
+                    for: role,
+                    availability: availability,
+                    settingsStore: store
+                )
+            }
+        )
+
+        XCTAssertEqual(resolved.taskLabelKind, .explore)
+        XCTAssertEqual(resolved.agentRaw, AgentProviderKind.pi.rawValue)
+        XCTAssertEqual(resolved.modelRaw, "openai-codex/gpt-5.5")
+        XCTAssertEqual(resolved.reasoningEffortRaw, "low")
+    }
+
+    private func installPiSnapshot() {
+        let snapshot = PiDiscoveredModels(
+            options: [
+                AgentModelOption(rawValue: "default", displayName: "Default", description: nil, isDefault: true),
+                AgentModelOption(
+                    rawValue: "openai-codex/gpt-5.5",
+                    displayName: "GPT 5.5",
+                    description: nil,
+                    isDefault: true,
+                    supportedPiThinkingLevels: [.off, .low, .medium, .high]
+                )
+            ],
+            currentModelRaw: "openai-codex/gpt-5.5"
+        )
+        XCTAssertTrue(AgentPiModelRegistry.shared.updateDiscoveredModels(snapshot))
+    }
+}
+
+@MainActor
+private final class InMemoryRoleDefaultsStore: MCPAgentRoleDefaultsStoring {
+    private var overrides: [String: String]?
+
+    func globalMCPAgentRoleOverrides() -> [String: String]? {
+        overrides
+    }
+
+    func updateGlobalMCPAgentRoleOverrides(_ overrides: [String: String]?, commit: Bool) {
+        _ = commit
+        self.overrides = overrides
     }
 }
 

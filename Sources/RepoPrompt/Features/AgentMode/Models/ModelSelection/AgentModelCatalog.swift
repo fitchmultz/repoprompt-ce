@@ -693,7 +693,10 @@ enum AgentModelCatalog {
         return PiThinkingLevel.standardModelOrder
     }
 
-    static func piMenu(for options: [AgentModelOption]) -> PiMenu {
+    static func piMenu(
+        for options: [AgentModelOption],
+        includeThinkingLevelOptions: Bool = false
+    ) -> PiMenu {
         let defaultOption = options.first { $0.isPlaceholderDefault }
         struct Entry {
             let option: AgentModelOption
@@ -704,15 +707,47 @@ enum AgentModelCatalog {
             let index: Int
         }
 
-        let entries = options.enumerated().compactMap { index, option -> Entry? in
-            guard !option.isPlaceholderDefault else { return nil }
+        struct BaseModelCandidate {
+            let option: AgentModelOption
+            let providerID: String?
+            let baseModelRaw: String
+            let modelDisplayName: String
+            let index: Int
+        }
+
+        var entries: [Entry] = []
+        var baseModelCandidates: [BaseModelCandidate] = []
+        var seenOptionRaws = Set<String>()
+
+        func appendEntry(
+            option: AgentModelOption,
+            providerID: String?,
+            baseModelRaw: String,
+            modelDisplayName: String,
+            thinkingLevel: PiThinkingLevel?,
+            index: Int
+        ) {
+            let rawKey = option.rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !rawKey.isEmpty, seenOptionRaws.insert(rawKey).inserted else { return }
+            entries.append(Entry(
+                option: option,
+                providerID: providerID,
+                baseModelRaw: baseModelRaw,
+                modelDisplayName: modelDisplayName,
+                thinkingLevel: thinkingLevel,
+                index: index
+            ))
+        }
+
+        for (index, option) in options.enumerated() {
+            guard !option.isPlaceholderDefault else { continue }
             if let rawThinkingLevel = PiModelSpecifier(raw: option.rawValue)?.thinkingLevel,
                PiThinkingLevel.parse(rawThinkingLevel) == nil
             {
-                return nil
+                continue
             }
             let normalized = normalizedPiProviderModel(option: option)
-            return Entry(
+            appendEntry(
                 option: option,
                 providerID: normalized.providerID,
                 baseModelRaw: normalized.baseModelRaw,
@@ -720,6 +755,39 @@ enum AgentModelCatalog {
                 thinkingLevel: normalized.thinkingLevel,
                 index: index
             )
+            if normalized.thinkingLevel == nil, !option.supportedPiThinkingLevels.isEmpty {
+                baseModelCandidates.append(BaseModelCandidate(
+                    option: option,
+                    providerID: normalized.providerID,
+                    baseModelRaw: normalized.baseModelRaw,
+                    modelDisplayName: normalized.modelDisplayName,
+                    index: index
+                ))
+            }
+        }
+
+        if includeThinkingLevelOptions {
+            for candidate in baseModelCandidates {
+                for level in candidate.option.supportedPiThinkingLevels {
+                    let variantRaw = "\(candidate.baseModelRaw):\(level.rawValue)"
+                    let variantOption = AgentModelOption(
+                        rawValue: variantRaw,
+                        displayName: "\(candidate.modelDisplayName) \(level.displayName)",
+                        description: candidate.option.description,
+                        isPlaceholderDefault: false,
+                        isProviderDefault: false,
+                        supportedPiThinkingLevels: candidate.option.supportedPiThinkingLevels
+                    )
+                    appendEntry(
+                        option: variantOption,
+                        providerID: candidate.providerID,
+                        baseModelRaw: candidate.baseModelRaw,
+                        modelDisplayName: candidate.modelDisplayName,
+                        thinkingLevel: level,
+                        index: candidate.index
+                    )
+                }
+            }
         }
 
         let groupedModels = Dictionary(grouping: entries, by: { entry in
@@ -1076,7 +1144,9 @@ enum AgentModelCatalog {
             guard optionBase.caseInsensitiveCompare(selectedSpecifier.providerQualifiedModelRaw) == .orderedSame else {
                 return false
             }
-            guard let optionThinkingLevel = optionSpecifier?.thinkingLevel else { return true }
+            guard let optionThinkingLevel = optionSpecifier?.thinkingLevel else {
+                return selectedSpecifier.thinkingLevel == nil
+            }
             guard let optionLevel = PiThinkingLevel.parse(optionThinkingLevel),
                   let selectedLevel = PiThinkingLevel.parse(selectedSpecifier.thinkingLevel)
             else {

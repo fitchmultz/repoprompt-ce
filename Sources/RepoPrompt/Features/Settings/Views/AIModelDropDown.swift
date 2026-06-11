@@ -308,10 +308,11 @@ struct AIModelDropdown: View {
                 description: sourceOption?.description,
                 isPlaceholderDefault: sourceOption?.isPlaceholderDefault
                     ?? (raw.caseInsensitiveCompare(AgentModel.defaultModel.rawValue) == .orderedSame),
-                isProviderDefault: sourceOption?.isProviderDefault ?? false
+                isProviderDefault: sourceOption?.isProviderDefault ?? false,
+                supportedPiThinkingLevels: sourceOption?.supportedPiThinkingLevels ?? []
             )
         }
-        let piMenu = AgentModelCatalog.piMenu(for: options)
+        let piMenu = AgentModelCatalog.piMenu(for: options, includeThinkingLevelOptions: true)
         var items: [StableMenuItem] = []
         if let defaultOption = piMenu.defaultOption {
             items.append(aiModelPiMenuItem(defaultOption))

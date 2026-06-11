@@ -29,9 +29,9 @@ final class PiRepoPromptBridgeExtensionInstallerTests: XCTestCase {
         XCTAssertTrue(source.contains("name: toolName"))
         XCTAssertTrue(source.contains("parameters: asParameterSchema(tool.inputSchema)"))
         XCTAssertTrue(source.contains("repoPromptSchemaArgs()"))
-        XCTAssertTrue(source.contains("const REPOPROMPT_SCHEMA_ARGS = [\"--client-name\",\"pi\",\"--tools-schema\",\"--compact\",\"-w\",\"42\"]"))
+        XCTAssertTrue(source.contains("const REPOPROMPT_SCHEMA_ARGS = JSON.parse(\"[\\\"--client-name\\\",\\\"pi\\\",\\\"--tools-schema\\\",\\\"--compact\\\",\\\"-w\\\",\\\"42\\\"]\") as string[]"))
         XCTAssertTrue(source.contains("repoPromptToolArgs(toolName, params)"))
-        XCTAssertTrue(source.contains("const REPOPROMPT_TOOL_ARGS_PREFIX = [\"--client-name\",\"pi\",\"--raw-json\",\"-w\",\"42\"]"))
+        XCTAssertTrue(source.contains("const REPOPROMPT_TOOL_ARGS_PREFIX = JSON.parse(\"[\\\"--client-name\\\",\\\"pi\\\",\\\"--raw-json\\\",\\\"-w\\\",\\\"42\\\"]\") as string[]"))
         XCTAssertTrue(source.contains("const REPOPROMPT_CLIENT_NAME = \"pi\""))
         XCTAssertTrue(source.contains("const REPOPROMPT_WINDOW_ID: string | undefined = \"42\""))
         XCTAssertTrue(source.contains("const REPOPROMPT_IS_MANAGED_WINDOW_BRIDGE = REPOPROMPT_WINDOW_ID !== undefined"))
@@ -39,6 +39,41 @@ final class PiRepoPromptBridgeExtensionInstallerTests: XCTestCase {
         XCTAssertTrue(source.contains("\\\"Debug\\\""))
         XCTAssertTrue(source.contains("repoprompt-mcp"))
         XCTAssertFalse(source.contains("name: \"repoprompt_tool\""))
+    }
+
+    func testBridgeTemplateIsFirstClassArtifactAndRenderingRemovesPlaceholders() throws {
+        let templateURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent("AppResources", isDirectory: true)
+            .appendingPathComponent("PiBridge", isDirectory: true)
+            .appendingPathComponent("repoprompt-bridge.ts", isDirectory: false)
+        let template = try String(contentsOf: templateURL, encoding: .utf8)
+
+        XCTAssertTrue(template.contains("__REPOPROMPT_CLI__"))
+        XCTAssertTrue(template.contains("export default async function repoPromptBridge"))
+        XCTAssertTrue(template.contains("pi.registerTool"))
+
+        let rendered = PiRepoPromptBridgeExtensionInstaller.renderExtensionSource(
+            template: template,
+            windowID: 42,
+            cliPath: #"/tmp/RepoPrompt "Debug"/repoprompt-mcp"#
+        )
+        XCTAssertFalse(rendered.contains("__REPOPROMPT_"))
+        XCTAssertTrue(rendered.contains(#"const REPOPROMPT_CLI = "#))
+        XCTAssertTrue(rendered.contains("\\\"Debug\\\""))
+        XCTAssertTrue(rendered.contains("repoprompt-mcp"))
+        XCTAssertTrue(rendered.contains(#"const REPOPROMPT_WINDOW_ID: string | undefined = "42""#))
+    }
+
+    func testBridgeTemplateLoadsFromSourceTreeWhenCurrentDirectoryIsNotRepoRoot() throws {
+        let temp = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let source = PiRepoPromptBridgeExtensionInstaller.bridgeTemplateSource(
+            currentDirectoryPath: temp.path,
+            sourceFilePath: #filePath
+        )
+
+        XCTAssertTrue(source.contains("RepoPrompt CE managed pi bridge extension"))
+        XCTAssertTrue(source.contains("__REPOPROMPT_CLI__"))
     }
 
     func testGlobalInstallWritesWindowlessAutoDiscoveredBridgeAndUninstallRemovesIt() throws {
@@ -65,8 +100,8 @@ final class PiRepoPromptBridgeExtensionInstallerTests: XCTestCase {
         XCTAssertTrue(source.contains("const REPOPROMPT_WINDOW_ID: string | undefined = undefined"))
         XCTAssertTrue(source.contains("const REPOPROMPT_IS_MANAGED_WINDOW_BRIDGE = REPOPROMPT_WINDOW_ID !== undefined"))
         XCTAssertTrue(source.contains("process.env[REPOPROMPT_MANAGED_RUN_ENV] === \"1\""))
-        XCTAssertTrue(source.contains("const REPOPROMPT_SCHEMA_ARGS = [\"--tools-schema\",\"--compact\"]"))
-        XCTAssertTrue(source.contains("const REPOPROMPT_TOOL_ARGS_PREFIX = [\"--client-name\",\"pi\",\"--raw-json\"]"))
+        XCTAssertTrue(source.contains("const REPOPROMPT_SCHEMA_ARGS = JSON.parse(\"[\\\"--tools-schema\\\",\\\"--compact\\\"]\") as string[]"))
+        XCTAssertTrue(source.contains("const REPOPROMPT_TOOL_ARGS_PREFIX = JSON.parse(\"[\\\"--client-name\\\",\\\"pi\\\",\\\"--raw-json\\\"]\") as string[]"))
 
         XCTAssertTrue(try PiRepoPromptBridgeExtensionInstaller.uninstallGlobal(homeDirectory: home, cliPath: cliPath))
         XCTAssertEqual(

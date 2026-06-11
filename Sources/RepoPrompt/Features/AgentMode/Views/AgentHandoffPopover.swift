@@ -48,8 +48,22 @@ struct AgentHandoffPopover: View {
         selectedModelOption?.supportedReasoningEfforts ?? []
     }
 
+    private var piThinkingLevelOptions: [PiThinkingLevel] {
+        guard selectedAgent == .pi else { return [] }
+        return AgentModelCatalog.piThinkingLevelOptions(for: selectedModelRaw)
+    }
+
+    private var selectedPiThinkingLevel: PiThinkingLevel? {
+        PiThinkingLevel.parse(selectedReasoningEffortRaw)
+            ?? PiThinkingLevel.parse(PiModelSpecifier(raw: selectedModelRaw)?.thinkingLevel)
+    }
+
     private var showReasoningEffort: Bool {
         selectedAgent == .codexExec && !reasoningEffortOptions.isEmpty
+    }
+
+    private var showPiThinkingLevel: Bool {
+        selectedAgent == .pi && !piThinkingLevelOptions.isEmpty
     }
 
     private var chipColor: Color {
@@ -160,6 +174,48 @@ struct AgentHandoffPopover: View {
                         .menuStyle(.borderlessButton)
                         .fixedSize()
                     }
+
+                    if showPiThinkingLevel {
+                        Menu {
+                            Button {
+                                selectedReasoningEffortRaw = nil
+                            } label: {
+                                HStack {
+                                    Text(PiThinkingLevel.noOverrideDisplayName)
+                                    if selectedPiThinkingLevel == nil {
+                                        Spacer()
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+                            Divider()
+                            ForEach(piThinkingLevelOptions, id: \.rawValue) { level in
+                                Button {
+                                    selectedReasoningEffortRaw = level.rawValue
+                                } label: {
+                                    HStack {
+                                        Text(level.displayName)
+                                        if selectedPiThinkingLevel == level {
+                                            Spacer()
+                                            Image(systemName: "checkmark")
+                                        }
+                                    }
+                                }
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Text(selectedPiThinkingLevel?.displayName ?? PiThinkingLevel.noOverrideDisplayName)
+                                    .font(fontPreset.swiftUIFont(sizeAtNormal: 11))
+                            }
+                            .foregroundColor(.secondary)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(chipColor)
+                            .cornerRadius(4)
+                        }
+                        .menuStyle(.borderlessButton)
+                        .fixedSize()
+                    }
                 }
 
                 if availableAgents.isEmpty {
@@ -226,7 +282,7 @@ struct AgentHandoffPopover: View {
                         let selection = AgentHandoffSelection(
                             agent: selectedAgent,
                             modelRaw: selectedModelRaw,
-                            reasoningEffortRaw: showReasoningEffort ? selectedReasoningEffortRaw : nil
+                            reasoningEffortRaw: showReasoningEffort || showPiThinkingLevel ? selectedReasoningEffortRaw : nil
                         )
                         do {
                             try await config.performHandoff(selection)
@@ -286,6 +342,11 @@ struct AgentHandoffPopover: View {
 
     private func selectHandoffModel(_ model: AgentModelOption, for agent: AgentProviderKind) {
         selectedAgent = agent
+        if agent == .pi, let specifier = PiModelSpecifier(raw: model.rawValue) {
+            selectedModelRaw = specifier.providerQualifiedModelRaw
+            selectedReasoningEffortRaw = PiThinkingLevel.parse(specifier.thinkingLevel)?.rawValue
+            return
+        }
         selectedModelRaw = model.rawValue
         selectedReasoningEffortRaw = agent == .codexExec
             ? Self.codexReasoningEffortRaw(
@@ -331,10 +392,13 @@ struct AgentHandoffPopover: View {
             preferredModelRaw: agent == config.defaultDestinationAgent ? config.defaultModelRaw : nil,
             config: config
         )
+        let preferredReasoningEffortRaw = agent == config.defaultDestinationAgent
+            ? config.defaultReasoningEffortRaw ?? PiModelSpecifier(raw: config.defaultModelRaw)?.thinkingLevel
+            : nil
         let reasoningEffortRaw = initialReasoningEffortRaw(
             for: agent,
             modelRaw: modelRaw,
-            preferredReasoningEffortRaw: agent == config.defaultDestinationAgent ? config.defaultReasoningEffortRaw : nil,
+            preferredReasoningEffortRaw: preferredReasoningEffortRaw,
             config: config
         )
         return AgentHandoffSelection(agent: agent, modelRaw: modelRaw, reasoningEffortRaw: reasoningEffortRaw)
@@ -363,6 +427,16 @@ struct AgentHandoffPopover: View {
         preferredReasoningEffortRaw: String?,
         config: AgentHandoffConfig
     ) -> String? {
+        if agent == .pi {
+            let supportedLevels = AgentModelCatalog.piThinkingLevelOptions(for: modelRaw)
+            func acceptedRaw(_ level: PiThinkingLevel?) -> String? {
+                guard let level else { return nil }
+                guard supportedLevels.isEmpty || supportedLevels.contains(level) else { return nil }
+                return level.rawValue
+            }
+            return acceptedRaw(PiThinkingLevel.parse(preferredReasoningEffortRaw))
+                ?? acceptedRaw(PiThinkingLevel.parse(PiModelSpecifier(raw: modelRaw)?.thinkingLevel))
+        }
         guard agent == .codexExec else { return nil }
         let option = option(matching: modelRaw, in: config.modelOptionsProvider(agent))
         return codexReasoningEffortRaw(
@@ -398,6 +472,13 @@ struct AgentHandoffPopover: View {
     }
 
     private static func option(matching rawValue: String, in options: [AgentModelOption]) -> AgentModelOption? {
-        options.first { $0.rawValue.caseInsensitiveCompare(rawValue) == .orderedSame }
+        if let specifier = PiModelSpecifier(raw: rawValue) {
+            return options.first { option in
+                if option.rawValue.caseInsensitiveCompare(rawValue) == .orderedSame { return true }
+                return PiModelSpecifier(raw: option.rawValue)?.providerQualifiedModelRaw
+                    .caseInsensitiveCompare(specifier.providerQualifiedModelRaw) == .orderedSame
+            }
+        }
+        return options.first { $0.rawValue.caseInsensitiveCompare(rawValue) == .orderedSame }
     }
 }

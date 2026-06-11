@@ -18,6 +18,7 @@ actor PiNativeSessionController {
         case sessionState(PiRPCClient.SessionState)
         case turnCompleted(turnID: UUID, status: TurnStatus)
         case extensionUIRequest(PiRPCClient.PiExtensionUIRequest)
+        case diagnostic(PiRPCClient.ProtocolDiagnostic)
         case error(String)
     }
 
@@ -318,6 +319,8 @@ actor PiNativeSessionController {
             emit(.extensionUIRequest(request))
         case let .extensionError(message):
             emit(.error(message))
+        case let .protocolDiagnostic(diagnostic):
+            emit(.diagnostic(diagnostic))
         case let .transportClosed(reason):
             if hasTurnInFlight {
                 completeTurnIfNeeded(status: .failed)

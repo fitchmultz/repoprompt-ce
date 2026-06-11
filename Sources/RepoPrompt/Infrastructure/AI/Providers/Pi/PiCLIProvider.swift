@@ -54,7 +54,7 @@ final class PiCLIProvider: AIProvider {
                             case let .error(message):
                                 continuation.finish(throwing: AIProviderError.invalidConfiguration(detail: message))
                                 return .failed
-                            case .sessionState:
+                            case .sessionState, .diagnostic:
                                 break
                             }
                         }

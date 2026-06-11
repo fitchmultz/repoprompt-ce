@@ -345,7 +345,8 @@ final class AgentModelsSettingsViewModel: ObservableObject {
                 agentKind: agent,
                 options: promptVM.contextBuilderModelOptions(for: agent),
                 selectedAgent: promptVM.contextBuilderAgent,
-                selectedModelRaw: promptVM.contextBuilderAgentModelRaw
+                selectedModelRaw: promptVM.contextBuilderAgentModelRaw,
+                includePiThinkingLevelOptions: true
             ) { [weak self] selectedAgent, selectedOption in
                 guard let self else { return }
                 promptVM.contextBuilderAgent = selectedAgent
@@ -373,7 +374,8 @@ final class AgentModelsSettingsViewModel: ObservableObject {
                 selectedModelRaw: resolution.effective.modelRaw,
                 includePlaceholderDefault: false,
                 flattenSingleCodexGroups: true,
-                groupOpenCode: false
+                groupOpenCode: false,
+                includePiThinkingLevelOptions: true
             ) { [weak self] selectedAgent, selectedOption in
                 guard let self else { return }
                 let selection = AgentModelCatalog.NormalizedAgentSelection(
