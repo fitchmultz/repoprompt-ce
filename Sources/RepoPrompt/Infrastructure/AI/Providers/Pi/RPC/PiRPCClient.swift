@@ -338,7 +338,8 @@ actor PiRPCClient {
             let availability = await PiIntegrationConfiguration.checkManagedRPCAvailability(
                 commandName: resolvedCommand,
                 workingDirectory: workingDirectory,
-                enableDebugLogging: config.enableDebugLogging
+                enableDebugLogging: config.enableDebugLogging,
+                allowCachedSupportedVersionOnTimeout: true
             )
             guard availability.isAvailable else {
                 throw ClientError.executableUnavailable(

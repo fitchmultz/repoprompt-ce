@@ -243,7 +243,7 @@ final class PiRPCClientTests: XCTestCase {
             XCTAssertEqual(
                 error,
                 .executableUnavailable(
-                    "RepoPrompt requires pi 0.79.0 or newer for managed RPC project trust; found 0.78.1. Update pi and try again."
+                    "RepoPrompt requires pi 0.79.0 or newer for managed RPC project trust; found 0.78.1 at \(scriptURL.path). Update pi and try again."
                 )
             )
         }

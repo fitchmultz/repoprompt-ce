@@ -2,14 +2,68 @@ import Foundation
 
 enum PiIntegrationConfiguration {
     struct Availability: Equatable {
+        enum FailureKind: Equatable {
+            case timedOut
+            case exitStatus(Int32)
+            case thrown(String)
+            case unsupportedVersion
+        }
+
         var isAvailable: Bool
         var commandPath: String?
         var version: String?
         var diagnostic: String?
+        var failureKind: FailureKind?
+        var usedCachedSupportedVersion: Bool
+
+        init(
+            isAvailable: Bool,
+            commandPath: String?,
+            version: String?,
+            diagnostic: String?,
+            failureKind: FailureKind? = nil,
+            usedCachedSupportedVersion: Bool = false
+        ) {
+            self.isAvailable = isAvailable
+            self.commandPath = commandPath
+            self.version = version
+            self.diagnostic = diagnostic
+            self.failureKind = failureKind
+            self.usedCachedSupportedVersion = usedCachedSupportedVersion
+        }
+    }
+
+    private struct SupportedVersionCacheEntry: Equatable {
+        var commandPath: String
+        var version: String
+        var verifiedAt: Date
+    }
+
+    private actor SupportedVersionCache {
+        private var entries: [String: SupportedVersionCacheEntry] = [:]
+
+        func record(commandPath: String, version: String, verifiedAt: Date = Date()) {
+            entries[commandPath] = SupportedVersionCacheEntry(
+                commandPath: commandPath,
+                version: version,
+                verifiedAt: verifiedAt
+            )
+        }
+
+        func entry(for commandPath: String, now: Date = Date(), maxAge: TimeInterval) -> SupportedVersionCacheEntry? {
+            guard let entry = entries[commandPath], now.timeIntervalSince(entry.verifiedAt) <= maxAge else { return nil }
+            return entry
+        }
+
+        func reset() {
+            entries.removeAll()
+        }
     }
 
     static let providerDisplayName = "pi"
     static let minimumSupportedVersion = "0.79.0"
+    private static let supportedVersionCacheMaxAge: TimeInterval = 6 * 60 * 60
+    private static let supportedVersionCache = SupportedVersionCache()
     static let managedRunEnvironmentKey = "REPOPROMPT_PI_MANAGED_RUN"
     static let managedRunEnvironmentValue = "1"
 
@@ -78,33 +132,41 @@ enum PiIntegrationConfiguration {
             guard !result.timedOut else {
                 return Availability(
                     isAvailable: false,
-                    commandPath: nil,
+                    commandPath: commandName,
                     version: nil,
-                    diagnostic: "pi --version timed out after \(timeout) seconds."
+                    diagnostic: "pi --version timed out after \(timeout) seconds for \(commandName).",
+                    failureKind: .timedOut
                 )
             }
             guard result.status == 0 else {
                 let detail = stderr.isEmpty ? stdout : stderr
+                let diagnostic = if detail.isEmpty {
+                    "pi --version at \(commandName) exited with status \(result.status)."
+                } else {
+                    "pi --version at \(commandName) exited with status \(result.status): \(detail)"
+                }
                 return Availability(
                     isAvailable: false,
-                    commandPath: nil,
+                    commandPath: commandName,
                     version: nil,
-                    diagnostic: detail.isEmpty ? "pi --version exited with status \(result.status)." : detail
+                    diagnostic: diagnostic,
+                    failureKind: .exitStatus(result.status)
                 )
             }
             let version = parseVersion(from: stdout.isEmpty ? stderr : stdout)
             return Availability(
                 isAvailable: true,
-                commandPath: nil,
+                commandPath: commandName,
                 version: version,
                 diagnostic: nil
             )
         } catch {
             return Availability(
                 isAvailable: false,
-                commandPath: nil,
+                commandPath: commandName,
                 version: nil,
-                diagnostic: error.localizedDescription
+                diagnostic: "pi --version at \(commandName) failed: \(error.localizedDescription)",
+                failureKind: .thrown(error.localizedDescription)
             )
         }
     }
@@ -113,7 +175,8 @@ enum PiIntegrationConfiguration {
         commandName: String = CLILaunchProfiles.pi.commandName,
         workingDirectory: String? = nil,
         timeout: TimeInterval = 5,
-        enableDebugLogging: Bool = false
+        enableDebugLogging: Bool = false,
+        allowCachedSupportedVersionOnTimeout: Bool = false
     ) async -> Availability {
         let availability = await checkAvailability(
             commandName: commandName,
@@ -121,16 +184,42 @@ enum PiIntegrationConfiguration {
             timeout: timeout,
             enableDebugLogging: enableDebugLogging
         )
-        guard availability.isAvailable else { return availability }
+        guard availability.isAvailable else {
+            if allowCachedSupportedVersionOnTimeout,
+               availability.failureKind == .timedOut,
+               let cached = await supportedVersionCache.entry(
+                   for: commandName,
+                   maxAge: supportedVersionCacheMaxAge
+               )
+            {
+                return Availability(
+                    isAvailable: true,
+                    commandPath: cached.commandPath,
+                    version: cached.version,
+                    diagnostic: "Using last verified supported pi \(cached.version) at \(cached.commandPath) because fresh pi --version timed out after \(timeout) seconds.",
+                    failureKind: nil,
+                    usedCachedSupportedVersion: true
+                )
+            }
+            return availability
+        }
         guard isSupportedVersion(availability.version) else {
             return Availability(
                 isAvailable: false,
                 commandPath: availability.commandPath,
                 version: availability.version,
-                diagnostic: unsupportedVersionDiagnostic(availability.version)
+                diagnostic: unsupportedVersionDiagnostic(availability.version, commandPath: availability.commandPath),
+                failureKind: .unsupportedVersion
             )
         }
+        if let version = availability.version, let commandPath = availability.commandPath {
+            await supportedVersionCache.record(commandPath: commandPath, version: version)
+        }
         return availability
+    }
+
+    static func resetSupportedVersionCacheForTests() async {
+        await supportedVersionCache.reset()
     }
 
     static func parseVersion(from output: String) -> String? {
@@ -149,9 +238,10 @@ enum PiIntegrationConfiguration {
         return !(comparison == .orderedSame && isPreRelease(version))
     }
 
-    private static func unsupportedVersionDiagnostic(_ version: String?) -> String {
+    private static func unsupportedVersionDiagnostic(_ version: String?, commandPath: String?) -> String {
         let foundVersion = version ?? "an unrecognized version"
-        return "RepoPrompt requires pi \(minimumSupportedVersion) or newer for managed RPC project trust; found \(foundVersion). Update pi and try again."
+        let pathSuffix = commandPath.map { " at \($0)" } ?? ""
+        return "RepoPrompt requires pi \(minimumSupportedVersion) or newer for managed RPC project trust; found \(foundVersion)\(pathSuffix). Update pi and try again."
     }
 
     private static func compareVersion(_ lhs: String, _ rhs: String) -> ComparisonResult {
