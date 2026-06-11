@@ -745,9 +745,10 @@ actor PiRPCClient {
         guard let pending = pendingRequests.removeValue(forKey: id) else { return }
         timeoutTasks[id]?.cancel()
         timeoutTasks.removeValue(forKey: id)
+        if Self.invalidatesProcessOnTimeout(command: command) {
+            await shutdown()
+        }
         pending.continuation.resume(throwing: ClientError.requestTimedOut(id: id, command: command))
-        guard Self.invalidatesProcessOnTimeout(command: command) else { return }
-        await shutdown()
     }
 
     private static func invalidatesProcessOnTimeout(command: String) -> Bool {
