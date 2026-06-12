@@ -236,6 +236,10 @@ class LifecycleQueueTests(LifecycleTestCase):
                     "args": {"subcommand": "local-install"},
                     "env": {
                         "CONFIRM_LOCAL_PRODUCTION_INSTALL": "1",
+                        "LOCAL_PRODUCTION_SIGNING_MODE": "developer-id",
+                        "DISPLAY_NAME": "MitchPrompt CE",
+                        "BUNDLE_ID": "com.mitchfultz.repoprompt.ce",
+                        "REPOPROMPT_URL_SCHEME": "mitchprompt-ce",
                         "LOCAL_SELF_SIGNED_CERTIFICATE_NAME": "divergent override",
                     },
                 }
@@ -244,6 +248,10 @@ class LifecycleQueueTests(LifecycleTestCase):
         self.assertEqual(Path(argv[0]).name, "install_local_production.sh")
         self.assertEqual(lanes, ["build", "debugArtifact", "release"])
         self.assertEqual(env["CONFIRM_LOCAL_PRODUCTION_INSTALL"], "1")
+        self.assertEqual(env["LOCAL_PRODUCTION_SIGNING_MODE"], "developer-id")
+        self.assertEqual(env["DISPLAY_NAME"], "MitchPrompt CE")
+        self.assertEqual(env["BUNDLE_ID"], "com.mitchfultz.repoprompt.ce")
+        self.assertEqual(env["REPOPROMPT_URL_SCHEME"], "mitchprompt-ce")
         self.assertNotIn("LOCAL_SELF_SIGNED_CERTIFICATE_NAME", env)
         self.assertEqual(timeout, conductor.RELEASE_TIMEOUT_SECONDS)
 
@@ -405,6 +413,174 @@ class LifecycleQueueTests(LifecycleTestCase):
         self.assertEqual(old_run.state, "canceled")
         self.assertEqual(old_run.superseded_by_operation, "app relaunch")
         self.assertEqual(payload["operationLabel"], "app relaunch")
+
+    def test_descendant_pids_walks_full_process_tree(self) -> None:
+        table = {
+            10: 1,
+            11: 10,
+            12: 10,
+            13: 11,
+            14: 13,
+            20: 1,
+        }
+
+        self.assertEqual(set(conductor.descendant_pids(10, table)), {11, 12, 13, 14})
+        self.assertEqual(conductor.descendant_pids(20, table), [])
+
+    def test_process_tree_signal_includes_primary_group_descendant_groups_and_descendant_pids(self) -> None:
+        tmp, state = self.make_state()
+        self.addCleanup(tmp.cleanup)
+        job = self.make_job(state, "running-test", "test", {}, ["build"], "running")
+        job.process_pid = 100
+        job.process_pgid = 100
+
+        with mock.patch.object(conductor, "descendant_pids", return_value=[101, 102]), mock.patch.object(
+            conductor.os, "getpgid", side_effect={101: 100, 102: 200}.__getitem__
+        ), mock.patch.object(conductor.os, "killpg") as killpg, mock.patch.object(conductor.os, "kill") as kill:
+            state._signal_process_tree_locked(job, conductor.signal.SIGTERM, verb="terminating", reason="test cancel")
+
+        self.assertEqual(killpg.call_args_list, [mock.call(100, conductor.signal.SIGTERM), mock.call(200, conductor.signal.SIGTERM)])
+        self.assertEqual(kill.call_args_list, [mock.call(101, conductor.signal.SIGTERM), mock.call(102, conductor.signal.SIGTERM)])
+
+    def test_running_process_tree_targets_include_descendant_groups(self) -> None:
+        tmp, state = self.make_state()
+        self.addCleanup(tmp.cleanup)
+
+        with mock.patch.object(conductor, "read_running_processes", return_value=[{"pid": 100, "pgid": 100}]), mock.patch.object(
+            conductor, "process_parent_table", return_value={100: 1, 101: 100, 102: 101}
+        ), mock.patch.object(conductor.os, "getpgid", side_effect={101: 200, 102: 200}.__getitem__):
+            pgids, pids = conductor.running_process_tree_targets(state.paths)
+
+        self.assertEqual(pgids, {100, 200})
+        self.assertEqual(pids, {101, 102})
+
+    def test_force_stop_unresponsive_daemon_kills_cached_targets_after_daemon_exits(self) -> None:
+        tmp, state = self.make_state()
+        self.addCleanup(tmp.cleanup)
+
+        with mock.patch.object(conductor, "read_pid", return_value=999), mock.patch.object(
+            conductor, "pid_alive", side_effect=[True, False, False, False]
+        ), mock.patch.object(conductor, "verify_daemon_pid_identity", return_value=True), mock.patch.object(
+            conductor, "running_process_tree_targets", return_value=({100, 200}, {101})
+        ), mock.patch.object(conductor, "signal_running_process_targets") as signal_targets, mock.patch.object(
+            conductor.os, "kill"
+        ) as kill, mock.patch.object(
+            conductor, "cleanup_stale_files"
+        ):
+            conductor.force_stop_unresponsive_daemon(state.paths)
+
+        self.assertEqual(
+            signal_targets.call_args_list,
+            [
+                mock.call({100, 200}, {101}, conductor.signal.SIGTERM),
+                mock.call({100, 200}, {101}, conductor.signal.SIGKILL),
+            ],
+        )
+        kill.assert_called_once_with(999, conductor.signal.SIGTERM)
+
+    def test_process_tree_kill_uses_targets_captured_before_root_exited(self) -> None:
+        tmp, state = self.make_state()
+        self.addCleanup(tmp.cleanup)
+        job = self.make_job(state, "reparenting-child", "test", {}, ["build"], "running")
+        job.process_pid = 100
+        job.process_pgid = 100
+
+        with mock.patch.object(conductor, "descendant_pids", return_value=[101]), mock.patch.object(
+            conductor.os, "getpgid", return_value=200
+        ), mock.patch.object(conductor.os, "killpg"), mock.patch.object(conductor.os, "kill"):
+            state._terminate_process_group_locked(job, reason="test cancel")
+
+        with mock.patch.object(conductor, "descendant_pids", return_value=[]), mock.patch.object(
+            conductor.os, "killpg"
+        ) as killpg, mock.patch.object(conductor.os, "kill") as kill:
+            state._kill_process_group_locked(job, reason="test cancel; SIGKILL after grace period")
+
+        self.assertEqual(killpg.call_args_list, [mock.call(100, conductor.signal.SIGKILL), mock.call(200, conductor.signal.SIGKILL)])
+        self.assertEqual(kill.call_args_list, [mock.call(101, conductor.signal.SIGKILL)])
+
+    def test_canceled_job_escalates_after_root_process_exits_first(self) -> None:
+        tmp, state = self.make_state()
+        self.addCleanup(tmp.cleanup)
+        job = self.make_job(state, "exiting-parent", "test", {}, ["build"], "running")
+        job.process_pid = 100
+        job.process_pgid = 100
+        job.cancel_requested = True
+        state.jobs[job.ticket] = job
+
+        with mock.patch.object(conductor, "TERMINATE_GRACE_SECONDS", 0.02), mock.patch.object(
+            state, "_kill_process_group_locked"
+        ) as kill:
+            worker = threading.Thread(
+                target=state._escalate_canceled_job_after_grace,
+                args=(job.ticket, "test cancel", True),
+            )
+            worker.start()
+            time.sleep(0.005)
+            with state.condition:
+                job.state = "canceled"
+                state.condition.notify_all()
+            worker.join(timeout=1.0)
+
+        self.assertFalse(worker.is_alive())
+        kill.assert_called_once()
+        self.assertIs(kill.call_args.args[0], job)
+
+    def test_force_shutdown_kills_cached_targets_after_root_process_exits_first(self) -> None:
+        tmp, state = self.make_state()
+        self.addCleanup(tmp.cleanup)
+        job = self.make_job(state, "force-exiting-parent", "test", {}, ["build"], "canceled")
+        job.process_pid = 100
+        job.process_pgid = 100
+        job.cancel_requested = True
+        job.process_tree_target_pgids = {100, 200}
+        job.process_tree_target_pids = {101}
+        state.jobs[job.ticket] = job
+        state.server = mock.Mock()
+
+        with mock.patch.object(conductor, "TERMINATE_GRACE_SECONDS", 0.02), mock.patch.object(
+            state, "_kill_process_group_locked"
+        ) as kill:
+            state._force_shutdown_when_canceled([job.ticket])
+
+        kill.assert_called_once()
+        self.assertIs(kill.call_args.args[0], job)
+        state.server.shutdown.assert_called_once()
+
+    def test_signal_shutdown_cancels_queued_jobs_and_terminates_running_jobs(self) -> None:
+        tmp, state = self.make_state()
+        self.addCleanup(tmp.cleanup)
+        running = self.make_job(state, "running", "test", {}, ["build"], "running")
+        running.process_pid = 123
+        queued = self.make_job(state, "queued", "test", {}, ["build"])
+        state.jobs = {running.ticket: running, queued.ticket: queued}
+        state.queue = [queued.ticket]
+
+        with mock.patch.object(state, "_terminate_process_group_locked") as terminate:
+            with state.condition:
+                running_tickets = state._begin_signal_shutdown_locked(conductor.signal.SIGTERM)
+
+        self.assertTrue(state.shutdown_requested)
+        self.assertEqual(running_tickets, [running.ticket])
+        self.assertTrue(running.cancel_requested)
+        terminate.assert_called_once_with(running, reason=f"signal {conductor.signal.SIGTERM}")
+        self.assertTrue(queued.cancel_requested)
+        self.assertEqual(queued.state, "canceled")
+        self.assertEqual(queued.exit_code, 130)
+        self.assertNotIn(queued.ticket, state.queue)
+
+    def test_shutdown_requested_prevents_starting_queued_jobs(self) -> None:
+        tmp, state = self.make_state()
+        self.addCleanup(tmp.cleanup)
+        queued = self.make_job(state, "queued", "test", {}, ["build"])
+        state.jobs[queued.ticket] = queued
+        state.queue.append(queued.ticket)
+        state.shutdown_requested = True
+
+        with mock.patch.object(conductor.threading, "Thread") as thread_factory:
+            state._schedule_locked()
+
+        self.assertEqual(queued.state, "queued")
+        thread_factory.assert_not_called()
 
     def test_running_launch_is_cancellation_requested_and_retains_lane_for_stop(self) -> None:
         tmp, state = self.make_state()

@@ -1700,6 +1700,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         func testScopedAppliedIngressCancelledPendingCallerDoesNotCancelLiveCoalescedJoiner() async throws {
             let root = try makeTemporaryRoot(name: "ScopedIngressPendingCancellation")
             let addedURL = root.appendingPathComponent("Added.swift")
+            try write("added", to: addedURL)
             let store = WorkspaceFileContextStore()
             let record = try await store.loadRoot(path: root.path)
             try await store.startWatchingRoot(id: record.id)
@@ -1715,7 +1716,6 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             }
             await flushGate.waitUntilStarted()
 
-            try write("added", to: addedURL)
             let acceptedPayload = try await store.acceptWatcherPayloadForTesting(
                 rootID: rootID,
                 events: [(absolutePath: addedURL.path, flags: createdFileFlags, eventId: 250)],
@@ -1983,6 +1983,8 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             let root = try makeTemporaryRoot(name: "ScopedIngressSuccessor")
             let firstAddedURL = root.appendingPathComponent("FirstAdded.swift")
             let secondAddedURL = root.appendingPathComponent("SecondAdded.swift")
+            try write("first", to: firstAddedURL)
+            try write("second", to: secondAddedURL)
             let clock = LockedWorkspaceDiagnosticsClock(nowNanoseconds: 4_000_000_000)
             let store = WorkspaceFileContextStore(debugNowNanoseconds: { clock.now() })
             let record = try await store.loadRoot(path: root.path)
@@ -2000,7 +2002,6 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             }
             await flushGate.waitUntilStarted()
 
-            try write("first", to: firstAddedURL)
             let firstAcceptedPayload = try await store.acceptWatcherPayloadForTesting(
                 rootID: rootID,
                 events: [(absolutePath: firstAddedURL.path, flags: createdFileFlags, eventId: 300)],
@@ -2015,7 +2016,6 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             }
             XCTAssertTrue(pendingSuccessorCreated)
 
-            try write("second", to: secondAddedURL)
             let secondAcceptedPayload = try await store.acceptWatcherPayloadForTesting(
                 rootID: rootID,
                 events: [(absolutePath: secondAddedURL.path, flags: createdFileFlags, eventId: 301)],
@@ -2305,6 +2305,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         func testRootUnloadCancelsActiveAndPendingScopedIngressFlightsAndReleasesDetachedService() async throws {
             let root = try makeTemporaryRoot(name: "ScopedIngressUnloadRelease")
             let addedURL = root.appendingPathComponent("Pending.swift")
+            try write("pending", to: addedURL)
             let store = WorkspaceFileContextStore()
             let record = try await store.loadRoot(path: root.path)
             try await store.startWatchingRoot(id: record.id)
@@ -2321,7 +2322,6 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             }
             await cancellationGate.waitUntilStarted()
 
-            try write("pending", to: addedURL)
             let acceptedPayload = try await store.acceptWatcherPayloadForTesting(
                 rootID: record.id,
                 events: [(absolutePath: addedURL.path, flags: createdFileFlags, eventId: 400)],

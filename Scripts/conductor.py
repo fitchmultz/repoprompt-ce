@@ -29,7 +29,7 @@ import time
 import uuid
 from collections import deque
 from pathlib import Path
-from typing import Any, Deque, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Deque, Dict, List, Optional, Sequence, Set, Tuple
 
 from debug_app_process import ProcessIdentityError, matching_processes, terminate_matching_processes
 
@@ -276,6 +276,50 @@ def pid_alive(pid: int) -> bool:
         return True
     except OSError:
         return False
+
+
+def process_parent_table() -> Dict[int, int]:
+    try:
+        completed = subprocess.run(
+            ["ps", "-axo", "pid=,ppid="],
+            text=True,
+            capture_output=True,
+            timeout=2.0,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    if completed.returncode != 0:
+        return {}
+    table: Dict[int, int] = {}
+    for line in completed.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        try:
+            pid = int(parts[0])
+            ppid = int(parts[1])
+        except ValueError:
+            continue
+        table[pid] = ppid
+    return table
+
+
+def descendant_pids(root_pid: Optional[int], parent_table: Optional[Dict[int, int]] = None) -> List[int]:
+    if not root_pid or root_pid <= 0:
+        return []
+    table = parent_table if parent_table is not None else process_parent_table()
+    children: Dict[int, List[int]] = {}
+    for pid, ppid in table.items():
+        children.setdefault(ppid, []).append(pid)
+    found: List[int] = []
+    stack = list(children.get(root_pid, []))
+    while stack:
+        pid = stack.pop()
+        if pid in found:
+            continue
+        found.append(pid)
+        stack.extend(children.get(pid, []))
+    return found
 
 
 def cleanup_stale_files(paths: Paths) -> None:
@@ -720,6 +764,8 @@ class Job:
     error: Optional[str] = None
     result_summary: Optional[str] = None
     cancel_requested: bool = False
+    process_tree_target_pgids: Set[int] = dataclasses.field(default_factory=set)
+    process_tree_target_pids: Set[int] = dataclasses.field(default_factory=set)
     superseded_by_ticket: Optional[str] = None
     superseded_by_operation: Optional[str] = None
     timed_out: bool = False
@@ -772,11 +818,15 @@ class OperationRegistry:
         "LOCAL_CERTIFICATE_DAYS",
         "LOCAL_PRODUCTION_INSTALL_DIR",
         "LOCAL_SELF_SIGNED_RELEASE",
+        "LOCAL_PRODUCTION_SIGNING_MODE",
         "PREFER_STABLE_DEBUG_SIGNING",
         "DEBUG_SECURE_STORAGE_BACKEND",
         "REPOPROMPT_PROVISIONING_PROFILE",
         "APP_ENTITLEMENTS_TEMPLATE",
+        "DISPLAY_NAME",
         "BUNDLE_ID",
+        "URL_SCHEME",
+        "REPOPROMPT_URL_SCHEME",
     ]
     DEBUG_ENV_KEYS = [
         "REPOPROMPT_DEBUG_APP_ROOT",
@@ -1207,16 +1257,18 @@ class DaemonState:
             while job and job.state == "running" and not (job.process_pid or job.process_pgid):
                 self.condition.wait(timeout=0.1)
                 job = self.jobs.get(ticket)
-            if not job or job.state != "running":
+            if not job or not job.cancel_requested:
                 return
-            if not termination_sent:
+            if not termination_sent and (job.process_pid or job.process_pgid):
                 self._terminate_process_group_locked(job, reason=reason)
             deadline = now() + TERMINATE_GRACE_SECONDS
-            while job.state == "running" and now() < deadline:
+            while now() < deadline:
                 self.condition.wait(timeout=min(0.1, max(0.0, deadline - now())))
-            if job.state == "running":
-                self._kill_process_group_locked(job, reason=f"{reason}; SIGKILL after grace period")
-                self.condition.notify_all()
+                job = self.jobs.get(ticket)
+                if not job or not job.cancel_requested:
+                    return
+            self._kill_process_group_locked(job, reason=f"{reason}; SIGKILL after grace period")
+            self.condition.notify_all()
 
     def list_jobs(self, state_filter: Optional[str]) -> Dict[str, Any]:
         with self.lock:
@@ -1331,21 +1383,41 @@ class DaemonState:
     def _force_shutdown_when_canceled(self, tickets: List[str]) -> None:
         deadline = now() + TERMINATE_GRACE_SECONDS
         while now() < deadline:
-            with self.condition:
-                if all((self.jobs.get(ticket) is None or self.jobs[ticket].state != "running") for ticket in tickets):
-                    break
-            time.sleep(0.1)
+            time.sleep(min(0.1, max(0.0, deadline - now())))
         with self.condition:
             for ticket in tickets:
                 job = self.jobs.get(ticket)
-                if job and job.state == "running":
+                if job and job.cancel_requested:
                     self._kill_process_group_locked(job, reason="daemon stop --force; SIGKILL after grace period")
             self.condition.notify_all()
         time.sleep(0.2)
         if self.server is not None:
             self.server.shutdown()
 
+    def _begin_signal_shutdown_locked(self, signum: int) -> List[str]:
+        self.shutdown_requested = True
+        running_tickets: List[str] = []
+        for job in list(self.jobs.values()):
+            if job.state == "queued":
+                job.cancel_requested = True
+                job.state = "canceled"
+                job.finished_at = now()
+                job.exit_code = 130
+                job.result_summary = f"canceled by signal {signum} before start"
+                with contextlib.suppress(ValueError):
+                    self.queue.remove(job.ticket)
+                self._append_system_line_locked(job, f"job canceled by signal {signum} before start\n")
+            elif job.state == "running":
+                job.cancel_requested = True
+                running_tickets.append(job.ticket)
+                self._terminate_process_group_locked(job, reason=f"signal {signum}")
+        self._write_running_processes_locked()
+        self.condition.notify_all()
+        return running_tickets
+
     def _schedule_locked(self) -> None:
+        if self.shutdown_requested:
+            return
         blocked_lanes: set[str] = set()
         new_queue: List[str] = []
         to_start: List[Job] = []
@@ -1433,12 +1505,19 @@ class DaemonState:
                         job.error = f"timed out after {effective_timeout:.1f}s"
                         self._append_system_line_locked(job, job.error + "\n")
                         self._terminate_process_group_locked(job, reason=job.error)
+                    grace_deadline = now() + TERMINATE_GRACE_SECONDS
                     try:
                         exit_code = process.wait(timeout=TERMINATE_GRACE_SECONDS)
                     except subprocess.TimeoutExpired:
                         with self.condition:
                             self._kill_process_group_locked(job, reason="SIGKILL after timeout grace period")
                         exit_code = process.wait()
+                    else:
+                        remaining_grace = grace_deadline - now()
+                        if remaining_grace > 0:
+                            time.sleep(remaining_grace)
+                        with self.condition:
+                            self._kill_process_group_locked(job, reason="SIGKILL after timeout grace period")
                     if exit_code == 0:
                         exit_code = 124
                 reader.join(timeout=2.0)
@@ -1558,9 +1637,9 @@ class DaemonState:
             return
         self._terminate_process_group_locked(job, reason=reason)
         term_deadline = now() + TERMINATE_GRACE_SECONDS
-        while job.state == "running" and now() < term_deadline:
-            self.condition.wait(timeout=0.1)
-        if job.state != "running":
+        while now() < term_deadline:
+            self.condition.wait(timeout=min(0.1, max(0.0, term_deadline - now())))
+        if not job.cancel_requested:
             return
         self._kill_process_group_locked(job, reason=f"{reason}; SIGKILL after grace period")
         kill_deadline = now() + 2.0
@@ -1568,18 +1647,33 @@ class DaemonState:
             self.condition.wait(timeout=0.1)
 
     def _terminate_process_group_locked(self, job: Job, reason: str) -> None:
-        self._append_system_line_locked(job, f"terminating process group: {reason}\n")
-        pgid = job.process_pgid or job.process_pid
-        if pgid:
-            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
-                os.killpg(pgid, signal.SIGTERM)
+        self._signal_process_tree_locked(job, signal.SIGTERM, verb="terminating", reason=reason)
 
     def _kill_process_group_locked(self, job: Job, reason: str) -> None:
-        self._append_system_line_locked(job, f"killing process group: {reason}\n")
-        pgid = job.process_pgid or job.process_pid
-        if pgid:
+        self._signal_process_tree_locked(job, signal.SIGKILL, verb="killing", reason=reason)
+
+    def _capture_process_tree_targets_locked(self, job: Job) -> Tuple[set[int], set[int]]:
+        primary_pgid = job.process_pgid or job.process_pid
+        if primary_pgid:
+            job.process_tree_target_pgids.add(primary_pgid)
+        for pid in descendant_pids(job.process_pid):
+            if pid > 0:
+                job.process_tree_target_pids.add(pid)
             with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
-                os.killpg(pgid, signal.SIGKILL)
+                pgid = os.getpgid(pid)
+                if pgid > 0:
+                    job.process_tree_target_pgids.add(pgid)
+        return set(job.process_tree_target_pgids), set(job.process_tree_target_pids)
+
+    def _signal_process_tree_locked(self, job: Job, sig: int, verb: str, reason: str) -> None:
+        self._append_system_line_locked(job, f"{verb} process group: {reason}\n")
+        pgids, pids = self._capture_process_tree_targets_locked(job)
+        for pgid in sorted(pgids):
+            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                os.killpg(pgid, sig)
+        for pid in sorted(pids):
+            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                os.kill(pid, sig)
 
     def _retention_pass_locked(self) -> None:
         cutoff = now() - TERMINAL_RETENTION_SECONDS
@@ -1687,13 +1781,11 @@ def run_daemon(paths: Paths) -> int:
 
     def _signal_stop(signum: int, _frame: Any) -> None:
         with state.condition:
-            state.shutdown_requested = True
-            for job in state.jobs.values():
-                if job.state == "running":
-                    job.cancel_requested = True
-                    state._terminate_process_group_locked(job, reason=f"signal {signum}")
-            state.condition.notify_all()
-        threading.Thread(target=server.shutdown, daemon=True).start()
+            running_tickets = state._begin_signal_shutdown_locked(signum)
+        if running_tickets:
+            threading.Thread(target=state._force_shutdown_when_canceled, args=(running_tickets,), daemon=True).start()
+        else:
+            threading.Thread(target=server.shutdown, daemon=True).start()
 
     signal.signal(signal.SIGTERM, _signal_stop)
     signal.signal(signal.SIGINT, _signal_stop)
@@ -1848,17 +1940,45 @@ def read_running_processes(paths: Paths) -> List[Dict[str, Any]]:
     return [item for item in processes if isinstance(item, dict)] if isinstance(processes, list) else []
 
 
-def signal_running_process_groups(paths: Paths, sig: signal.Signals) -> None:
+def running_process_tree_targets(paths: Paths) -> Tuple[Set[int], Set[int]]:
+    pgids: Set[int] = set()
+    pids: Set[int] = set()
+    parent_table = process_parent_table()
     for item in read_running_processes(paths):
-        pgid = item.get("pgid") or item.get("pid")
+        raw_pid = item.get("pid")
+        raw_pgid = item.get("pgid") or raw_pid
         try:
-            pgid_int = int(pgid)
+            pid = int(raw_pid)
         except (TypeError, ValueError):
-            continue
-        if pgid_int <= 0:
-            continue
+            pid = 0
+        try:
+            pgid = int(raw_pgid)
+        except (TypeError, ValueError):
+            pgid = 0
+        if pgid > 0:
+            pgids.add(pgid)
+        for descendant_pid in descendant_pids(pid, parent_table):
+            if descendant_pid > 0:
+                pids.add(descendant_pid)
+            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                descendant_pgid = os.getpgid(descendant_pid)
+                if descendant_pgid > 0:
+                    pgids.add(descendant_pgid)
+    return pgids, pids
+
+
+def signal_running_process_targets(pgids: Set[int], pids: Set[int], sig: signal.Signals) -> None:
+    for pgid in sorted(pgids):
         with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
-            os.killpg(pgid_int, sig)
+            os.killpg(pgid, sig)
+    for pid in sorted(pids):
+        with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+            os.kill(pid, sig)
+
+
+def signal_running_process_groups(paths: Paths, sig: signal.Signals) -> None:
+    pgids, pids = running_process_tree_targets(paths)
+    signal_running_process_targets(pgids, pids, sig)
 
 
 def force_stop_unresponsive_daemon(paths: Paths) -> Dict[str, Any]:
@@ -1871,14 +1991,15 @@ def force_stop_unresponsive_daemon(paths: Paths) -> Dict[str, Any]:
             f"refusing to force-stop pid {pid}: daemon identity could not be verified; "
             f"inspect {paths.pid_path} and {paths.daemon_meta_path} before removing stale files manually"
         )
-    signal_running_process_groups(paths, signal.SIGTERM)
+    pgids, pids = running_process_tree_targets(paths)
+    signal_running_process_targets(pgids, pids, signal.SIGTERM)
     with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
         os.kill(pid, signal.SIGTERM)
     deadline = now() + TERMINATE_GRACE_SECONDS
     while pid_alive(pid) and now() < deadline:
         time.sleep(0.1)
+    signal_running_process_targets(pgids, pids, signal.SIGKILL)
     if pid_alive(pid):
-        signal_running_process_groups(paths, signal.SIGKILL)
         with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
             os.kill(pid, signal.SIGKILL)
         deadline = now() + 2.0
