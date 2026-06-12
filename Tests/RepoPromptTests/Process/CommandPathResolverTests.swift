@@ -23,7 +23,7 @@ final class CommandPathResolverTests: XCTestCase {
         var environment = ProcessInfo.processInfo.environment
         environment["SHELL"] = shell.path
         environment["PATH"] = directory.path
-        environment["REPOPROMPT_SHELL_LOOKUP_TIMEOUT_SECONDS"] = "0.05"
+        environment["REPOPROMPT_SHELL_LOOKUP_TIMEOUT_SECONDS"] = "0.20"
         environment["REPOPROMPT_SHELL_LOOKUP_TERMINATION_GRACE_SECONDS"] = "0.05"
         environment["REPOPROMPT_SHELL_LOOKUP_PIPE_DRAIN_GRACE_SECONDS"] = "0.05"
 

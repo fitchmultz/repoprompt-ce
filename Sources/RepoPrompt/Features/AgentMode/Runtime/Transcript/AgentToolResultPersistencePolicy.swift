@@ -140,6 +140,7 @@ enum AgentToolResultPersistencePolicy {
 
         let requiresStructuredSummaryDetails = normalizedToolName == "apply_edits"
             || normalizedToolName == "apply_patch"
+            || normalizedToolName == "edit"
             || normalizedToolName == "agent_run"
             || normalizedToolName == "agent_explore"
             || normalizedToolName == "agent_manage"
@@ -239,7 +240,7 @@ enum AgentToolResultPersistencePolicy {
     ) -> AgentPersistedToolResultSummary? {
         guard item.kind == .toolResult else { return nil }
         let generatedExecution = toolExecution ?? AgentTranscriptToolNormalizer.toolExecution(for: item, context: context)
-        let normalizedToolName = normalizedToolName(generatedExecution?.toolName ?? item.toolName)
+        let normalizedToolName = normalizedToolName(item.toolName) ?? normalizedToolName(generatedExecution?.toolName)
         let rawCandidates = storageRawPayloadCandidates(
             executionResultJSON: generatedExecution?.resultJSON,
             itemResultJSON: item.toolResultJSON,
@@ -1200,7 +1201,18 @@ enum AgentToolResultPersistencePolicy {
     }
 
     static func normalizedToolName(_ raw: String?) -> String? {
-        AgentTranscriptToolVisibilityPolicy.normalizedVisibleToolName(raw)
+        guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else { return nil }
+        let suffix = trimmed.split(separator: ".").last.map(String.init) ?? trimmed
+        let normalizedSuffix = suffix
+            .lowercased()
+            .replacingOccurrences(of: "-", with: "_")
+            .replacingOccurrences(of: " ", with: "_")
+        switch normalizedSuffix {
+        case "bash", "read", "write", "edit", "grep", "find", "ls":
+            return normalizedSuffix
+        default:
+            return AgentTranscriptToolVisibilityPolicy.normalizedVisibleToolName(trimmed)
+        }
     }
 
     private static func derivedStatusWord(
@@ -1301,6 +1313,13 @@ enum AgentToolResultPersistencePolicy {
             )
         case "apply_patch":
             return applyPatchSummaryJSON(
+                statusWord: statusWord,
+                rawObject: rawObject,
+                argsJSON: argsJSON,
+                context: context
+            )
+        case "edit":
+            return piNativeEditSummaryJSON(
                 statusWord: statusWord,
                 rawObject: rawObject,
                 argsJSON: argsJSON,
@@ -1445,6 +1464,56 @@ enum AgentToolResultPersistencePolicy {
             object["change_count"] = changes.count
         }
         return jsonString(from: object)
+    }
+
+    private static func piNativeEditSummaryJSON(
+        statusWord: String,
+        rawObject: [String: Any]?,
+        argsJSON: String?,
+        context: AgentToolResultProcessingContext?
+    ) -> String? {
+        var object = genericSummaryObject(
+            normalizedToolName: "edit",
+            statusWord: statusWord,
+            processID: nil,
+            exitCode: nil
+        )
+        object["title"] = "Edit File"
+
+        let argsObject = jsonObject(from: argsJSON, context: context)
+        let path = stringValue(argsObject, keys: ["path", "file_path", "filePath"])
+        var content: [[String: Any]] = []
+        if let path, !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            var entry: [String: Any] = [
+                "type": "diff",
+                "path": path
+            ]
+            if let details = rawObject?["details"] as? [String: Any],
+               let diff = stringValue(details, keys: ["patch", "diff"]),
+               let clipped = clippedCursorACPString(diff, limit: cursorACPPersistedDiffBytesLimit)
+            {
+                entry["unified_diff"] = clipped.value
+                if clipped.wasTruncated {
+                    entry["diff_truncated"] = true
+                }
+            }
+            content.append(entry)
+        }
+        if !content.isEmpty {
+            object["content"] = content
+        }
+        if let edits = argsObject?["edits"] as? [Any], !edits.isEmpty {
+            object["change_count"] = edits.count
+        }
+        if let json = jsonString(from: object), !exceedsPersistedToolSummaryBudget(json) {
+            return json
+        }
+        if var first = content.first {
+            first.removeValue(forKey: "unified_diff")
+            first["diff_truncated"] = true
+            object["content"] = [first]
+        }
+        return jsonString(from: object).flatMap { exceedsPersistedToolSummaryBudget($0) ? nil : $0 }
     }
 
     private static func summarizedPatchChanges(from rawObject: [String: Any]?) -> [[String: Any]] {

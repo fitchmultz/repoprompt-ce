@@ -187,6 +187,8 @@ struct RecommendationWizardPopoverView: View {
                 providerRow("Claude Code", status: status.claudeCodeCLI)
                 providerRow("Codex CLI", status: status.codexCLI)
                 providerRow("Cursor CLI", status: status.cursorCLI)
+                providerRow("pi", status: status.piCLI)
+                providerRow("OpenCode", status: status.openCodeCLI)
                 providerRow("OpenAI API", status: status.openAI)
             }
         }
@@ -556,6 +558,8 @@ private struct IntroStepView: View {
                 providerStatusRow("Claude Code", status: status.claudeCodeCLI)
                 providerStatusRow("Codex CLI", status: status.codexCLI)
                 providerStatusRow("Cursor CLI", status: status.cursorCLI)
+                providerStatusRow("pi", status: status.piCLI)
+                providerStatusRow("OpenCode", status: status.openCodeCLI)
                 providerStatusRow("OpenAI API", status: status.openAI)
             }
         }

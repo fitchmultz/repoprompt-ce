@@ -15,10 +15,55 @@ enum ToolArgsDTOs {
 
         enum CodingKeys: String, CodingKey {
             case path
-            case filePath = "file_path"
+            case filePath
             case offset
             case limit
         }
+    }
+
+    struct NativeWriteArgs: Decodable {
+        let path: String?
+        let filePath: String?
+
+        enum CodingKeys: String, CodingKey {
+            case path
+            case filePath
+        }
+    }
+
+    struct NativeEditArgs: Decodable {
+        struct Edit: Decodable {
+            let oldText: String?
+            let newText: String?
+        }
+
+        let path: String?
+        let filePath: String?
+        let edits: [Edit]?
+
+        enum CodingKeys: String, CodingKey {
+            case path
+            case filePath
+            case edits
+        }
+    }
+
+    struct NativeGrepArgs: Decodable {
+        let pattern: String?
+        let path: String?
+        let limit: Int?
+        let context: Int?
+    }
+
+    struct NativeFindArgs: Decodable {
+        let pattern: String?
+        let path: String?
+        let limit: Int?
+    }
+
+    struct NativeListArgs: Decodable {
+        let path: String?
+        let limit: Int?
     }
 
     struct FileSearchArgs: Decodable {

@@ -123,6 +123,10 @@ enum ToolCardRouter {
         "bash",
         "read",
         "read_file",
+        "write",
+        "grep",
+        "find",
+        "ls",
         "apply_edits",
         "apply_patch",
         "edit",
@@ -190,6 +194,8 @@ enum ToolCardRouter {
             return AnyView(NativeReadResultCard(item: item))
         case "read_file":
             return AnyView(ReadFileResultCard(item: item))
+        case "write", "grep", "find", "ls":
+            return AnyView(NativeToolResultCard(item: item, normalizedToolName: key))
         case "apply_edits":
             return AnyView(ApplyEditsResultCard(item: item, isMostRecentEdit: isMostRecentEditBubble))
         case "apply_patch":
@@ -310,6 +316,35 @@ private enum ToolCardSubtitleBuilder {
         case "read_file":
             if let args = ToolJSON.decodeArgs(ToolArgsDTOs.ReadFileArgs.self, from: argsJSON),
                let path = args.path
+            {
+                return shortenPath(path)
+            }
+        case "write":
+            if let args = ToolJSON.decodeArgs(ToolArgsDTOs.NativeWriteArgs.self, from: argsJSON),
+               let path = args.filePath ?? args.path,
+               !path.isEmpty
+            {
+                return shortenPath(path)
+            }
+        case "edit":
+            if let args = ToolJSON.decodeArgs(ToolArgsDTOs.NativeEditArgs.self, from: argsJSON),
+               let path = args.filePath ?? args.path,
+               !path.isEmpty
+            {
+                return shortenPath(path)
+            }
+        case "grep":
+            if let args = ToolJSON.decodeArgs(ToolArgsDTOs.NativeGrepArgs.self, from: argsJSON) {
+                return nativePatternPathSubtitle(pattern: args.pattern, path: args.path)
+            }
+        case "find":
+            if let args = ToolJSON.decodeArgs(ToolArgsDTOs.NativeFindArgs.self, from: argsJSON) {
+                return nativePatternPathSubtitle(pattern: args.pattern, path: args.path)
+            }
+        case "ls":
+            if let args = ToolJSON.decodeArgs(ToolArgsDTOs.NativeListArgs.self, from: argsJSON),
+               let path = args.path,
+               !path.isEmpty
             {
                 return shortenPath(path)
             }
@@ -625,6 +660,22 @@ private enum ToolCardSubtitleBuilder {
             break
         }
         return nil
+    }
+
+    private static func nativePatternPathSubtitle(pattern: String?, path: String?) -> String? {
+        let trimmedPattern = pattern?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedPath = path?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let patternPart: String? = if let trimmedPattern, !trimmedPattern.isEmpty {
+            "\"\(trimmedPattern)\""
+        } else {
+            nil
+        }
+        let pathPart: String? = if let trimmedPath, !trimmedPath.isEmpty {
+            shortenPath(trimmedPath)
+        } else {
+            nil
+        }
+        return inlineToolCardSummary(patternPart, pathPart)
     }
 
     private static func fileTreeSubtitle(args: ToolArgsDTOs.FileTreeArgs) -> String? {

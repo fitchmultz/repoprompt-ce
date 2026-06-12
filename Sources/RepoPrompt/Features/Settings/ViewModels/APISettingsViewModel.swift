@@ -3813,7 +3813,8 @@ extension APISettingsViewModel {
             claudeCodeConnected: isClaudeCodeConnected,
             codexConnected: isCodexConnected,
             cursorConnected: isCursorConnected,
-            piConnected: isPiConnected
+            piConnected: isPiConnected,
+            openCodeConnected: isOpenCodeConnected
         )
     }
 }

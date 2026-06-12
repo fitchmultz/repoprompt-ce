@@ -1,4 +1,4 @@
-@testable import RepoPrompt
+@_spi(TestSupport) @testable import RepoPrompt
 import XCTest
 
 final class PiAgentProviderKindTests: XCTestCase {
@@ -50,17 +50,54 @@ final class PiAgentProviderKindTests: XCTestCase {
         let availability = AgentModelCatalog.AvailabilityContext(
             claudeCodeAvailable: false,
             codexAvailable: false,
-            openCodeAvailable: false,
+            openCodeAvailable: true,
             cursorAvailable: true,
             piAvailable: true
         )
         let filtered = availability.filteredForRecommendationProviders([.pi])
         XCTAssertTrue(filtered.piAvailable)
         XCTAssertFalse(filtered.cursorAvailable)
+        XCTAssertFalse(filtered.openCodeAvailable)
 
         let explore = AgentModelCatalog.resolveTaskLabelKind(.explore, availability: filtered)
         XCTAssertEqual(explore?.agent, .pi)
         XCTAssertEqual(explore?.modelRaw, AgentModel.defaultModel.rawValue)
+    }
+
+    func testOpenCodeParticipatesInRecommendationProviderFilteringAndRoleDefaults() {
+        AgentACPModelRegistry.shared.test_reset(providerID: .openCode)
+        defer { AgentACPModelRegistry.shared.test_reset(providerID: .openCode) }
+        XCTAssertTrue(AgentACPModelRegistry.shared.updateDiscoveredModels(
+            ACPDiscoveredSessionModels(
+                options: [
+                    AgentModelOption(
+                        rawValue: "anthropic/claude-sonnet-4-5",
+                        displayName: "Claude Sonnet 4.5",
+                        description: nil,
+                        isPlaceholderDefault: false,
+                        isProviderDefault: true
+                    )
+                ],
+                currentModelRaw: "anthropic/claude-sonnet-4-5"
+            ),
+            for: .openCode
+        ))
+
+        let availability = AgentModelCatalog.AvailabilityContext(
+            claudeCodeAvailable: false,
+            codexAvailable: false,
+            openCodeAvailable: true,
+            cursorAvailable: true,
+            piAvailable: true
+        )
+        let filtered = availability.filteredForRecommendationProviders([.openCode])
+        XCTAssertTrue(filtered.openCodeAvailable)
+        XCTAssertFalse(filtered.cursorAvailable)
+        XCTAssertFalse(filtered.piAvailable)
+
+        let explore = AgentModelCatalog.resolveTaskLabelKind(.explore, availability: filtered)
+        XCTAssertEqual(explore?.agent, .openCode)
+        XCTAssertEqual(explore?.modelRaw, "anthropic/claude-sonnet-4-5")
     }
 
     func testProviderFactoryCreatesPiHeadlessProviderWhenWindowRoutingIsAvailable() {

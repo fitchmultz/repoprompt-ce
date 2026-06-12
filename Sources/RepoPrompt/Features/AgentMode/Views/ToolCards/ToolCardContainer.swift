@@ -466,8 +466,16 @@ func toolIcon(for toolName: String?) -> String {
         return "questionmark.circle"
     case "read", "Read", "read_file", "mcp__RepoPrompt__read_file":
         return "doc.text"
+    case "write":
+        return "square.and.pencil"
     case "bash", "shell", "local_shell", "unified_exec", "exec_command", "run_shell_command":
         return "terminal"
+    case "grep":
+        return "text.magnifyingglass"
+    case "find":
+        return "doc.text.magnifyingglass"
+    case "ls":
+        return "list.bullet.rectangle"
     case "search", "web_read":
         return "globe"
     case "apply_edits", "mcp__RepoPrompt__apply_edits":
@@ -544,6 +552,14 @@ func toolDisplayName(for toolName: String?) -> String {
         return "Read"
     case "read_file":
         return "Read File"
+    case "write":
+        return "Write"
+    case "grep":
+        return "Grep"
+    case "find":
+        return "Find"
+    case "ls":
+        return "List"
     case "apply_edits":
         return "Edit"
     case "apply_patch":

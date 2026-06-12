@@ -1525,6 +1525,14 @@ class GlobalSettingsStore: ObservableObject {
         RecommendationProviderKind.openAI.rawValue
     ]
 
+    private static let preOpenCodeRecommendationAllProviderRawShape: Set<String> = [
+        RecommendationProviderKind.claudeCode.rawValue,
+        RecommendationProviderKind.codex.rawValue,
+        RecommendationProviderKind.cursor.rawValue,
+        RecommendationProviderKind.pi.rawValue,
+        RecommendationProviderKind.openAI.rawValue
+    ]
+
     /// Normalizes persisted provider filters across recommendation-provider list changes.
     ///
     /// Older builds could persist the previous "all providers" set, which included Anthropic API
@@ -1605,7 +1613,10 @@ class GlobalSettingsStore: ObservableObject {
     private func migrateRecommendationProviderFilterForSchemaUpdate(previousVersion: Int?, currentVersion: Int) -> Bool {
         guard previousVersion != currentVersion,
               let raw = globalDefaults.recommendationProviderFilterRaw,
-              Set(raw) == Self.prePiRecommendationAllProviderRawShape
+              [
+                  Self.prePiRecommendationAllProviderRawShape,
+                  Self.preOpenCodeRecommendationAllProviderRawShape
+              ].contains(Set(raw))
         else { return false }
         globalDefaults.recommendationProviderFilterRaw = nil
         return true

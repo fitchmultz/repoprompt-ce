@@ -18,6 +18,7 @@ enum RecommendationProviderKind: String, CaseIterable, Identifiable {
     case codex
     case cursor
     case pi
+    case openCode
     case openAI
 
     var id: String {
@@ -30,6 +31,7 @@ enum RecommendationProviderKind: String, CaseIterable, Identifiable {
         case .codex: "Codex CLI"
         case .cursor: "Cursor CLI"
         case .pi: "pi"
+        case .openCode: "OpenCode"
         case .openAI: "OpenAI API"
         }
     }
@@ -40,6 +42,7 @@ enum RecommendationProviderKind: String, CaseIterable, Identifiable {
         case .codex: "Codex"
         case .cursor: "Cursor"
         case .pi: "pi"
+        case .openCode: "OpenCode"
         case .openAI: "OpenAI"
         }
     }
@@ -59,17 +62,18 @@ struct ProviderStatusSnapshot {
     let codexCLI: Availability
     let cursorCLI: Availability
     let piCLI: Availability
+    let openCodeCLI: Availability
 
     let openAI: Availability
 
     /// Returns true if at least one provider is ready for chat.
     var hasAnyReadyProvider: Bool {
-        [claudeCodeCLI, codexCLI, cursorCLI, piCLI, openAI].contains(.ready)
+        [claudeCodeCLI, codexCLI, cursorCLI, piCLI, openCodeCLI, openAI].contains(.ready)
     }
 
     /// Returns true if any CLI agent is ready.
     var hasAnyCLIAgentReady: Bool {
-        [claudeCodeCLI, codexCLI, cursorCLI, piCLI].contains(.ready)
+        [claudeCodeCLI, codexCLI, cursorCLI, piCLI, openCodeCLI].contains(.ready)
     }
 
     /// Returns a copy with providers outside the enabled set treated as unavailable.
@@ -79,6 +83,7 @@ struct ProviderStatusSnapshot {
             codexCLI: enabledProviders.contains(.codex) ? codexCLI : .notConfigured,
             cursorCLI: enabledProviders.contains(.cursor) ? cursorCLI : .notConfigured,
             piCLI: enabledProviders.contains(.pi) ? piCLI : .notConfigured,
+            openCodeCLI: enabledProviders.contains(.openCode) ? openCodeCLI : .notConfigured,
             openAI: enabledProviders.contains(.openAI) ? openAI : .notConfigured
         )
     }
@@ -280,7 +285,7 @@ struct RecommendationSet {
 enum BestPracticeProfiles {
     /// Bump when the table changes (used for gating mutes/badge).
     /// Format: YYYYMM plus a two-digit patch when the recommendation provider set changes inside a month.
-    static let versionCode: Int = 20_260_601
+    static let versionCode: Int = 20_260_602
     static let tableTitle = "Best Models by Use Case (GPT-5.5)"
 
     struct UseCase {

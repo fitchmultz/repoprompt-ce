@@ -236,6 +236,38 @@ enum AgentToolCardRenderSummaryBuilder {
             return readFileSummary(statusWord: statusWord, rawObject: rawObject, argsObject: argsObject)
         case "file_search":
             return fileSearchSummary(statusWord: statusWord, rawObject: rawObject, argsObject: argsObject)
+        case "write":
+            return nativeWriteSummary(statusWord: statusWord, rawObject: rawObject, argsObject: argsObject)
+        case "grep":
+            return nativeLineResultSummary(
+                toolName: "grep",
+                title: "Grep",
+                noun: "match",
+                statusWord: statusWord,
+                rawObject: rawObject,
+                argsObject: argsObject,
+                limitedKeys: ["matchLimitReached", "match_limit_reached", "linesTruncated", "lines_truncated", "truncation"]
+            )
+        case "find":
+            return nativeLineResultSummary(
+                toolName: "find",
+                title: "Find",
+                noun: "result",
+                statusWord: statusWord,
+                rawObject: rawObject,
+                argsObject: argsObject,
+                limitedKeys: ["resultLimitReached", "result_limit_reached"]
+            )
+        case "ls":
+            return nativeLineResultSummary(
+                toolName: "ls",
+                title: "List",
+                noun: "entry",
+                statusWord: statusWord,
+                rawObject: rawObject,
+                argsObject: argsObject,
+                limitedKeys: ["entryLimitReached", "entry_limit_reached"]
+            )
         case "search", "web_read":
             return webToolSummary(
                 normalizedToolName: normalizedToolName,
@@ -377,6 +409,110 @@ enum AgentToolCardRenderSummaryBuilder {
             status: renderStatus,
             op: "file_search"
         )
+    }
+
+    private static func nativeWriteSummary(statusWord: String, rawObject: [String: Any]?, argsObject: [String: Any]?) -> AgentToolCardRenderSummary? {
+        guard rawObject != nil || argsObject != nil else { return nil }
+        let path = trimmed(stringValue(argsObject, keys: ["path", "file_path", "filePath"]))
+        let bytesText = nativeWriteBytesText(rawObject)
+        return AgentToolCardRenderSummary(
+            toolName: "write",
+            title: "Write",
+            subtitle: path.map(shortenPath),
+            detailText: bytesText,
+            status: status(from: stringValue(rawObject, keys: ["status", "state", "outcome"]) ?? statusWord, defaultStatus: .neutral),
+            op: "write"
+        )
+    }
+
+    private static func nativeWriteBytesText(_ rawObject: [String: Any]?) -> String? {
+        guard let text = nativeContentText(rawObject) else { return nil }
+        let regex = try? NSRegularExpression(pattern: #"Successfully wrote ([0-9]+ bytes) to "#)
+        let range = NSRange(text.startIndex ..< text.endIndex, in: text)
+        guard let match = regex?.firstMatch(in: text, range: range), match.numberOfRanges > 1,
+              let byteRange = Range(match.range(at: 1), in: text)
+        else { return nil }
+        return String(text[byteRange])
+    }
+
+    private static func nativeLineResultSummary(
+        toolName: String,
+        title: String,
+        noun: String,
+        statusWord: String,
+        rawObject: [String: Any]?,
+        argsObject: [String: Any]?,
+        limitedKeys: [String]
+    ) -> AgentToolCardRenderSummary? {
+        guard rawObject != nil || argsObject != nil else { return nil }
+        let path = trimmed(stringValue(argsObject, keys: ["path", "file_path", "filePath"]))
+        let pattern = trimmed(stringValue(argsObject, keys: ["pattern", "query", "q"]))
+        let count = nativeResultLineCount(rawObject)
+        let limited = limitedKeys.contains { key in nativeTruthyDetail(rawObject, key: key) }
+        let countText = count.map { value in
+            let plural = value == 1 ? noun : nativePlural(noun)
+            return "\(value) \(plural)\(limited ? " (limited)" : "")"
+        }
+        let subtitle = [pattern.map { "\"\($0)\"" }, path.map(shortenPath)]
+            .compactMap(\.self)
+            .joined(separator: " • ")
+        let baseStatus = status(from: stringValue(rawObject, keys: ["status", "state", "outcome"]) ?? statusWord, defaultStatus: .neutral)
+        let renderStatus: AgentToolCardRenderStatus = {
+            if baseStatus == .failure || baseStatus == .running { return baseStatus }
+            if limited { return .warning }
+            if (count ?? 0) > 0 { return .success }
+            return baseStatus
+        }()
+        return AgentToolCardRenderSummary(
+            toolName: toolName,
+            title: title,
+            subtitle: subtitle.isEmpty ? nil : subtitle,
+            detailText: countText,
+            status: renderStatus,
+            op: toolName
+        )
+    }
+
+    private static func nativeTruthyDetail(_ rawObject: [String: Any]?, key: String) -> Bool {
+        guard let details = rawObject?["details"] as? [String: Any], let value = details[key] else { return false }
+        if let bool = value as? Bool { return bool }
+        if let number = value as? NSNumber { return number.intValue != 0 }
+        if let string = value as? String {
+            let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return !trimmed.isEmpty && trimmed != "false" && trimmed != "0" && trimmed != "no"
+        }
+        return true
+    }
+
+    private static func nativePlural(_ noun: String) -> String {
+        switch noun {
+        case "match": "matches"
+        case "entry": "entries"
+        default: noun + "s"
+        }
+    }
+
+    private static func nativeContentText(_ rawObject: [String: Any]?) -> String? {
+        guard let content = rawObject?["content"] as? [Any] else { return nil }
+        let parts = content.compactMap { entry -> String? in
+            guard let object = entry as? [String: Any] else { return nil }
+            return trimmed(stringValue(object, keys: ["text"]))
+        }
+        guard !parts.isEmpty else { return nil }
+        return parts.joined(separator: "\n")
+    }
+
+    private static func nativeResultLineCount(_ rawObject: [String: Any]?) -> Int? {
+        guard let text = nativeContentText(rawObject) else { return nil }
+        return text.components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .count(where: { line in
+                guard !line.isEmpty, !line.hasPrefix("[") else { return false }
+                let lowered = line.lowercased()
+                return !lowered.hasPrefix("no files found")
+                    && !lowered.hasPrefix("no matches")
+                    && !lowered.hasPrefix("no results")
+            })
     }
 
     private static func webToolSummary(

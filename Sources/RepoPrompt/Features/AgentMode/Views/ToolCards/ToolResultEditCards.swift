@@ -217,13 +217,14 @@ struct CursorNativeEditResultPresentation: Equatable {
 
     static func build(for item: AgentChatItem) -> CursorNativeEditResultPresentation {
         let dto = ToolJSON.decode(ToolResultDTOs.CursorNativeEditSummary.self, from: item.toolResultJSON)
-        let diffs = displayDiffs(from: dto)
+        let dtoDiffs = displayDiffs(from: dto)
+        let diffs = dtoDiffs.isEmpty ? piNativeDisplayDiffs(for: item) : dtoDiffs
         let title = displayTitle(from: dto)
         let status = resolvedStatus(item: item, dto: dto, diffs: diffs)
         return CursorNativeEditResultPresentation(
             dto: dto,
             title: title,
-            summary: buildSummary(dto: dto, diffs: diffs),
+            summary: buildSummary(dto: dto, diffs: diffs, item: item),
             diffs: diffs,
             status: status,
             isExpandable: !diffs.isEmpty || (toolResultHasPayload(item) && !toolResultIsSummaryOnly(item)),
@@ -233,7 +234,8 @@ struct CursorNativeEditResultPresentation: Equatable {
 
     static func shouldAutoExpandInitially(item: AgentChatItem, isMostRecentEdit: Bool) -> Bool {
         guard isMostRecentEdit else { return false }
-        return !displayDiffs(from: ToolJSON.decode(ToolResultDTOs.CursorNativeEditSummary.self, from: item.toolResultJSON)).isEmpty
+        let dto = ToolJSON.decode(ToolResultDTOs.CursorNativeEditSummary.self, from: item.toolResultJSON)
+        return !displayDiffs(from: dto).isEmpty || !piNativeDisplayDiffs(for: item).isEmpty
     }
 
     private static func displayTitle(from dto: ToolResultDTOs.CursorNativeEditSummary?) -> String {
@@ -247,19 +249,82 @@ struct CursorNativeEditResultPresentation: Equatable {
 
     private static func buildSummary(
         dto: ToolResultDTOs.CursorNativeEditSummary?,
-        diffs: [DisplayDiff]
+        diffs: [DisplayDiff],
+        item: AgentChatItem
     ) -> String {
         let truncationSuffix = diffs.contains { $0.isTruncated } ? " • diff truncated" : ""
         if let first = diffs.first {
             if diffs.count == 1 {
-                return "\(fileName(from: first.path)) • edit\(truncationSuffix)"
+                let detail = inlineToolCardSummary(
+                    lineChangeFragment(diff: first.diff),
+                    first.isTruncated ? "diff truncated" : nil
+                )
+                return inlineToolCardSummary(
+                    inlineToolCardSummary(fileName(from: first.path), editCountSummary(for: item)),
+                    detail
+                ) ?? "\(fileName(from: first.path)) • edit\(truncationSuffix)"
             }
             return "\(diffs.count) files • edit\(truncationSuffix)"
+        }
+        if let path = firstContentPath(from: dto) ?? nativeEditPath(for: item) {
+            return inlineToolCardSummary(fileName(from: path), editCountSummary(for: item) ?? dtoChangeCountSummary(dto)) ?? fileName(from: path)
         }
         if let changeCount = dto?.changeCount, changeCount > 0 {
             return "\(changeCount) file\(changeCount == 1 ? "" : "s") • edit"
         }
         return "Edit"
+    }
+
+    private static func firstContentPath(from dto: ToolResultDTOs.CursorNativeEditSummary?) -> String? {
+        dto?.content?
+            .compactMap { $0.path?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty }
+    }
+
+    private static func dtoChangeCountSummary(_ dto: ToolResultDTOs.CursorNativeEditSummary?) -> String? {
+        guard let count = dto?.changeCount, count > 0 else { return nil }
+        return "\(count) edit\(count == 1 ? "" : "s")"
+    }
+
+    private static func nativeEditPath(for item: AgentChatItem) -> String? {
+        let args = ToolJSON.decodeArgs(ToolArgsDTOs.NativeEditArgs.self, from: item.toolArgsJSON)
+        return [args?.path, args?.filePath]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty }
+    }
+
+    private static func editCountSummary(for item: AgentChatItem) -> String? {
+        guard let count = ToolJSON.decodeArgs(ToolArgsDTOs.NativeEditArgs.self, from: item.toolArgsJSON)?.edits?.count,
+              count > 0
+        else { return nil }
+        return "\(count) edit\(count == 1 ? "" : "s")"
+    }
+
+    private static func lineChangeFragment(diff: String) -> String? {
+        let counts = diff.components(separatedBy: "\n").reduce(into: (adds: 0, dels: 0)) { partial, line in
+            if line.hasPrefix("+"), !line.hasPrefix("+++") {
+                partial.adds += 1
+            } else if line.hasPrefix("-"), !line.hasPrefix("---") {
+                partial.dels += 1
+            }
+        }
+        guard counts.adds > 0 || counts.dels > 0 else { return nil }
+        return "+\(counts.adds) -\(counts.dels) lines"
+    }
+
+    private static func piNativeDisplayDiffs(for item: AgentChatItem) -> [DisplayDiff] {
+        guard let path = nativeEditPath(for: item),
+              let object = ToolRawJSON.object(from: item.toolResultJSON),
+              let details = object["details"] as? [String: Any]
+        else { return [] }
+        let diff = [ToolRawJSON.string(details, key: "patch"), ToolRawJSON.string(details, key: "diff")]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty }
+        guard let diff else { return [] }
+        let isTruncated = ToolRawJSON.bool(details, key: "diff_truncated")
+            ?? ToolRawJSON.bool(details, key: "diffTruncated")
+            ?? false
+        return [DisplayDiff(path: path, diff: diff, isTruncated: isTruncated)]
     }
 
     private static func displayDiffs(from dto: ToolResultDTOs.CursorNativeEditSummary?) -> [DisplayDiff] {

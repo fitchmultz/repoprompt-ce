@@ -11,9 +11,10 @@ final class WebSearchToolCardTests: XCTestCase {
             XCTAssertEqual(normalizedToolCardName(alias), "web_read", alias)
             XCTAssertEqual(AgentToolResultPersistencePolicy.normalizedToolName(alias), "web_read", alias)
         }
-        for alias in ["file_search", "filesearch", "grep"] {
+        for alias in ["file_search", "filesearch"] {
             XCTAssertEqual(AgentToolResultPersistencePolicy.normalizedToolName(alias), "file_search", alias)
         }
+        XCTAssertEqual(AgentToolResultPersistencePolicy.normalizedToolName("grep"), "grep")
         XCTAssertTrue(ToolCardRouter.knownResultTools.contains("search"))
     }
 

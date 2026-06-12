@@ -223,6 +223,7 @@ enum NativeToolCardPresentationBuilder {
         let currentName = summaryToolNameKey(normalizedToolName)
         guard storedName == currentName else { return false }
         if currentName == "search" { return true }
+        if ["write", "grep", "find", "ls"].contains(currentName) { return true }
         return AgentToolCardRenderSummaryBuilder.isSafeNativeFallbackToolName(currentName)
     }
 

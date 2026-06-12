@@ -26,7 +26,7 @@ enum AgentModelCatalog {
             AvailabilityContext(
                 claudeCodeAvailable: claudeCodeAvailable && providers.contains(.claudeCode),
                 codexAvailable: codexAvailable && providers.contains(.codex),
-                openCodeAvailable: false,
+                openCodeAvailable: openCodeAvailable && providers.contains(.openCode),
                 cursorAvailable: cursorAvailable && providers.contains(.cursor),
                 piAvailable: piAvailable && providers.contains(.pi),
                 zaiConfigured: zaiConfigured && providers.contains(.claudeCode),
@@ -2300,6 +2300,7 @@ enum AgentModelCatalog {
                 SelectionCandidate(agent: .codexExec, modelRaw: AgentModel.gpt54MiniMedium.rawValue),
                 SelectionCandidate(agent: .codexExec, modelRaw: AgentModel.codexMini.rawValue),
                 SelectionCandidate(agent: .pi, modelRaw: AgentModel.defaultModel.rawValue),
+                SelectionCandidate(agent: .openCode, modelRaw: AgentModel.defaultModel.rawValue),
                 SelectionCandidate(agent: .cursor, modelRaw: AgentModel.cursorAuto.rawValue)
             ]
         case .engineer:
@@ -2310,6 +2311,7 @@ enum AgentModelCatalog {
                 SelectionCandidate(agent: .kimiCode, modelRaw: AgentModel.kimiCode.rawValue),
                 SelectionCandidate(agent: .customClaudeCompatible, modelRaw: defaultCompatibleBackendModelRaw(for: .customClaudeCompatible)),
                 SelectionCandidate(agent: .pi, modelRaw: AgentModel.defaultModel.rawValue),
+                SelectionCandidate(agent: .openCode, modelRaw: AgentModel.defaultModel.rawValue),
                 SelectionCandidate(agent: .cursor, modelRaw: AgentModel.cursorComposer2.rawValue)
             ]
         case .pair:
@@ -2320,6 +2322,7 @@ enum AgentModelCatalog {
                 SelectionCandidate(agent: .kimiCode, modelRaw: AgentModel.kimiCode.rawValue),
                 SelectionCandidate(agent: .customClaudeCompatible, modelRaw: defaultCompatibleBackendModelRaw(for: .customClaudeCompatible)),
                 SelectionCandidate(agent: .pi, modelRaw: AgentModel.defaultModel.rawValue),
+                SelectionCandidate(agent: .openCode, modelRaw: AgentModel.defaultModel.rawValue),
                 SelectionCandidate(agent: .cursor, modelRaw: AgentModel.cursorComposer2.rawValue)
             ]
         case .design:
@@ -2329,6 +2332,7 @@ enum AgentModelCatalog {
                 SelectionCandidate(agent: .kimiCode, modelRaw: AgentModel.kimiCode.rawValue),
                 SelectionCandidate(agent: .customClaudeCompatible, modelRaw: defaultCompatibleBackendModelRaw(for: .customClaudeCompatible)),
                 SelectionCandidate(agent: .pi, modelRaw: AgentModel.defaultModel.rawValue),
+                SelectionCandidate(agent: .openCode, modelRaw: AgentModel.defaultModel.rawValue),
                 SelectionCandidate(agent: .cursor, modelRaw: AgentModel.cursorComposer2.rawValue),
                 SelectionCandidate(agent: .codexExec, modelRaw: AgentModel.gpt55CodexMedium.rawValue)
             ]
@@ -2341,6 +2345,9 @@ enum AgentModelCatalog {
         availability: AvailabilityContext
     ) -> Bool {
         guard isAgentAvailable(candidate.agent, availability: availability) else { return false }
+        if candidate.modelRaw == AgentModel.defaultModel.rawValue, candidate.agent == .openCode {
+            return true
+        }
         // For non-Codex agents, validate the model is known and available
         if candidate.agent != .codexExec {
             return isValid(rawModel: candidate.modelRaw, for: candidate.agent, availability: availability)
@@ -2376,7 +2383,10 @@ enum AgentModelCatalog {
         let chain = candidateChain(for: kind)
         for candidate in chain {
             if isCandidateAvailable(candidate, availability: availability) {
-                return NormalizedAgentSelection(agent: candidate.agent, modelRaw: candidate.modelRaw)
+                let modelRaw = candidate.modelRaw == AgentModel.defaultModel.rawValue
+                    ? defaultModelRaw(for: candidate.agent, availability: availability)
+                    : candidate.modelRaw
+                return NormalizedAgentSelection(agent: candidate.agent, modelRaw: modelRaw)
             }
         }
         return nil

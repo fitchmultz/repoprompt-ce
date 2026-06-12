@@ -1,6 +1,34 @@
 import Foundation
 import SwiftUI
 
+enum UnknownToolResultPresentation {
+    static func subtitle(for item: AgentChatItem) -> String? {
+        if let subtitle = StoredToolCardPresentation.fromSummaryOnly(raw: item.toolResultJSON)?.inlineSubtitle {
+            return subtitle
+        }
+        if item.toolName?.caseInsensitiveCompare("subagent") == .orderedSame,
+           let subtitle = SubagentToolPresentation.resultSubtitle(resultJSON: item.toolResultJSON)
+        {
+            return subtitle
+        }
+        let argsSubtitle = ToolCardRouter.callSubtitle(for: item.toolName, argsJSON: item.toolArgsJSON)
+        guard let obj = ToolRawJSON.object(from: item.toolResultJSON) else { return argsSubtitle }
+        if let status = ToolRawJSON.string(obj, key: "status"), !status.isEmpty {
+            return inlineToolCardSummary(argsSubtitle, status)
+        }
+        if let error = ToolRawJSON.string(obj, key: "error"), !error.isEmpty {
+            return inlineToolCardSummary(argsSubtitle, "error")
+        }
+        if item.toolIsError == true {
+            return inlineToolCardSummary(argsSubtitle, "failed")
+        }
+        if item.toolIsError == false {
+            return inlineToolCardSummary(argsSubtitle, "success")
+        }
+        return argsSubtitle
+    }
+}
+
 struct UnknownToolResultCard: View {
     let item: AgentChatItem
     let title: String
@@ -14,22 +42,7 @@ struct UnknownToolResultCard: View {
     }
 
     private var subtitle: String? {
-        if let subtitle = StoredToolCardPresentation.fromSummaryOnly(raw: item.toolResultJSON)?.inlineSubtitle {
-            return subtitle
-        }
-        if item.toolName?.caseInsensitiveCompare("subagent") == .orderedSame,
-           let subtitle = SubagentToolPresentation.resultSubtitle(resultJSON: item.toolResultJSON)
-        {
-            return subtitle
-        }
-        guard let obj = ToolRawJSON.object(from: item.toolResultJSON) else { return nil }
-        if let status = ToolRawJSON.string(obj, key: "status"), !status.isEmpty {
-            return status
-        }
-        if let error = ToolRawJSON.string(obj, key: "error"), !error.isEmpty {
-            return "error"
-        }
-        return nil
+        UnknownToolResultPresentation.subtitle(for: item)
     }
 
     var body: some View {

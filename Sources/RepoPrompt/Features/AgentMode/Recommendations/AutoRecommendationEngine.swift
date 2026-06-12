@@ -12,6 +12,7 @@ struct ProviderFlags {
     let codexConnected: Bool
     let cursorConnected: Bool
     let piConnected: Bool
+    let openCodeConnected: Bool
 }
 
 // MARK: - Auto Recommendation Engine
@@ -53,11 +54,13 @@ final class AutoRecommendationEngine {
                 codexCLI: .notConfigured,
                 cursorCLI: .notConfigured,
                 piCLI: .notConfigured,
+                openCodeCLI: .notConfigured,
                 openAI: .notConfigured
             )
         }
 
         return vm.recommendationProviderStatusSnapshot
+
     }
 
     /// Get provider flags from APISettingsViewModel.
@@ -69,7 +72,8 @@ final class AutoRecommendationEngine {
             claudeCodeConnected: vm.isClaudeCodeConnected,
             codexConnected: vm.isCodexConnected,
             cursorConnected: vm.isCursorConnected,
-            piConnected: vm.isPiConnected
+            piConnected: vm.isPiConnected,
+            openCodeConnected: vm.isOpenCodeConnected
         )
     }
 
@@ -489,7 +493,7 @@ final class AutoRecommendationEngine {
         return AgentModelCatalog.AvailabilityContext(
             claudeCodeAvailable: status.claudeCodeCLI == .ready,
             codexAvailable: status.codexCLI == .ready,
-            openCodeAvailable: false,
+            openCodeAvailable: status.openCodeCLI == .ready,
             cursorAvailable: status.cursorCLI == .ready,
             piAvailable: status.piCLI == .ready,
             zaiConfigured: backendStore.isConfigured(.glmZAI) && backendStore.config(for: .glmZAI).isEnabled && backendStore.config(for: .glmZAI).isValid,
