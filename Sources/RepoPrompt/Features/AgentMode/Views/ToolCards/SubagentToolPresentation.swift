@@ -30,6 +30,9 @@ enum SubagentToolPresentation {
         {
             return abbreviate(firstLine(text), maxLength: 120)
         }
+        if isNonTerminalPlaceholder(object) {
+            return "running"
+        }
         if let status = string(object, "status") {
             return status
         }
@@ -62,7 +65,13 @@ enum SubagentToolPresentation {
     }
 
     static func resultStatus(toolIsError: Bool?, resultJSON: String?, fallback: ToolCardStatus = .neutral) -> ToolCardStatus {
-        guard let details = ToolRawJSON.object(from: resultJSON)?["details"] as? [String: Any],
+        guard let object = ToolRawJSON.object(from: resultJSON) else {
+            return ToolResultStatusResolver.resolve(toolIsError: toolIsError, raw: resultJSON, fallback: fallback)
+        }
+        if isNonTerminalPlaceholder(object) {
+            return .running
+        }
+        guard let details = object["details"] as? [String: Any],
               let results = details["results"] as? [[String: Any]],
               !results.isEmpty
         else {
@@ -121,6 +130,11 @@ enum SubagentToolPresentation {
               let json = String(data: data, encoding: .utf8)
         else { return nil }
         return json
+    }
+
+    private static func isNonTerminalPlaceholder(_ object: [String: Any]) -> Bool {
+        guard let status = string(object, "status")?.lowercased() else { return false }
+        return ["unknown", "pending", "running", "in_progress", "active"].contains(status)
     }
 
     private static func string(_ object: [String: Any], _ key: String) -> String? {

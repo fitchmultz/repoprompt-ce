@@ -492,6 +492,9 @@ enum PiRunProgressPresentation {
         if isError {
             return "\(prefix) failed"
         }
+        if isNonTerminalSubagentPlaceholder(object) {
+            return "\(prefix) running"
+        }
         if let text = firstContentLine(from: object), !text.isEmpty {
             return abbreviated(text, maxLength: 140)
         }
@@ -574,6 +577,11 @@ enum PiRunProgressPresentation {
             return "completed"
         }
         return nil
+    }
+
+    private static func isNonTerminalSubagentPlaceholder(_ object: [String: PiJSONValue]) -> Bool {
+        guard let status = trimmed(object["status"]?.stringValue)?.lowercased() else { return false }
+        return ["unknown", "pending", "running", "in_progress", "active"].contains(status)
     }
 
     private static func subagentTarget(from args: [String: PiJSONValue]) -> String? {

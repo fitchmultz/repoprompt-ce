@@ -119,6 +119,20 @@ final class PiNativeSessionControllerTests: XCTestCase {
         })
     }
 
+    func testSubagentUnknownToolEndStatusRemainsRunning() {
+        let status = PiRunProgressPresentation.toolEndStatus(
+            toolName: "subagent",
+            result: .object([
+                "status": .string("unknown"),
+                "summary_only": .bool(true),
+                "summary_text": .string("subagent • unknown")
+            ]),
+            isError: false
+        )
+
+        XCTAssertEqual(status, "Subagent running")
+    }
+
     func testPromptSteerAndFollowUpSendImagePayloads() async throws {
         let directory = try makeTemporaryDirectory()
         let recordURL = directory.appendingPathComponent("commands.jsonl")

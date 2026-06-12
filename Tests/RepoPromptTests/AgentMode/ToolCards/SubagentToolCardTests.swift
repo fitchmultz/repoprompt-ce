@@ -92,4 +92,20 @@ final class SubagentToolCardTests: XCTestCase {
             .running
         )
     }
+
+    func testSubagentSummaryOnlyUnknownPlaceholderStaysRunning() {
+        let raw = #"""
+        {
+          "status": "unknown",
+          "summary_only": true,
+          "summary_text": "subagent • unknown"
+        }
+        """#
+
+        XCTAssertEqual(SubagentToolPresentation.resultSubtitle(resultJSON: raw), "running")
+        XCTAssertEqual(
+            SubagentToolPresentation.resultStatus(toolIsError: false, resultJSON: raw),
+            .running
+        )
+    }
 }
