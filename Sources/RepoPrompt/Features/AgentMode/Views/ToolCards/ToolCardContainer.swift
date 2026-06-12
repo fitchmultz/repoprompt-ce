@@ -592,6 +592,8 @@ func toolDisplayName(for toolName: String?) -> String {
         return "Agent Run"
     case "agent_manage":
         return "Agent Manage"
+    case "subagent":
+        return "Subagent"
     case "app_settings":
         return "App Settings"
     default:

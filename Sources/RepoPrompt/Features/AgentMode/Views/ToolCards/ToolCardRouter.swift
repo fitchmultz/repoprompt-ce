@@ -147,6 +147,7 @@ enum ToolCardRouter {
         "agent_explore",
         "agent_run",
         "agent_manage",
+        "subagent",
         "app_settings"
     ]
 
@@ -242,6 +243,8 @@ enum ToolCardRouter {
             return AnyView(AgentRunResultCard(item: item))
         case "agent_manage":
             return AnyView(AgentManageResultCard(item: item))
+        case "subagent":
+            return AnyView(UnknownToolResultCard(item: item, title: toolDisplayName(for: normalized ?? item.toolName)))
         case "app_settings":
             return AnyView(AppSettingsResultCard(item: item))
         default:
@@ -573,6 +576,8 @@ private enum ToolCardSubtitleBuilder {
                     return op
                 }
             }
+        case "subagent":
+            return SubagentToolPresentation.callSubtitle(argsJSON: argsJSON)
         case "app_settings":
             return AppSettingsCardPresentationBuilder.callSubtitle(argsJSON: argsJSON)
         case "agent_manage":

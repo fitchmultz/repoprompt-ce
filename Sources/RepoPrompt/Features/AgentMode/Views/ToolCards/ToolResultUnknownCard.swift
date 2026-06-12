@@ -7,11 +7,19 @@ struct UnknownToolResultCard: View {
     @State private var isExpanded = false
 
     private var status: ToolCardStatus {
-        ToolResultStatusResolver.resolve(toolIsError: item.toolIsError, raw: item.toolResultJSON, fallback: .neutral)
+        if item.toolName?.caseInsensitiveCompare("subagent") == .orderedSame {
+            return SubagentToolPresentation.resultStatus(toolIsError: item.toolIsError, resultJSON: item.toolResultJSON)
+        }
+        return ToolResultStatusResolver.resolve(toolIsError: item.toolIsError, raw: item.toolResultJSON, fallback: .neutral)
     }
 
     private var subtitle: String? {
         if let subtitle = StoredToolCardPresentation.fromSummaryOnly(raw: item.toolResultJSON)?.inlineSubtitle {
+            return subtitle
+        }
+        if item.toolName?.caseInsensitiveCompare("subagent") == .orderedSame,
+           let subtitle = SubagentToolPresentation.resultSubtitle(resultJSON: item.toolResultJSON)
+        {
             return subtitle
         }
         guard let obj = ToolRawJSON.object(from: item.toolResultJSON) else { return nil }

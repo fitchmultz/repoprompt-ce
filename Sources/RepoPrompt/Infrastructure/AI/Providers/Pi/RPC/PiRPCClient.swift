@@ -102,6 +102,7 @@ actor PiRPCClient {
         case compactionEnd(result: PiJSONValue?)
         case extensionUIRequest(PiExtensionUIRequest)
         case extensionError(String)
+        case customMessage(PiCustomMessage)
         case transportClosed(reason: String)
         case protocolDiagnostic(ProtocolDiagnostic)
         case unhandled(type: String, payload: [String: PiJSONValue])
@@ -133,6 +134,14 @@ actor PiRPCClient {
             default: false
             }
         }
+    }
+
+    struct PiCustomMessage: Equatable {
+        var customType: String?
+        var content: String?
+        var display: Bool
+        var details: [String: PiJSONValue]?
+        var raw: [String: PiJSONValue]
     }
 
     struct ExpectedAgentPIDRegistration: Equatable {
@@ -671,6 +680,10 @@ actor PiRPCClient {
             }
             return
         }
+        if type == "custom_message" {
+            emit(.customMessage(Self.parseCustomMessage(payload)))
+            return
+        }
         let event = Self.parseEvent(type: type, payload: payload)
         if case let .unhandled(unhandledType, unhandledPayload) = event {
             emitProtocolDiagnostic(
@@ -960,6 +973,21 @@ actor PiRPCClient {
         )
     }
 
+    private static func parseCustomMessage(_ payload: [String: PiJSONValue]) -> PiCustomMessage {
+        PiCustomMessage(
+            customType: payload["customType"]?.stringValue,
+            content: payload["content"]?.stringValue,
+            display: payload["display"]?.boolValue ?? false,
+            details: payload["details"]?.objectValue,
+            raw: payload
+        )
+    }
+
+    private static func parseCustomMessageFromRoleMessage(_ message: [String: PiJSONValue]) -> PiCustomMessage? {
+        guard message["role"]?.stringValue == "custom" else { return nil }
+        return parseCustomMessage(message)
+    }
+
     private static func parseEvent(type: String, payload: [String: PiJSONValue]) -> Event {
         switch type {
         case "agent_start":
@@ -980,6 +1008,11 @@ actor PiRPCClient {
             }
             return .unhandled(type: type, payload: payload)
         case "message_end":
+            if let message = payload["message"]?.objectValue,
+               let customMessage = parseCustomMessageFromRoleMessage(message)
+            {
+                return .customMessage(customMessage)
+            }
             return .messageEnd(message: payload["message"]?.objectValue)
         case "tool_execution_start":
             return .toolExecutionStart(

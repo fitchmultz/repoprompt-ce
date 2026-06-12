@@ -340,6 +340,137 @@ final class PiNativeSessionControllerTests: XCTestCase {
         }
     }
 
+    func testSubagentToolAndCustomMessagesProduceProgressStatus() async throws {
+        let directory = try makeTemporaryDirectory()
+        let scriptURL = try makeFakePiControllerScript(recordURL: directory.appendingPathComponent("commands.jsonl"))
+        let client = PiRPCClient(config: .init(
+            commandName: scriptURL.path,
+            additionalPathHints: [],
+            requestTimeout: 2,
+            launchArguments: [],
+            requiresSupportedVersionCheck: false
+        ))
+        let controller = PiNativeSessionController(client: client, options: .init(requestTimeout: 2))
+        addTeardownBlock { await controller.shutdown() }
+        _ = try await controller.startOrResume(existing: nil)
+
+        let stream = await controller.events
+        let collector = Task { () -> [PiNativeSessionController.Event] in
+            var events: [PiNativeSessionController.Event] = []
+            for await event in stream {
+                events.append(event)
+                if case .turnCompleted = event { break }
+            }
+            return events
+        }
+
+        _ = try await controller.sendUserMessage("subagent-progress")
+        let streamResults = await collector.value.compactMap { event -> AIStreamResult? in
+            if case let .stream(result) = event { return result }
+            return nil
+        }
+
+        XCTAssertTrue(streamResults.contains { $0.type == "status" && $0.text == "Subagent worker started" })
+        XCTAssertFalse(streamResults.contains { result in
+            result.type == "status"
+                && (result.text?.contains("hidden-worker") ?? false)
+        })
+        XCTAssertTrue(streamResults.contains { result in
+            result.type == "status"
+                && (result.text?.contains("Subagent worker needs attention") ?? false)
+                && (result.text?.contains("tool: bash") ?? false)
+        })
+        XCTAssertTrue(streamResults.contains { result in
+            result.type == "status"
+                && (result.text?.contains("Subagent worker") ?? false)
+                && (result.text?.contains("detached") ?? false)
+                && (result.text?.contains("7bee22c2") ?? false)
+        })
+        XCTAssertTrue(streamResults.contains { $0.type == "tool_call" && $0.toolName == "subagent" })
+        XCTAssertTrue(streamResults.contains { $0.type == "tool_result" && $0.toolName == "subagent" })
+    }
+
+    func testSubagentRunningSentinelProducesRunningStatus() async throws {
+        let directory = try makeTemporaryDirectory()
+        let scriptURL = try makeFakePiControllerScript(recordURL: directory.appendingPathComponent("commands.jsonl"))
+        let client = PiRPCClient(config: .init(
+            commandName: scriptURL.path,
+            additionalPathHints: [],
+            requestTimeout: 2,
+            launchArguments: [],
+            requiresSupportedVersionCheck: false
+        ))
+        let controller = PiNativeSessionController(client: client, options: .init(requestTimeout: 2))
+        addTeardownBlock { await controller.shutdown() }
+        _ = try await controller.startOrResume(existing: nil)
+
+        let stream = await controller.events
+        let collector = Task { () -> [PiNativeSessionController.Event] in
+            var events: [PiNativeSessionController.Event] = []
+            for await event in stream {
+                events.append(event)
+                if case .turnCompleted = event { break }
+            }
+            return events
+        }
+
+        _ = try await controller.sendUserMessage("subagent-running")
+        let streamResults = await collector.value.compactMap { event -> AIStreamResult? in
+            if case let .stream(result) = event { return result }
+            return nil
+        }
+
+        XCTAssertTrue(streamResults.contains { result in
+            result.type == "status"
+                && (result.text?.contains("Subagent worker") ?? false)
+                && (result.text?.contains("running") ?? false)
+                && (result.text?.contains("running1") ?? false)
+        })
+        XCTAssertFalse(streamResults.contains { result in
+            result.type == "status"
+                && (result.text?.contains("failed") ?? false)
+                && (result.text?.contains("running1") ?? false)
+        })
+    }
+
+    func testSubagentErrorStatusPreservesChildLifecycleDetails() async throws {
+        let directory = try makeTemporaryDirectory()
+        let scriptURL = try makeFakePiControllerScript(recordURL: directory.appendingPathComponent("commands.jsonl"))
+        let client = PiRPCClient(config: .init(
+            commandName: scriptURL.path,
+            additionalPathHints: [],
+            requestTimeout: 2,
+            launchArguments: [],
+            requiresSupportedVersionCheck: false
+        ))
+        let controller = PiNativeSessionController(client: client, options: .init(requestTimeout: 2))
+        addTeardownBlock { await controller.shutdown() }
+        _ = try await controller.startOrResume(existing: nil)
+
+        let stream = await controller.events
+        let collector = Task { () -> [PiNativeSessionController.Event] in
+            var events: [PiNativeSessionController.Event] = []
+            for await event in stream {
+                events.append(event)
+                if case .turnCompleted = event { break }
+            }
+            return events
+        }
+
+        _ = try await controller.sendUserMessage("subagent-timeout")
+        let streamResults = await collector.value.compactMap { event -> AIStreamResult? in
+            if case let .stream(result) = event { return result }
+            return nil
+        }
+
+        XCTAssertTrue(streamResults.contains { result in
+            result.type == "status"
+                && (result.text?.contains("Subagent worker") ?? false)
+                && (result.text?.contains("timed out") ?? false)
+                && (result.text?.contains("deadbeef") ?? false)
+        })
+    }
+
     func testBridgeToolResultUsesInnerRawJSONForTranscriptPayload() async throws {
         let directory = try makeTemporaryDirectory()
         let scriptURL = try makeFakePiControllerScript(recordURL: directory.appendingPathComponent("commands.jsonl"))
@@ -513,6 +644,17 @@ final class PiNativeSessionControllerTests: XCTestCase {
                     inner = '{"roots_count":1,"tree":"repoprompt-ce","uses_legend":false}'
                     emit({"type": "tool_execution_start", "toolCallId": "call-1", "toolName": "get_file_tree", "args": {"type": "roots"}})
                     emit({"type": "tool_execution_end", "toolCallId": "call-1", "toolName": "get_file_tree", "result": {"content": [{"type": "text", "text": inner}], "details": {"bridgeVersion": "2", "tool": "get_file_tree", "exitCode": 0}}, "isError": False})
+                elif request.get("message") == "subagent-progress":
+                    emit({"type": "tool_execution_start", "toolCallId": "call-sub", "toolName": "subagent", "args": {"agent": "worker", "task": "Refactor"}})
+                    emit({"type": "message_end", "message": {"role": "custom", "customType": "subagent_control_notice", "display": False, "content": "Hidden control notice", "details": {"event": {"agent": "hidden-worker", "message": "hidden should not display", "currentTool": "bash"}}}})
+                    emit({"type": "message_end", "message": {"role": "custom", "customType": "subagent_control_notice", "display": True, "content": "Subagent needs attention: worker", "details": {"event": {"agent": "worker", "message": "worker needs attention (no observed activity for 60s)", "currentTool": "bash"}}}})
+                    emit({"type": "tool_execution_end", "toolCallId": "call-sub", "toolName": "subagent", "result": {"content": [{"type": "text", "text": "Detached for intercom coordination: worker."}], "details": {"mode": "single", "runId": "7bee22c2", "results": [{"agent": "worker", "exitCode": 0, "detached": True}]}}, "isError": False})
+                elif request.get("message") == "subagent-running":
+                    emit({"type": "tool_execution_start", "toolCallId": "call-sub", "toolName": "subagent", "args": {"agent": "worker", "task": "Refactor"}})
+                    emit({"type": "tool_execution_end", "toolCallId": "call-sub", "toolName": "subagent", "result": {"content": [{"type": "text", "text": "Subagent still running."}], "details": {"mode": "parallel", "runId": "running1", "results": [{"agent": "worker", "exitCode": -1}]}}, "isError": False})
+                elif request.get("message") == "subagent-timeout":
+                    emit({"type": "tool_execution_start", "toolCallId": "call-sub", "toolName": "subagent", "args": {"agent": "worker", "task": "Refactor"}})
+                    emit({"type": "tool_execution_end", "toolCallId": "call-sub", "toolName": "subagent", "result": {"content": [{"type": "text", "text": "Subagent timed out."}], "details": {"mode": "single", "runId": "deadbeef", "results": [{"agent": "worker", "exitCode": 1, "timedOut": True}]}}, "isError": True})
                 elif request.get("message") == "protocol-drift":
                     emit({"type": "future_event", "note": "sk-fixture-redaction-value", "payload": {"message": "new shape"}})
                     emit({"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": "continued after drift"}})
