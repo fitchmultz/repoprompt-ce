@@ -36,8 +36,13 @@ Raw request: $ARGUMENTS
 			? "| Dismiss a completed session | `agent_manage op=cleanup_sessions session_ids=[\"...\"]` |\n"
 			: ""
 
+		let agentModeDelegationGuard = isAgent ? """
+
+**Agent Mode delegation boundary:** When you delegate from inside RepoPrompt Agent Mode, use RepoPrompt-managed `agent_run` / `agent_manage` sessions. Do not create sub-agents by shelling out to external agent CLIs such as `pi -p`, `codex`, `claude`, `cursor-agent`, `opencode`, or `rpce-cli`; those child processes are invisible to RepoPrompt, cannot be listed/waited/steered/cancelled by `agent_manage`, and bypass the user's current Agent Mode routing and permission context. If `agent_run` is unavailable, stop and report the blocker instead of falling back to a shell command.
+""" : ""
+
 		return """
-You are an orchestrator: **plan**, **decompose**, **delegate**. Implementation and deep context-gathering happen in sub-agents. Keep your own context lean for coordination.
+You are an orchestrator: **plan**, **decompose**, **delegate**. Implementation and deep context-gathering happen in sub-agents. Keep your own context lean for coordination.\(agentModeDelegationGuard)
 \(workspaceVerificationBlock(variant: variant, heading: "## Phase 0", beforeAction: "planning", nextStep: "Phase 1"))
 ## Phase 1: Contextualize the Task
 
@@ -305,7 +310,7 @@ When questions arise during coordination, reason through them yourself. If you'r
 ## Anti-patterns
 
 - 🚫 Implementing code yourself — you're the orchestrator, dispatch an agent\(isAgent ? "" : "\n- 🚫 Skipping Phase 0 (Workspace Verification) — you must confirm the target codebase is loaded first")
-- 🚫 Extended code reading before delegating — a quick skim is fine; deep reads belong in builder or explore agents
+\(isAgent ? "- 🚫 Shelling out to external agent CLIs (`pi -p`, `codex`, `claude`, `cursor-agent`, `opencode`, `rpce-cli`) to create child agents — use RepoPrompt `agent_run` / `agent_manage` so delegated work stays visible, steerable, cancellable, and bound to the current app context\n" : "")- 🚫 Extended code reading before delegating — a quick skim is fine; deep reads belong in builder or explore agents
 - 🚫 Writing detailed step-by-step instructions for dispatched agents — they can reason for themselves
 - 🚫 Dispatching parallel agents to overlapping files without warning them about each other
 - 🚫 Waiting idle for an agent when you could be dispatching the next independent item or preparing the next brief

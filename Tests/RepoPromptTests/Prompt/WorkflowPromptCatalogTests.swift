@@ -46,14 +46,14 @@ final class WorkflowPromptCatalogTests: XCTestCase {
     }
 
     func testRenderedManagedPromptFrontmatterCompatibility() {
-        XCTAssertEqual(RepoPromptWorkflowPrompts.skillsVersion, 61)
+        XCTAssertEqual(RepoPromptWorkflowPrompts.skillsVersion, 62)
 
         for descriptor in WorkflowPromptCatalog.installDescriptors {
             let rendered = RepoPromptWorkflowPrompts.render(id: descriptor.id, variant: .mcp)
             XCTAssertTrue(rendered.hasPrefix("---\n"), descriptor.name)
             XCTAssertTrue(rendered.contains("name: \"\(descriptor.name)\""), descriptor.name)
             XCTAssertTrue(rendered.contains("repoprompt_managed: true"), descriptor.name)
-            XCTAssertTrue(rendered.contains("repoprompt_skills_version: 61"), descriptor.name)
+            XCTAssertTrue(rendered.contains("repoprompt_skills_version: 62"), descriptor.name)
             XCTAssertTrue(rendered.contains("repoprompt_variant: mcp"), descriptor.name)
             XCTAssertFalse(RepoPromptWorkflowPrompts.stripYAMLFrontmatter(rendered).hasPrefix("---"), descriptor.name)
         }
@@ -65,5 +65,24 @@ final class WorkflowPromptCatalogTests: XCTestCase {
             XCTAssertFalse(rendered.isEmpty, workflow.rawValue)
             XCTAssertEqual(workflow.template, rendered, workflow.rawValue)
         }
+    }
+
+    func testAgentOrchestratePromptKeepsDelegationInsideManagedAgentRun() {
+        let rendered = RepoPromptWorkflowPrompts.render(id: .orchestrate, variant: .agent)
+
+        XCTAssertTrue(rendered.contains("Agent Mode delegation boundary"))
+        XCTAssertTrue(rendered.contains("use RepoPrompt-managed `agent_run` / `agent_manage` sessions"))
+        XCTAssertTrue(rendered.contains("Do not create sub-agents by shelling out to external agent CLIs"))
+        XCTAssertTrue(rendered.contains("`pi -p`"))
+        XCTAssertTrue(rendered.contains("If `agent_run` is unavailable, stop and report the blocker"))
+    }
+
+    func testTopLevelAgentModePromptForbidsExternalAgentCLIDelegation() {
+        let prompt = SystemPromptService.agentModePrompt(agentKind: .pi)
+
+        XCTAssertTrue(prompt.contains("Do not spawn child agents by running external agent CLIs"))
+        XCTAssertTrue(prompt.contains("Use `agent_run` instead"))
+        XCTAssertTrue(prompt.contains("`pi -p`"))
+        XCTAssertTrue(prompt.contains("bypass RepoPrompt's managed session store"))
     }
 }

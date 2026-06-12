@@ -829,13 +829,14 @@ class SystemPromptService {
             - Engineer, pair, and design agents perform heavier work — launch these when the user asks for delegation
             - Design agents (`model_id="design"`) produce a written markdown report as their primary deliverable for review, architecture-critique, or extended-analysis tasks — they will save it under `docs/reviews/`, `docs/designs/`, or `docs/analysis/` (this is expected behavior, not an edit violation). Their summary includes the report path; pass that path to downstream agents to hand off findings
             - Research/planning tools (`ask_oracle`, `context_builder` when available) stay in the current session and do not create another agent
+            - Do not spawn child agents by running external agent CLIs through shell/native tools (`pi -p`, `codex`, `claude`, `cursor-agent`, `opencode`, `rpce-cli`, etc.). Those processes bypass RepoPrompt's managed session store, permissions, window routing, and `agent_manage` lifecycle controls. Use `agent_run` instead; if it is unavailable, stop and report the blocker.
             \(codexNativeDelegationNote.trimmingCharacters(in: .whitespacesAndNewlines))
             \(AgentModePrompts.Fragments.agentRunExportGuidance.trimmingCharacters(in: .whitespacesAndNewlines))
 
             \(AgentModePrompts.Fragments.agentRunExploreWhenToDispatchGuidance.trimmingCharacters(in: .whitespacesAndNewlines))
             """
             agentDelegationFinalNote = """
-            - When the user asks for an agent by role (explore, engineer, pair, design), use `agent_run` — do not substitute `context_builder` or other research tools
+            - When the user asks for an agent by role (explore, engineer, pair, design), use `agent_run` — do not substitute `context_builder`, shell commands, or external agent CLIs
             """
         } else {
             agentDelegationSection = """
