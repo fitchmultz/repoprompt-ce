@@ -2,15 +2,13 @@
 import XCTest
 
 final class PiRunEventReducerTests: XCTestCase {
-    func testPendingMessageGateDefersCompletedTerminalStateUntilPendingQueueDrains() {
+    func testPendingMessageGateDoesNotSuppressTerminalStateForStalePendingCount() {
         var gate = PiRunCompletionGate()
         gate.recordSessionState(sessionState(pendingMessageCount: 2))
 
-        XCTAssertNil(gate.terminalState(for: .completed))
-        XCTAssertEqual(gate.latestPendingMessageCount, 1)
-        XCTAssertNil(gate.terminalState(for: .completed))
-        XCTAssertEqual(gate.latestPendingMessageCount, 0)
+        XCTAssertEqual(gate.latestPendingMessageCount, 2)
         XCTAssertEqual(gate.terminalState(for: .completed), .completed)
+        XCTAssertEqual(gate.latestPendingMessageCount, 2)
     }
 
     func testPendingMessageGateDoesNotDeferFailedOrCancelledTerminalStates() {
@@ -21,6 +19,18 @@ final class PiRunEventReducerTests: XCTestCase {
         var cancelledGate = PiRunCompletionGate()
         cancelledGate.recordSessionState(sessionState(pendingMessageCount: 2))
         XCTAssertEqual(cancelledGate.terminalState(for: .cancelled), .cancelled)
+    }
+
+    func testDiagnosticPresentationIncludesKindEventTypeAndMessage() {
+        let text = PiRunDiagnosticPresentation.statusText(from: .init(
+            kind: .unknownEventType,
+            eventType: "future_event",
+            message: "Unknown pi event type.",
+            payloadPreview: nil,
+            occurrence: 1
+        ))
+
+        XCTAssertEqual(text, "pi diagnostic: unknownEventType • future_event • Unknown pi event type.")
     }
 
     func testFirstProviderEventWatchdogFiresOnlyBeforeProviderEventAndTerminalCommit() {

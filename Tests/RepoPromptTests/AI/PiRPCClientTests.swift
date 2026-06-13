@@ -119,6 +119,53 @@ final class PiRPCClientTests: XCTestCase {
         XCTAssertTrue(collected.contains(.turnEnd(message: nil, toolResults: [])))
     }
 
+    func testParsesCurrentSessionLifecycleEvents() async throws {
+        let scriptURL = try makeFakePiCurrentEventsScript()
+        let client = PiRPCClient(config: .init(
+            commandName: scriptURL.path,
+            additionalPathHints: [],
+            requestTimeout: 2,
+            launchArguments: [],
+            requiresSupportedVersionCheck: false
+        ))
+        addTeardownBlock { await client.shutdown() }
+
+        let events = await client.events
+        let collector = Task { () -> [PiRPCClient.Event] in
+            var collected: [PiRPCClient.Event] = []
+            for await event in events {
+                collected.append(event)
+                if collected.count >= 7 { break }
+            }
+            return collected
+        }
+
+        _ = try await client.getState()
+        let collected = await collector.value
+
+        XCTAssertTrue(collected.contains(.agentEnd(
+            messages: [["role": .string("assistant"), "content": .string("retrying")]],
+            willRetry: true
+        )))
+        XCTAssertTrue(collected.contains(.autoRetryStart(
+            attempt: 2,
+            maxAttempts: 3,
+            delayMs: 1000,
+            errorMessage: "provider overloaded"
+        )))
+        XCTAssertTrue(collected.contains(.autoRetryEnd(success: true, attempt: 2, finalError: nil)))
+        XCTAssertTrue(collected.contains(.compactionEnd(
+            reason: "threshold",
+            result: .object(["messageCount": .number(4)]),
+            aborted: false,
+            willRetry: true,
+            errorMessage: "compaction failed"
+        )))
+        XCTAssertTrue(collected.contains(.thinkingLevelChanged(level: "high")))
+        XCTAssertTrue(collected.contains(.sessionInfoChanged(name: "Renamed session")))
+        XCTAssertTrue(collected.contains(.agentEnd(messages: [], willRetry: false)))
+    }
+
     func testMutatingRequestTimeoutInvalidatesRPCProcessAndNextCommandRestarts() async throws {
         let scriptURL = try makeFakePiTimeoutScript(ignoredCommands: ["set_model"])
         let client = PiRPCClient(config: .init(
@@ -462,6 +509,54 @@ final class PiRPCClientTests: XCTestCase {
                     "command": "set_thinking_level",
                     "success": False,
                     "error": "bad thinking level"
+                })
+            else:
+                emit({"type": "response", "id": request_id, "command": command, "success": True})
+        """#
+        try script.write(to: scriptURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
+        return scriptURL
+    }
+
+    private func makeFakePiCurrentEventsScript() throws -> URL {
+        let directory = try makeTemporaryDirectory()
+        let scriptURL = directory.appendingPathComponent("fake_pi_current_events_rpc.py")
+        let script = #"""
+        #!/usr/bin/env python3
+        import json
+        import sys
+
+        def emit(payload):
+            print(json.dumps(payload), flush=True)
+
+        for line in sys.stdin:
+            try:
+                request = json.loads(line)
+            except Exception:
+                continue
+            request_id = request.get("id")
+            command = request.get("type")
+            if command == "get_state":
+                emit({"type": "agent_end", "messages": [{"role": "assistant", "content": "retrying"}], "willRetry": True})
+                emit({"type": "auto_retry_start", "attempt": 2, "maxAttempts": 3, "delayMs": 1000, "errorMessage": "provider overloaded"})
+                emit({"type": "auto_retry_end", "success": True, "attempt": 2})
+                emit({
+                    "type": "compaction_end",
+                    "reason": "threshold",
+                    "result": {"messageCount": 4},
+                    "aborted": False,
+                    "willRetry": True,
+                    "errorMessage": "compaction failed"
+                })
+                emit({"type": "thinking_level_changed", "level": "high"})
+                emit({"type": "session_info_changed", "name": "Renamed session"})
+                emit({"type": "agent_end", "messages": [], "willRetry": False})
+                emit({
+                    "type": "response",
+                    "id": request_id,
+                    "command": "get_state",
+                    "success": True,
+                    "data": {"sessionId": "current-events-session", "isStreaming": False, "isCompacting": False}
                 })
             else:
                 emit({"type": "response", "id": request_id, "command": command, "success": True})

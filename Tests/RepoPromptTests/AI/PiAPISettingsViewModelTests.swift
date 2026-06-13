@@ -159,6 +159,35 @@ final class PiAPISettingsViewModelTests: XCTestCase {
         XCTAssertEqual(subscriptionCount, 1)
     }
 
+    func testPiModelsSubscriptionResubscribesWhenWorkspacePathChanges() async throws {
+        let polling = FakePiModelPolling(snapshot: Self.piSnapshot())
+        let viewModel = makeViewModel(polling: polling)
+        let workspaceA = "/tmp/pi-settings-workspace-a"
+        let workspaceB = "/tmp/pi-settings-workspace-b"
+        let canonicalA = try XCTUnwrap(AgentPiModelRegistry.canonicalWorkspacePath(workspaceA))
+        let canonicalB = try XCTUnwrap(AgentPiModelRegistry.canonicalWorkspacePath(workspaceB))
+
+        viewModel.test_startPiAvailabilityPreflightIfNeeded(workspacePath: workspaceA)
+        let didSubscribeToA = await eventually {
+            await polling.subscriptionWorkspacePaths() == [canonicalA]
+        }
+        XCTAssertTrue(didSubscribeToA)
+        XCTAssertEqual(viewModel.test_piModelsSubscribedWorkspacePath, canonicalA)
+
+        viewModel.test_startPiAvailabilityPreflightIfNeeded(workspacePath: workspaceB)
+        let didSubscribeToB = await eventually {
+            await polling.subscriptionWorkspacePaths() == [canonicalA, canonicalB]
+        }
+        XCTAssertTrue(didSubscribeToB)
+        XCTAssertEqual(viewModel.test_piModelsSubscribedWorkspacePath, canonicalB)
+
+        viewModel.test_startPiAvailabilityPreflightIfNeeded(workspacePath: workspaceB)
+        let stayedSingleSubscriptionForB = await remainsTrue {
+            await polling.subscriptionWorkspacePaths() == [canonicalA, canonicalB]
+        }
+        XCTAssertTrue(stayedSingleSubscriptionForB)
+    }
+
     func testPiBackgroundPollingFailureClearsAvailabilityAndStaleModels() async throws {
         let polling = FakePiModelPolling(snapshot: Self.piSnapshot())
         let viewModel = makeViewModel(polling: polling)
@@ -270,6 +299,7 @@ private actor FakePiModelPolling: PiModelPolling {
     private(set) var subscribeCallCount = 0
     private var pendingEvents: [PiModelPollingService.Event] = []
     private var eventContinuations: [AsyncStream<PiModelPollingService.Event>.Continuation] = []
+    private var subscriptionPaths: [String?] = []
 
     init(snapshot: PiModelPollingService.Snapshot? = nil, error: Error? = nil) {
         self.snapshot = snapshot
@@ -286,13 +316,14 @@ private actor FakePiModelPolling: PiModelPolling {
             throw error
         }
         if let snapshot {
-            _ = AgentPiModelRegistry.shared.updateDiscoveredModels(snapshot.models)
+            _ = AgentPiModelRegistry.shared.updateDiscoveredModels(snapshot.models, workspacePath: workspacePath)
         }
         return snapshot
     }
 
     func subscribe(workspacePath: String?) async -> AsyncStream<PiModelPollingService.Event> {
         subscribeCallCount += 1
+        subscriptionPaths.append(AgentPiModelRegistry.canonicalWorkspacePath(workspacePath))
         let snapshot = snapshot
         return AsyncStream { continuation in
             if let snapshot {
@@ -330,5 +361,9 @@ private actor FakePiModelPolling: PiModelPolling {
 
     func subscriptionCount() -> Int {
         subscribeCallCount
+    }
+
+    func subscriptionWorkspacePaths() -> [String?] {
+        subscriptionPaths
     }
 }

@@ -236,6 +236,34 @@ final class AgentRunMCPToolServiceStartDefaultTests: XCTestCase {
         XCTAssertEqual(resolved.reasoningEffortRaw, "low")
     }
 
+    func testExplicitPiModelIDPreservesKnownModelEndingInCanonicalThinkingToken() throws {
+        let rawModel = "custom/provider-model:high"
+        let snapshot = PiDiscoveredModels(
+            options: [
+                AgentModelOption(rawValue: "default", displayName: "Default", description: nil, isDefault: true),
+                AgentModelOption(
+                    rawValue: rawModel,
+                    displayName: "Provider Model High",
+                    description: nil,
+                    isDefault: false
+                )
+            ],
+            currentModelRaw: nil
+        )
+        XCTAssertTrue(AgentPiModelRegistry.shared.updateDiscoveredModels(snapshot))
+
+        let resolved = try AgentMCPSelectionResolver.resolve(
+            modelID: "pi:\(rawModel)",
+            defaultTaskLabel: AgentRunMCPToolService.defaultTaskLabelForStart(resolvedTabID: nil),
+            availability: AgentModelCatalog.AvailabilityContext(piAvailable: true)
+        )
+
+        XCTAssertNil(resolved.taskLabelKind)
+        XCTAssertEqual(resolved.agentRaw, AgentProviderKind.pi.rawValue)
+        XCTAssertEqual(resolved.modelRaw, rawModel)
+        XCTAssertNil(resolved.reasoningEffortRaw)
+    }
+
     func testRoleDefaultPiModelIDPreservesThinkingSuffixAndResolverExtractsEffort() throws {
         installPiSnapshot()
         let store = InMemoryRoleDefaultsStore()

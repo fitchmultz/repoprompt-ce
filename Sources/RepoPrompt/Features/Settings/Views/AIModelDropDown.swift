@@ -312,7 +312,11 @@ struct AIModelDropdown: View {
                 supportedPiThinkingLevels: sourceOption?.supportedPiThinkingLevels ?? []
             )
         }
-        let piMenu = AgentModelCatalog.piMenu(for: options, includeThinkingLevelOptions: true)
+        let piMenu = AgentModelCatalog.piMenu(
+            for: options,
+            includeThinkingLevelOptions: true,
+            knownModelIDs: AgentModelCatalog.piKnownModelIDs()
+        )
         var items: [StableMenuItem] = []
         if let defaultOption = piMenu.defaultOption {
             items.append(aiModelPiMenuItem(defaultOption))

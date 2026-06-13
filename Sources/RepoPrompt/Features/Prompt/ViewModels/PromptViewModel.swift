@@ -473,7 +473,12 @@ class PromptViewModel: ObservableObject {
     }
 
     private var agentAvailabilityContext: AgentModelCatalog.AvailabilityContext {
-        apiSettingsViewModel?.agentModeAvailabilityContext ?? .none
+        let base = apiSettingsViewModel?.agentModeAvailabilityContext ?? .none
+        return base.withPiWorkspacePath(currentWorkspacePath)
+    }
+
+    private var currentWorkspacePath: String? {
+        workspaceManager?.activeWorkspace?.repoPaths.first
     }
 
     private func defaultModelRaw(for agentKind: AgentProviderKind) -> String {

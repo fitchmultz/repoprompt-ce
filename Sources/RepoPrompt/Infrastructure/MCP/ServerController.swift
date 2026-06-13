@@ -25,6 +25,20 @@ import SwiftUI
 
 private let log = Logger(label: "com.repoprompt.mcp.servercontroller")
 
+struct ServerControllerAutoApproveAllClientsPreference {
+    let get: @Sendable () -> Bool
+    let set: @Sendable (Bool) -> Void
+
+    static let standard = ServerControllerAutoApproveAllClientsPreference(
+        get: { UserDefaults.standard.bool(forKey: ServerController.autoApproveAllClientsKey) },
+        set: { UserDefaults.standard.set($0, forKey: ServerController.autoApproveAllClientsKey) }
+    )
+
+    static func fixed(_ value: Bool) -> ServerControllerAutoApproveAllClientsPreference {
+        ServerControllerAutoApproveAllClientsPreference(get: { value }, set: { _ in })
+    }
+}
+
 /// ---------------------------------------------------------------------
 ///  SwiftUI facing controller – own instance lives at the app level
 /// ---------------------------------------------------------------------
@@ -58,7 +72,8 @@ final actor ServerController: ObservableObject {
     private var alwaysAllowedClients: Set<String> = ServerController.loadSanitizedAlwaysAllowedClients()
 
     // –––––  Private implementation helpers  –––––
-    private let networkManager = ServerNetworkManager.shared
+    private let networkManager: ServerNetworkManager
+    private let autoApproveAllClientsPreference: ServerControllerAutoApproveAllClientsPreference
     private var activeApprovalDialogs: Set<String> = []
     private var pendingApprovals: [(String, () -> Void, () -> Void)] = []
 
@@ -80,7 +95,14 @@ final actor ServerController: ObservableObject {
     }
 
     /// –––––  Init: wire approval-flow & kick off the listener  –––––
-    init() {
+    init(
+        networkManager: ServerNetworkManager = .shared,
+        installsNetworkCallbacks: Bool = true,
+        autoApproveAllClientsPreference: ServerControllerAutoApproveAllClientsPreference = .standard
+    ) {
+        self.networkManager = networkManager
+        self.autoApproveAllClientsPreference = autoApproveAllClientsPreference
+        guard installsNetworkCallbacks else { return }
         Task { [weak self] in
             await self?.bootstrapCallbacks()
         }
@@ -88,7 +110,7 @@ final actor ServerController: ObservableObject {
 
     private func bootstrapCallbacks() async {
         // Wire up dashboard update callback to notify MCPService
-        await ServerNetworkManager.shared.setOnDashboardUpdate { [weak self] in
+        await networkManager.setOnDashboardUpdate { [weak self] in
             guard let self else { return }
             Task {
                 guard let service = await self.mcpService else { return }
@@ -97,7 +119,7 @@ final actor ServerController: ObservableObject {
         }
 
         // Wire up identity escalation callback
-        await ServerNetworkManager.shared.setOnIdentityEscalation { [weak self] reason in
+        await networkManager.setOnIdentityEscalation { [weak self] reason in
             guard let self else { return }
             Task {
                 guard let service = await self.mcpService else { return }
@@ -111,86 +133,9 @@ final actor ServerController: ObservableObject {
         }
 
         // Set up approval handler
-        await networkManager.setConnectionApprovalHandler { [weak self]
-            connectionID, client in
-                guard let self else { return false }
-
-                serverControllerDebugLog("Approval handler called for client: '\(client.name)' connectionID: \(connectionID)")
-
-                // Reserve a slot BEFORE any UI to avoid stampedes
-                guard await networkManager.tryReserveConnectionSlot(
-                    connectionID: connectionID, clientID: client.name
-                ) else {
-                    log.warning("Failed to reserve connection slot for '\(client.name)'")
-                    return false
-                }
-
-                // Global auto-approve: skip UI for all new clients
-                if await autoApproveAllClients {
-                    serverControllerDebugLog("Auto-approving '\(client.name)' (global auto-approve enabled)")
-                    if let service = await mcpService {
-                        await service.clientConnectedSuccessfully(name: client.name)
-                    }
-                    return true
-                }
-
-                // Built-in auto-approve for RepoPrompt's own CLI clients requires
-                // executable verification. Do not consult the generic allow-list for these
-                // spoofable client names.
-                let isRepoCLI = Self.isRepoPromptCLIClientName(client.name)
-                if isRepoCLI, await isBundledRepoPromptCLIConnection(connectionID: connectionID) {
-                    serverControllerDebugLog("Auto-approving '\(client.name)' (RepoPrompt bundled CLI verified)")
-                    if let service = await mcpService {
-                        await service.clientConnectedSuccessfully(name: client.name)
-                    }
-                    return true
-                } else if isRepoCLI {
-                    log.warning("RepoPrompt CLI name matched but executable path verification failed for connectionID=\(connectionID)")
-                }
-
-                if !isRepoCLI,
-                   await networkManager.shouldAutoApproveExpectedAgentClient(clientName: client.name, connectionID: connectionID)
-                {
-                    serverControllerDebugLog("Auto-approving '\(client.name)' (expected managed agent client)")
-                    if let service = await mcpService {
-                        await service.clientConnectedSuccessfully(name: client.name)
-                    }
-                    return true
-                }
-
-                // Per-client auto-approve when whitelisted. RepoPrompt CLI names are handled
-                // above and intentionally never bypass executable verification through this list.
-                if !isRepoCLI, await isClientAlwaysAllowed(clientID: client.name) {
-                    serverControllerDebugLog("Auto-approving '\(client.name)' (in allow-list)")
-                    if let service = await mcpService {
-                        await service.clientConnectedSuccessfully(name: client.name)
-                    }
-                    return true
-                }
-
-                // Otherwise request approval through the callback
-                let approved = await withCheckedContinuation { c in
-                    Task {
-                        await self.requestApproval(
-                            clientID: client.name,
-                            approve: { c.resume(returning: true) },
-                            deny: { c.resume(returning: false) }
-                        )
-                    }
-                }
-                if !approved {
-                    await networkManager.terminateConnection(
-                        connectionID,
-                        reason: .approvalDenied,
-                        message: "Denied by user"
-                    )
-                } else {
-                    // Client manually approved - clear any previous errors for this client
-                    if let service = await mcpService {
-                        await service.clientConnectedSuccessfully(name: client.name)
-                    }
-                }
-                return approved
+        await networkManager.setConnectionApprovalHandler { [weak self] connectionID, client in
+            guard let self else { return false }
+            return await handleConnectionApproval(connectionID: connectionID, clientName: client.name)
         }
 
         // Register wake observer if not already registered
@@ -212,6 +157,85 @@ final actor ServerController: ObservableObject {
 
     deinit {
         // No cleanup needed - callbacks are weak self
+    }
+
+    private func handleConnectionApproval(connectionID: UUID, clientName: String) async -> Bool {
+        serverControllerDebugLog("Approval handler called for client: '\(clientName)' connectionID: \(connectionID)")
+
+        // Reserve a slot BEFORE any UI to avoid stampedes
+        guard await networkManager.tryReserveConnectionSlot(
+            connectionID: connectionID, clientID: clientName
+        ) else {
+            log.warning("Failed to reserve connection slot for '\(clientName)'")
+            return false
+        }
+
+        // Global auto-approve: skip UI for all new clients
+        if autoApproveAllClients {
+            serverControllerDebugLog("Auto-approving '\(clientName)' (global auto-approve enabled)")
+            if let service = mcpService {
+                await service.clientConnectedSuccessfully(name: clientName)
+            }
+            return true
+        }
+
+        // Built-in auto-approve for RepoPrompt's own CLI clients requires
+        // executable verification. Do not consult the generic allow-list for these
+        // spoofable client names.
+        let isRepoCLI = Self.isRepoPromptCLIClientName(clientName)
+        if isRepoCLI, await isBundledRepoPromptCLIConnection(connectionID: connectionID) {
+            serverControllerDebugLog("Auto-approving '\(clientName)' (RepoPrompt bundled CLI verified)")
+            if let service = mcpService {
+                await service.clientConnectedSuccessfully(name: clientName)
+            }
+            return true
+        } else if isRepoCLI {
+            log.warning("RepoPrompt CLI name matched but executable path verification failed for connectionID=\(connectionID)")
+        }
+
+        if !isRepoCLI,
+           await networkManager.shouldAutoApproveExpectedAgentClient(clientName: clientName, connectionID: connectionID)
+        {
+            serverControllerDebugLog("Auto-approving '\(clientName)' (expected managed agent client)")
+            if let service = mcpService {
+                await service.clientConnectedSuccessfully(name: clientName)
+            }
+            return true
+        }
+
+        // Per-client auto-approve when whitelisted. RepoPrompt CLI names are handled
+        // above and intentionally never bypass executable verification through this list.
+        if !isRepoCLI, isClientAlwaysAllowed(clientID: clientName) {
+            serverControllerDebugLog("Auto-approving '\(clientName)' (in allow-list)")
+            if let service = mcpService {
+                await service.clientConnectedSuccessfully(name: clientName)
+            }
+            return true
+        }
+
+        // Otherwise request approval through the callback
+        let approved = await withCheckedContinuation { c in
+            Task {
+                await self.requestApproval(
+                    clientID: clientName,
+                    approve: { c.resume(returning: true) },
+                    deny: { c.resume(returning: false) }
+                )
+            }
+        }
+        if !approved {
+            await networkManager.terminateConnection(
+                connectionID,
+                reason: .approvalDenied,
+                message: "Denied by user"
+            )
+        } else {
+            // Client manually approved - clear any previous errors for this client
+            if let service = mcpService {
+                await service.clientConnectedSuccessfully(name: clientName)
+            }
+        }
+        return approved
     }
 
     // MARK: – Allow-list helpers –
@@ -247,11 +271,18 @@ final actor ServerController: ObservableObject {
     }
 
     private static func sanitizedAlwaysAllowedClients(_ clients: Set<String>) -> Set<String> {
-        clients.filter { !isRepoPromptCLIClientName($0) }
+        clients.filter {
+            !isRepoPromptCLIClientName($0)
+                && !isManagedPiAgentClientName($0)
+        }
     }
 
     private static func isRepoPromptCLIClientName(_ value: String) -> Bool {
         value.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("RepoPrompt CLI")
+    }
+
+    private static func isManagedPiAgentClientName(_ value: String) -> Bool {
+        MCPClientIdentity.matches(value, AgentProviderKind.piMCPClientID)
     }
 
     #if DEBUG
@@ -265,6 +296,10 @@ final actor ServerController: ObservableObject {
 
         static func test_sanitizedAlwaysAllowedClients(_ clients: Set<String>) -> Set<String> {
             sanitizedAlwaysAllowedClients(clients)
+        }
+
+        func test_handleConnectionApproval(connectionID: UUID, clientName: String) async -> Bool {
+            await handleConnectionApproval(connectionID: connectionID, clientName: clientName)
         }
     #endif
 
@@ -293,6 +328,7 @@ final actor ServerController: ObservableObject {
 
     private func addAlwaysAllowed(clientID: String) {
         guard !Self.isRepoPromptCLIClientName(clientID) else { return }
+        guard !Self.isManagedPiAgentClientName(clientID) else { return }
         guard !alwaysAllowedClients.contains(where: { MCPClientIdentity.matches($0, clientID) }) else { return }
         alwaysAllowedClients.insert(clientID)
         UserDefaults.standard.set(
@@ -336,12 +372,12 @@ final actor ServerController: ObservableObject {
     }
 
     /// Key for auto-approve all clients setting
-    private static let autoApproveAllClientsKey = "mcpAutoApproveAllClients"
+    fileprivate static let autoApproveAllClientsKey = "mcpAutoApproveAllClients"
 
     /// Whether to auto-approve all new clients without user confirmation
     private var autoApproveAllClients: Bool {
-        get { UserDefaults.standard.bool(forKey: Self.autoApproveAllClientsKey) }
-        set { UserDefaults.standard.set(newValue, forKey: Self.autoApproveAllClientsKey) }
+        get { autoApproveAllClientsPreference.get() }
+        set { autoApproveAllClientsPreference.set(newValue) }
     }
 
     func getAutoApproveAllClients() -> Bool {

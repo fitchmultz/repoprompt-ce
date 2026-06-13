@@ -50,12 +50,15 @@ struct AgentHandoffPopover: View {
 
     private var piThinkingLevelOptions: [PiThinkingLevel] {
         guard selectedAgent == .pi else { return [] }
-        return AgentModelCatalog.piThinkingLevelOptions(for: selectedModelRaw)
+        return AgentModelCatalog.piThinkingLevelOptions(
+            for: selectedModelRaw,
+            workspacePath: config.piWorkspacePathProvider()
+        )
     }
 
     private var selectedPiThinkingLevel: PiThinkingLevel? {
         PiThinkingLevel.parse(selectedReasoningEffortRaw)
-            ?? PiThinkingLevel.parse(PiModelSpecifier(raw: selectedModelRaw)?.thinkingLevel)
+            ?? PiThinkingLevel.parse(piModelSpecifier(selectedModelRaw)?.thinkingLevel)
     }
 
     private var showReasoningEffort: Bool {
@@ -74,6 +77,7 @@ struct AgentHandoffPopover: View {
         ModelSelectionDisplayFormatter.agentQualifiedDisplayName(
             for: selectedModelRaw,
             agentKind: selectedAgent,
+            availability: .current.withPiWorkspacePath(config.piWorkspacePathProvider()),
             includeEffortSuffix: true
         )
     }
@@ -346,7 +350,7 @@ struct AgentHandoffPopover: View {
 
     private func selectHandoffModel(_ model: AgentModelOption, for agent: AgentProviderKind) {
         selectedAgent = agent
-        if agent == .pi, let specifier = PiModelSpecifier(raw: model.rawValue) {
+        if agent == .pi, let specifier = piModelSpecifier(model.rawValue) {
             selectedModelRaw = specifier.providerQualifiedModelRaw
             selectedReasoningEffortRaw = PiThinkingLevel.parse(specifier.thinkingLevel)?.rawValue
             return
@@ -397,7 +401,10 @@ struct AgentHandoffPopover: View {
             config: config
         )
         let preferredReasoningEffortRaw = agent == config.defaultDestinationAgent
-            ? config.defaultReasoningEffortRaw ?? PiModelSpecifier(raw: config.defaultModelRaw)?.thinkingLevel
+            ? config.defaultReasoningEffortRaw ?? Self.piModelSpecifier(
+                config.defaultModelRaw,
+                config: config
+            )?.thinkingLevel
             : nil
         let reasoningEffortRaw = initialReasoningEffortRaw(
             for: agent,
@@ -432,14 +439,17 @@ struct AgentHandoffPopover: View {
         config: AgentHandoffConfig
     ) -> String? {
         if agent == .pi {
-            let supportedLevels = AgentModelCatalog.piThinkingLevelOptions(for: modelRaw)
+            let supportedLevels = AgentModelCatalog.piThinkingLevelOptions(
+                for: modelRaw,
+                workspacePath: config.piWorkspacePathProvider()
+            )
             func acceptedRaw(_ level: PiThinkingLevel?) -> String? {
                 guard let level else { return nil }
                 guard supportedLevels.isEmpty || supportedLevels.contains(level) else { return nil }
                 return level.rawValue
             }
             return acceptedRaw(PiThinkingLevel.parse(preferredReasoningEffortRaw))
-                ?? acceptedRaw(PiThinkingLevel.parse(PiModelSpecifier(raw: modelRaw)?.thinkingLevel))
+                ?? acceptedRaw(PiThinkingLevel.parse(Self.piModelSpecifier(modelRaw, config: config)?.thinkingLevel))
         }
         guard agent == .codexExec else { return nil }
         let option = option(matching: modelRaw, in: config.modelOptionsProvider(agent))
@@ -475,11 +485,20 @@ struct AgentHandoffPopover: View {
         return filtered.isEmpty ? options : filtered
     }
 
+    private func piModelSpecifier(_ rawValue: String?) -> PiModelSpecifier? {
+        Self.piModelSpecifier(rawValue, config: config)
+    }
+
+    private static func piModelSpecifier(_ rawValue: String?, config: AgentHandoffConfig) -> PiModelSpecifier? {
+        AgentModelCatalog.piModelSpecifier(raw: rawValue, workspacePath: config.piWorkspacePathProvider())
+    }
+
     private static func option(matching rawValue: String, in options: [AgentModelOption]) -> AgentModelOption? {
-        if let specifier = PiModelSpecifier(raw: rawValue) {
+        let knownModelIDs = AgentModelCatalog.piKnownModelIDs(from: options)
+        if let specifier = PiModelSpecifier(raw: rawValue, knownModelIDs: knownModelIDs) {
             return options.first { option in
                 if option.rawValue.caseInsensitiveCompare(rawValue) == .orderedSame { return true }
-                return PiModelSpecifier(raw: option.rawValue)?.providerQualifiedModelRaw
+                return PiModelSpecifier(raw: option.rawValue, knownModelIDs: knownModelIDs)?.providerQualifiedModelRaw
                     .caseInsensitiveCompare(specifier.providerQualifiedModelRaw) == .orderedSame
             }
         }

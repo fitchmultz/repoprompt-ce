@@ -959,7 +959,8 @@ final class ContextBuilderAgentViewModel: ObservableObject {
     }
 
     private var agentAvailabilityContext: AgentModelCatalog.AvailabilityContext {
-        promptManager.apiSettingsViewModel?.agentModeAvailabilityContext ?? .current
+        let base = promptManager.apiSettingsViewModel?.agentModeAvailabilityContext ?? .current
+        return base.withPiWorkspacePath(currentWorkspacePath)
     }
 
     private func defaultModelRaw(for agent: AgentProviderKind) -> String {
@@ -2560,7 +2561,7 @@ final class ContextBuilderAgentViewModel: ObservableObject {
         var matches: [UUID] = []
         for cid in candidateIDs {
             let clientName = await ServerNetworkManager.shared.clientIdentifier(forConnection: cid)
-            if clientName == agentClientName {
+            if MCPClientIdentity.matches(clientName, agentClientName) {
                 matches.append(cid)
             }
         }

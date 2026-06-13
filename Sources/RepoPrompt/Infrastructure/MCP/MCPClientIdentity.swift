@@ -1,7 +1,60 @@
 import Foundation
 
 enum MCPClientIdentity {
+    static let managedPiFamilyClientNames: Set<String> = [
+        "pi",
+        "pi-schema"
+    ]
+
     private static let separatorCharacters = CharacterSet(charactersIn: " -_./")
+
+    private enum FamilyMatchRule {
+        case exactAliases(Set<String>)
+        case tolerantTokenFamilies([[String]])
+    }
+
+    private struct FamilyRule {
+        let familyID: String
+        let matchRule: FamilyMatchRule
+    }
+
+    private static let familyRules: [FamilyRule] = [
+        FamilyRule(
+            familyID: "claude-code",
+            matchRule: .tolerantTokenFamilies([["claude", "code"]])
+        ),
+        FamilyRule(
+            familyID: "pi",
+            matchRule: .exactAliases(Set(managedPiFamilyClientNames.compactMap(normalized)))
+        ),
+        FamilyRule(
+            familyID: "codex-mcp-client",
+            matchRule: .tolerantTokenFamilies([["codex", "mcp", "client"]])
+        ),
+        FamilyRule(
+            familyID: "gemini-cli-mcp-client",
+            matchRule: .tolerantTokenFamilies([
+                ["gemini", "cli", "mcp", "client"],
+                ["gemini", "cli"]
+            ])
+        ),
+        FamilyRule(
+            familyID: "cursor",
+            matchRule: .tolerantTokenFamilies([
+                ["cursor", "mcp", "client"],
+                ["cursor", "agent"],
+                ["cursor"]
+            ])
+        ),
+        FamilyRule(
+            familyID: "claude-ai",
+            matchRule: .tolerantTokenFamilies([["claude", "ai"]])
+        ),
+        FamilyRule(
+            familyID: "repoprompt-cli",
+            matchRule: .tolerantTokenFamilies([["repoprompt", "cli"]])
+        )
+    ]
 
     static func normalized(_ raw: String?) -> String? {
         guard let raw else { return nil }
@@ -13,7 +66,7 @@ enum MCPClientIdentity {
         character.unicodeScalars.allSatisfy(separatorCharacters.contains)
     }
 
-    private static func matchesFamily(_ normalized: String, tokens: [String]) -> Bool {
+    private static func matchesTolerantFamily(_ normalized: String, tokens: [String]) -> Bool {
         guard !tokens.isEmpty else { return false }
         var remainder = normalized[...]
         for (index, token) in tokens.enumerated() {
@@ -36,21 +89,16 @@ enum MCPClientIdentity {
 
     static func canonicalFamilyID(_ raw: String?) -> String? {
         guard let normalized = normalized(raw) else { return nil }
-        if matchesFamily(normalized, tokens: ["claude", "code"]) { return "claude-code" }
-        if matchesFamily(normalized, tokens: ["codex", "mcp", "client"]) { return "codex-mcp-client" }
-        if matchesFamily(normalized, tokens: ["gemini", "cli", "mcp", "client"])
-            || matchesFamily(normalized, tokens: ["gemini", "cli"])
-        {
-            return "gemini-cli-mcp-client"
+        for rule in familyRules {
+            switch rule.matchRule {
+            case let .exactAliases(aliases):
+                if aliases.contains(normalized) { return rule.familyID }
+            case let .tolerantTokenFamilies(tokenFamilies):
+                if tokenFamilies.contains(where: { matchesTolerantFamily(normalized, tokens: $0) }) {
+                    return rule.familyID
+                }
+            }
         }
-        if matchesFamily(normalized, tokens: ["cursor", "mcp", "client"])
-            || matchesFamily(normalized, tokens: ["cursor", "agent"])
-            || matchesFamily(normalized, tokens: ["cursor"])
-        {
-            return "cursor"
-        }
-        if matchesFamily(normalized, tokens: ["claude", "ai"]) { return "claude-ai" }
-        if matchesFamily(normalized, tokens: ["repoprompt", "cli"]) { return "repoprompt-cli" }
         return nil
     }
 
@@ -82,7 +130,7 @@ enum MCPClientIdentity {
     static func isHeadlessAgentClient(_ raw: String?) -> Bool {
         guard let family = canonicalFamilyID(raw) else { return false }
         switch family {
-        case "claude-code", "codex-mcp-client", "gemini-cli-mcp-client", "cursor":
+        case "claude-code", "pi", "codex-mcp-client", "gemini-cli-mcp-client", "cursor":
             return true
         default:
             return false

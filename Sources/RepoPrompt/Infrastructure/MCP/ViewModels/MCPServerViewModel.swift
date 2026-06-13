@@ -1123,10 +1123,15 @@ final class MCPServerViewModel: ObservableObject {
     @MainActor
     private var toolEndedCountByRunID: [UUID: Int] = [:]
 
+    enum ToolIdleWaitResult: Equatable {
+        case idle
+        case timedOut
+    }
+
     /// Continuations parked by `awaitNoActiveToolExecutions` waiting for a runID to have zero
     /// in-flight tool executions. Keyed by runID → waiterID → continuation.
     @MainActor
-    private var toolIdleWaitersByRunID: [UUID: [UUID: CheckedContinuation<Void, Never>]] = [:]
+    private var toolIdleWaitersByRunID: [UUID: [UUID: CheckedContinuation<ToolIdleWaitResult, Never>]] = [:]
 
     @MainActor
     private func debugActiveTools(for runID: UUID) -> String {
@@ -1331,49 +1336,81 @@ final class MCPServerViewModel: ObservableObject {
     /// continuation is cleaned up and a `CancellationError` is thrown.
     @MainActor
     func awaitNoActiveToolExecutions(runID: UUID) async throws {
+        _ = try await awaitNoActiveToolExecutions(runID: runID, timeout: nil)
+    }
+
+    /// Waits until the given runID has zero active MCP tool executions, or until the timeout expires.
+    /// A timeout resumes the parked waiter and leaves active tool execution state intact; callers may
+    /// proceed best-effort or surface the timeout according to their ordering contract.
+    @MainActor
+    func awaitNoActiveToolExecutions(runID: UUID, timeout: TimeInterval?) async throws -> ToolIdleWaitResult {
         // Fast path: already idle
         let executions = activeToolExecutionIDsByRunID[runID]
         if executions == nil || executions!.isEmpty {
             steeringDebugLog("[AgentRunSteeringWake] MCP idle wait fast-idle runID=\(runID)")
-            return
+            return .idle
         }
         steeringDebugLog("[AgentRunSteeringWake] MCP idle wait blocking runID=\(runID) active=\(debugActiveTools(for: runID))")
 
         let waiterID = UUID()
+        let timeoutNanoseconds = Self.nanoseconds(forTimeout: timeout)
 
         // Use withTaskCancellationHandler so that Task.cancel() from the
         // outside (e.g., user cancels the run) will promptly resume us.
-        await withTaskCancellationHandler {
-            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+        let result = await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<ToolIdleWaitResult, Never>) in
                 // Double-check under the same MainActor turn — tools may have
                 // drained between the fast-path check and here.
                 let stillActive = activeToolExecutionIDsByRunID[runID]
                 if stillActive == nil || stillActive!.isEmpty {
                     steeringDebugLog("[AgentRunSteeringWake] MCP idle wait drained before parking runID=\(runID) waiterID=\(waiterID)")
-                    continuation.resume()
+                    continuation.resume(returning: .idle)
                     return
                 }
                 toolIdleWaitersByRunID[runID, default: [:]][waiterID] = continuation
                 steeringDebugLog("[AgentRunSteeringWake] MCP idle wait parked runID=\(runID) waiterID=\(waiterID) active=\(debugActiveTools(for: runID)) waiters=\(toolIdleWaitersByRunID[runID]?.count ?? 0)")
+                if let timeoutNanoseconds {
+                    Task { @MainActor [weak self] in
+                        do {
+                            try await Task.sleep(nanoseconds: timeoutNanoseconds)
+                        } catch {
+                            return
+                        }
+                        guard let self else { return }
+                        resumeToolIdleWaiter(runID: runID, waiterID: waiterID, result: .timedOut)
+                    }
+                }
             }
         } onCancel: {
             // Must hop to MainActor to safely remove the waiter.
             Task { @MainActor [weak self] in
-                guard let self else { return }
-                if let continuation = toolIdleWaitersByRunID[runID]?
-                    .removeValue(forKey: waiterID)
-                {
-                    continuation.resume() // unblock so CancellationError propagates
-                }
-                if toolIdleWaitersByRunID[runID]?.isEmpty == true {
-                    toolIdleWaitersByRunID.removeValue(forKey: runID)
-                }
+                self?.resumeToolIdleWaiter(runID: runID, waiterID: waiterID, result: .idle)
             }
         }
 
         // After resuming, respect cooperative cancellation
         try Task.checkCancellation()
-        steeringDebugLog("[AgentRunSteeringWake] MCP idle wait completed runID=\(runID) waiterID=\(waiterID)")
+        switch result {
+        case .idle:
+            steeringDebugLog("[AgentRunSteeringWake] MCP idle wait completed runID=\(runID) waiterID=\(waiterID)")
+        case .timedOut:
+            steeringDebugLog("[AgentRunSteeringWake] MCP idle wait timed out runID=\(runID) waiterID=\(waiterID) active=\(debugActiveTools(for: runID)) timeout=\(timeout ?? 0)")
+        }
+        return result
+    }
+
+    private nonisolated static func nanoseconds(forTimeout timeout: TimeInterval?) -> UInt64? {
+        guard let timeout, timeout > 0 else { return nil }
+        return UInt64(min(timeout, TimeInterval(UInt64.max) / 1_000_000_000) * 1_000_000_000)
+    }
+
+    @MainActor
+    private func resumeToolIdleWaiter(runID: UUID, waiterID: UUID, result: ToolIdleWaitResult) {
+        guard let continuation = toolIdleWaitersByRunID[runID]?.removeValue(forKey: waiterID) else { return }
+        if toolIdleWaitersByRunID[runID]?.isEmpty == true {
+            toolIdleWaitersByRunID.removeValue(forKey: runID)
+        }
+        continuation.resume(returning: result)
     }
 
     /// Resumes all parked idle-waiters for a runID (called when tools drain to zero).
@@ -1394,7 +1431,7 @@ final class MCPServerViewModel: ObservableObject {
         }
         steeringDebugLog("[AgentRunSteeringWake] MCP idle wait resuming runID=\(runID) waiters=\(waiters.count)")
         for (_, continuation) in waiters {
-            continuation.resume()
+            continuation.resume(returning: .idle)
         }
     }
 

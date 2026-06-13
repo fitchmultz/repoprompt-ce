@@ -3,7 +3,6 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const BRIDGE_VERSION = "__REPOPROMPT_BRIDGE_VERSION__";
 const REPOPROMPT_CLI = "__REPOPROMPT_CLI__";
-const REPOPROMPT_CLIENT_NAME = "__REPOPROMPT_CLIENT_NAME__";
 const REPOPROMPT_WINDOW_ID: string | undefined = "__REPOPROMPT_WINDOW_ID__";
 const REPOPROMPT_IS_MANAGED_WINDOW_BRIDGE = REPOPROMPT_WINDOW_ID !== undefined;
 const REPOPROMPT_MANAGED_RUN_ENV = "__REPOPROMPT_MANAGED_RUN_ENV__";
@@ -179,6 +178,39 @@ function registerRepoPromptBindContextTool(pi: ExtensionAPI) {
   });
 }
 
+function registerRepoPromptBridgeStatusTool(pi: ExtensionAPI, schemaLoadError: string | undefined) {
+  pi.registerTool({
+    name: "repoprompt_bridge_status",
+    label: "RepoPrompt bridge status",
+    description: "Report whether the RepoPrompt CE pi bridge loaded dynamic MCP tool schemas.",
+    promptSnippet: "Check RepoPrompt bridge status when dynamic RepoPrompt tools are unavailable",
+    promptGuidelines: [
+      "Use repoprompt_bridge_status if expected RepoPrompt tools are missing from pi.",
+      "Report the bridge error to the user instead of retrying unavailable RepoPrompt tools blindly.",
+    ],
+    parameters: {
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    },
+    async execute() {
+      const status = schemaLoadError === undefined
+        ? `RepoPrompt bridge ${BRIDGE_VERSION} loaded dynamic tool schemas.`
+        : `RepoPrompt bridge ${BRIDGE_VERSION} could not load dynamic tool schemas: ${schemaLoadError}`;
+      return {
+        content: [{ type: "text" as const, text: status }],
+        details: {
+          bridgeVersion: BRIDGE_VERSION,
+          tool: "repoprompt_bridge_status",
+          windowID: REPOPROMPT_WINDOW_ID,
+          exitCode: schemaLoadError === undefined ? 0 : 1,
+          truncated: false,
+        },
+      };
+    },
+  });
+}
+
 function registerRepoPromptWindowStatusTool(pi: ExtensionAPI) {
   pi.registerTool({
     name: "repoprompt_window_status",
@@ -208,7 +240,14 @@ export default async function repoPromptBridge(pi: ExtensionAPI) {
   registerRepoPromptBindContextTool(pi);
   registerRepoPromptWindowStatusTool(pi);
 
-  const tools = await loadRepoPromptTools(pi);
+  let tools: RepoPromptToolEntry[] = [];
+  let schemaLoadError: string | undefined;
+  try {
+    tools = await loadRepoPromptTools(pi);
+  } catch (error) {
+    schemaLoadError = String(error instanceof Error ? error.message : error);
+  }
+  registerRepoPromptBridgeStatusTool(pi, schemaLoadError);
   for (const tool of tools) {
     const toolName = requireToolName(tool.name);
     if (REPOPROMPT_IS_MANAGED_WINDOW_BRIDGE && !MANAGED_BRIDGE_DYNAMIC_TOOL_ALLOWLIST.has(toolName)) {

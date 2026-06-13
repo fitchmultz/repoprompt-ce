@@ -60,7 +60,9 @@ final class PiHeadlessAgentProviderTests: XCTestCase {
         XCTAssertTrue(results.contains { $0.type == "content" && $0.text == "context ready" })
         XCTAssertTrue(results.contains { $0.type == "tool_call" && $0.toolName == "get_file_tree" && $0.toolInvocationID != nil })
         XCTAssertTrue(results.contains { $0.type == "tool_result" && $0.toolName == "get_file_tree" && $0.toolOutput == "tree ok" && $0.toolInvocationID != nil })
-        XCTAssertTrue(results.contains { $0.type == "message_stop" && $0.providerSessionID == "pi-headless-session" })
+        let stops = results.filter { $0.type == "message_stop" }
+        XCTAssertEqual(stops.count, 1)
+        XCTAssertEqual(stops.first?.providerSessionID, "pi-headless-session")
 
         let prompt = try XCTUnwrap(recordedCommands(at: recordURL).first { $0.type == "prompt" })
         XCTAssertTrue(prompt.message?.contains("<system_instructions>") ?? false)

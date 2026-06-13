@@ -5,7 +5,14 @@ final class PiRepoPromptBridgeExtensionInstallerTests: XCTestCase {
     func testBridgeCommandArgumentsIncludeClientNameWindowAndJSONCallPayload() {
         XCTAssertEqual(
             PiRepoPromptBridgeExtensionInstaller.schemaArgs(windowID: 42),
-            ["--client-name", "pi-schema", "--tools-schema", "--compact", "-w", "42"]
+            [
+                "--client-name",
+                PiRepoPromptBridgeExtensionInstaller.managedBridgeExecutionClientName,
+                "--tools-schema",
+                "--compact",
+                "-w",
+                "42"
+            ]
         )
         XCTAssertEqual(
             PiRepoPromptBridgeExtensionInstaller.schemaArgs(windowID: nil),
@@ -13,8 +20,72 @@ final class PiRepoPromptBridgeExtensionInstallerTests: XCTestCase {
         )
         XCTAssertEqual(
             PiRepoPromptBridgeExtensionInstaller.toolArgs(toolName: "get_file_tree", paramsJSON: "{}", windowID: 42),
-            ["--client-name", "pi-schema", "--raw-json", "-w", "42", "-c", "get_file_tree", "-j", "{}"]
+            [
+                "--client-name",
+                PiRepoPromptBridgeExtensionInstaller.managedBridgeExecutionClientName,
+                "--raw-json",
+                "-w",
+                "42",
+                "-c",
+                "get_file_tree",
+                "-j",
+                "{}"
+            ]
         )
+    }
+
+    func testManagedBridgeIdentityBelongsToPiAgentFamilyButPersonalBridgeDoesNot() {
+        XCTAssertEqual(MCPClientIdentity.managedPiFamilyClientNames, Set([
+            AgentProviderKind.piMCPClientID,
+            PiRepoPromptBridgeExtensionInstaller.managedBridgeExecutionClientName
+        ]))
+        for acceptedClientName in MCPClientIdentity.managedPiFamilyClientNames {
+            XCTAssertEqual(
+                MCPClientIdentity.canonicalFamilyID(acceptedClientName),
+                AgentProviderKind.piMCPClientID,
+                "\(acceptedClientName) must canonicalize to the managed pi policy key"
+            )
+            XCTAssertTrue(
+                MCPClientIdentity.matches(acceptedClientName, AgentProviderKind.piMCPClientID),
+                "\(acceptedClientName) must match the managed pi family"
+            )
+        }
+        XCTAssertEqual(
+            MCPClientIdentity.storageKey(PiRepoPromptBridgeExtensionInstaller.managedBridgeExecutionClientName),
+            AgentProviderKind.piMCPClientID
+        )
+        XCTAssertTrue(MCPClientIdentity.isHeadlessAgentClient(
+            PiRepoPromptBridgeExtensionInstaller.managedBridgeExecutionClientName
+        ))
+
+        XCTAssertFalse(MCPClientIdentity.matches(
+            PiRepoPromptBridgeExtensionInstaller.personalBridgeClientName,
+            AgentProviderKind.piMCPClientID
+        ))
+        XCTAssertEqual(
+            MCPClientIdentity.storageKey(PiRepoPromptBridgeExtensionInstaller.personalBridgeClientName),
+            PiRepoPromptBridgeExtensionInstaller.personalBridgeClientName
+        )
+    }
+
+    func testPiIdentityFamilyRejectsNearMatchClientNames() {
+        let rejectedClientNames = ["pischema", "pi-schema-evil", "pifoo", "xpi", "pi2"]
+
+        for rejectedClientName in rejectedClientNames {
+            XCTAssertFalse(
+                MCPClientIdentity.matches(rejectedClientName, AgentProviderKind.piMCPClientID),
+                "\(rejectedClientName) must not match the managed pi family"
+            )
+            XCTAssertNotEqual(
+                MCPClientIdentity.storageKey(rejectedClientName),
+                AgentProviderKind.piMCPClientID,
+                "\(rejectedClientName) must not canonicalize to the managed pi policy key"
+            )
+            XCTAssertFalse(
+                MCPClientIdentity.isHeadlessAgentClient(rejectedClientName),
+                "\(rejectedClientName) must not be treated as a known headless pi client"
+            )
+        }
     }
 
     func testExtensionSourceRegistersConcreteRepoPromptToolsFromExportedSchemasAndEscapesCLIPath() {
@@ -25,6 +96,10 @@ final class PiRepoPromptBridgeExtensionInstallerTests: XCTestCase {
 
         XCTAssertTrue(source.contains("export default async function repoPromptBridge"))
         XCTAssertTrue(source.contains("loadRepoPromptTools"))
+        XCTAssertTrue(source.contains("try {"))
+        XCTAssertTrue(source.contains("schemaLoadError = String(error instanceof Error ? error.message : error)"))
+        XCTAssertTrue(source.contains("registerRepoPromptBridgeStatusTool(pi, schemaLoadError)"))
+        XCTAssertTrue(source.contains("name: \"repoprompt_bridge_status\""))
         XCTAssertTrue(source.contains("pi.registerTool"))
         XCTAssertTrue(source.contains("name: toolName"))
         XCTAssertTrue(source.contains("parameters: asParameterSchema(tool.inputSchema)"))
@@ -41,7 +116,6 @@ final class PiRepoPromptBridgeExtensionInstallerTests: XCTestCase {
         XCTAssertTrue(source.contains("callRepoPromptTool(pi, \"bind_context\", { op: \"list\" }, signal)"))
         XCTAssertTrue(source.contains("Use repoprompt_window_status instead of shelling out to repoprompt-mcp"))
         XCTAssertTrue(source.contains("const REPOPROMPT_TOOL_ARGS_PREFIX = JSON.parse(\"[\\\"--client-name\\\",\\\"pi-schema\\\",\\\"--raw-json\\\",\\\"-w\\\",\\\"42\\\"]\") as string[]"))
-        XCTAssertTrue(source.contains("const REPOPROMPT_CLIENT_NAME = \"pi\""))
         XCTAssertTrue(source.contains("const REPOPROMPT_WINDOW_ID: string | undefined = \"42\""))
         XCTAssertTrue(source.contains("const REPOPROMPT_IS_MANAGED_WINDOW_BRIDGE = REPOPROMPT_WINDOW_ID !== undefined"))
         XCTAssertTrue(source.contains("process.env[REPOPROMPT_MANAGED_RUN_ENV] === \"1\""))
@@ -110,7 +184,7 @@ final class PiRepoPromptBridgeExtensionInstallerTests: XCTestCase {
         XCTAssertTrue(source.contains("const REPOPROMPT_IS_MANAGED_WINDOW_BRIDGE = REPOPROMPT_WINDOW_ID !== undefined"))
         XCTAssertTrue(source.contains("process.env[REPOPROMPT_MANAGED_RUN_ENV] === \"1\""))
         XCTAssertTrue(source.contains("const REPOPROMPT_SCHEMA_ARGS = JSON.parse(\"[\\\"--tools-schema\\\",\\\"--compact\\\"]\") as string[]"))
-        XCTAssertTrue(source.contains("const REPOPROMPT_TOOL_ARGS_PREFIX = JSON.parse(\"[\\\"--client-name\\\",\\\"pi\\\",\\\"--raw-json\\\"]\") as string[]"))
+        XCTAssertTrue(source.contains("const REPOPROMPT_TOOL_ARGS_PREFIX = JSON.parse(\"[\\\"--client-name\\\",\\\"repoprompt-pi-bridge\\\",\\\"--raw-json\\\"]\") as string[]"))
 
         XCTAssertTrue(try PiRepoPromptBridgeExtensionInstaller.uninstallGlobal(homeDirectory: home, cliPath: cliPath))
         XCTAssertEqual(

@@ -9,6 +9,7 @@ struct AgentHandoffConfig {
     let defaultReasoningEffortRaw: String?
     let availableAgentsProvider: () -> [AgentProviderKind]
     let modelOptionsProvider: (AgentProviderKind) -> [AgentModelOption]
+    let piWorkspacePathProvider: () -> String?
     let windowID: Int
     let buildPayloadForClipboard: @MainActor () async -> String
     let performHandoff: @MainActor (_ selection: AgentHandoffSelection) async throws -> Void

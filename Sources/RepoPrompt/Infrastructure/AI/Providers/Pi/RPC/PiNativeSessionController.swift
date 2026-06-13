@@ -30,21 +30,30 @@ actor PiNativeSessionController {
     }
 
     struct Options: Equatable {
+        static let defaultPendingMessageStopRecoveryGraceInterval: TimeInterval = 45
+        static let defaultTerminalCompletionGraceInterval: TimeInterval = 1
+
         var modelRaw: String?
         var requestTimeout: TimeInterval?
         var enableDebugLogging: Bool
         var launchArguments: [String]
+        var pendingMessageStopRecoveryGraceInterval: TimeInterval
+        var terminalCompletionGraceInterval: TimeInterval
 
         init(
             modelRaw: String? = nil,
             requestTimeout: TimeInterval? = 30,
             enableDebugLogging: Bool = false,
-            launchArguments: [String] = PiIntegrationConfiguration.managedRPCLaunchArguments()
+            launchArguments: [String] = PiIntegrationConfiguration.managedRPCLaunchArguments(),
+            pendingMessageStopRecoveryGraceInterval: TimeInterval = Self.defaultPendingMessageStopRecoveryGraceInterval,
+            terminalCompletionGraceInterval: TimeInterval = Self.defaultTerminalCompletionGraceInterval
         ) {
             self.modelRaw = modelRaw
             self.requestTimeout = requestTimeout
             self.enableDebugLogging = enableDebugLogging
             self.launchArguments = launchArguments
+            self.pendingMessageStopRecoveryGraceInterval = pendingMessageStopRecoveryGraceInterval
+            self.terminalCompletionGraceInterval = terminalCompletionGraceInterval
         }
     }
 
@@ -72,6 +81,7 @@ actor PiNativeSessionController {
     }
 
     private let client: PiRPCClient
+    private let workspacePath: String?
     private var options: Options
     private var eventForwardingTask: Task<Void, Never>?
     private var eventsStream: AsyncStream<Event>
@@ -79,14 +89,36 @@ actor PiNativeSessionController {
     private var currentRef: SessionRef?
     private var pendingTurnIDs: [UUID] = []
     private var toolInvocationIDs: [String: UUID] = [:]
+    private var pendingMessageStopUsage: PiUsage?
+    private var pendingMessageStopReason: String?
+    private var hasPendingMessageStop = false
+    private enum PendingTurnRecovery {
+        case messageStop
+        case terminalCompletion(eventType: String, stateFailureCount: Int)
+    }
+
+    private static let terminalCompletionGetStateFailureLimit = 2
+
+    private var pendingMessageStopRecoveryTask: Task<Void, Never>?
+    private var pendingMessageStopRecoveryToken: UUID?
+    private var pendingTurnRecovery: PendingTurnRecovery?
+    private var autoRetryInProgress = false
+    private var compactionInProgress = false
+    private var didEmitMessageStopSinceAgentStart = false
+    private var ignoringLateEventsAfterTerminalRecovery = false
     private var hasStartedForwarding = false
+    private let recoverySleeper: @Sendable (TimeInterval) async -> Void
 
     init(
         client: PiRPCClient,
-        options: Options = Options()
+        options: Options = Options(),
+        workspacePath: String? = nil,
+        recoverySleeper: @escaping @Sendable (TimeInterval) async -> Void = PiNativeSessionController.defaultRecoverySleep
     ) {
         self.client = client
+        self.workspacePath = AgentPiModelRegistry.canonicalWorkspacePath(workspacePath)
         self.options = options
+        self.recoverySleeper = recoverySleeper
         let stream = Self.makeEventsStream()
         eventsStream = stream.stream
         eventsContinuation = stream.continuation
@@ -94,7 +126,8 @@ actor PiNativeSessionController {
 
     convenience init(
         workspacePath: String?,
-        options: Options = Options()
+        options: Options = Options(),
+        recoverySleeper: @escaping @Sendable (TimeInterval) async -> Void = PiNativeSessionController.defaultRecoverySleep
     ) {
         let client = PiRPCClient(config: .init(
             enableDebugLogging: options.enableDebugLogging,
@@ -102,7 +135,7 @@ actor PiNativeSessionController {
             workingDirectory: workspacePath,
             launchArguments: options.launchArguments
         ))
-        self.init(client: client, options: options)
+        self.init(client: client, options: options, workspacePath: workspacePath, recoverySleeper: recoverySleeper)
     }
 
     var events: AsyncStream<Event> {
@@ -176,7 +209,9 @@ actor PiNativeSessionController {
     }
 
     func applyModelAndThinking(model: String?, thinkingLevel: String?) async throws {
-        let specifier = PiModelSpecifier(raw: model)
+        let knownModelIDs = await AgentPiModelRegistry.shared
+            .resolvedSnapshotAfterWarmingStandardStore(workspacePath: workspacePath)?.knownModelIDs ?? []
+        let specifier = PiModelSpecifier(raw: model, knownModelIDs: knownModelIDs)
         if let requestedModel = specifier?.modelID {
             guard let provider = specifier?.provider else {
                 throw ControllerError.modelProviderMissing(model ?? requestedModel)
@@ -198,13 +233,13 @@ actor PiNativeSessionController {
         streamingBehavior: String? = nil,
         images: [PiRPCClient.ImageContent] = []
     ) async throws -> UUID {
-        let turnID = UUID()
-        pendingTurnIDs.append(turnID)
+        let turnID = registerPendingTurnBoundary()
         do {
             _ = try await client.prompt(text, streamingBehavior: streamingBehavior, images: images)
             return turnID
         } catch {
-            completeTurnIfNeeded(status: .failed)
+            emitPendingMessageStopIfNeeded(stopReasonOverride: "failed")
+            completeTurn(turnID: turnID, status: .failed)
             throw error
         }
     }
@@ -221,6 +256,7 @@ actor PiNativeSessionController {
         guard hasTurnInFlight else { return .noTurnInFlight }
         do {
             _ = try await client.abort()
+            emitPendingMessageStopIfNeeded(stopReasonOverride: "cancelled")
             completeTurnIfNeeded(status: .cancelled)
             return .acknowledged
         } catch {
@@ -233,8 +269,12 @@ actor PiNativeSessionController {
         eventForwardingTask?.cancel()
         eventForwardingTask = nil
         hasStartedForwarding = false
-        pendingTurnIDs.removeAll()
+        emitPendingMessageStopIfNeeded(stopReasonOverride: "cancelled")
+        completeAllTurns(status: .cancelled)
         toolInvocationIDs.removeAll()
+        clearPendingMessageStop()
+        autoRetryInProgress = false
+        compactionInProgress = false
         currentRef = nil
         await client.clearExpectedAgentPIDRegistration()
         await client.shutdown()
@@ -252,7 +292,7 @@ actor PiNativeSessionController {
         else {
             return
         }
-        AgentPiModelRegistry.shared.updateDiscoveredModels(snapshot)
+        AgentPiModelRegistry.shared.updateDiscoveredModels(snapshot, workspacePath: workspacePath)
     }
 
     private func startForwardingEventsIfNeeded() {
@@ -268,9 +308,18 @@ actor PiNativeSessionController {
     }
 
     private func handleClientEvent(_ event: PiRPCClient.Event) async {
+        if ignoreLateEventAfterTerminalRecoveryIfNeeded(event) {
+            return
+        }
+        deferPendingTurnRecoveryAfterLivenessEvent(event)
+
         switch event {
-        case .agentStart, .turnStart:
-            break
+        case .agentStart:
+            compactionInProgress = false
+            clearPendingMessageStop()
+            didEmitMessageStopSinceAgentStart = false
+        case .turnStart:
+            emitPendingMessageStopIfNeeded(defaultStopReason: "end_turn")
         case let .messageUpdate(messageEvent):
             for streamResult in Self.streamResults(from: messageEvent) {
                 emit(.stream(streamResult))
@@ -317,12 +366,31 @@ actor PiNativeSessionController {
                 toolIsError: isError
             )))
             toolInvocationIDs.removeValue(forKey: toolCallID)
-        case .turnEnd:
-            emit(.stream(AIStreamResult(type: "message_stop", text: nil, stopReason: "end_turn")))
-        case .agentEnd:
-            await refreshCurrentSessionState()
+        case let .turnEnd(message, _):
+            if let usage = Self.usage(from: message) {
+                recordUsage(usage)
+            }
+            hasPendingMessageStop = true
+            pendingMessageStopReason = "end_turn"
+            schedulePendingMessageStopRecovery()
+        case let .agentEnd(messages, willRetry):
+            if willRetry {
+                clearPendingMessageStop()
+                emit(.stream(AIStreamResult(type: "status", text: "pi is retrying the turn")))
+                return
+            }
+            if hasPendingMessageStop || !didEmitMessageStopSinceAgentStart {
+                if let usage = Self.latestUsage(from: messages) {
+                    recordUsage(usage)
+                }
+                if !autoRetryInProgress, hasPendingMessageStop || hasTurnInFlight {
+                    emitMessageStop(stopReason: pendingMessageStopReason ?? "completed")
+                }
+            } else {
+                clearPendingMessageStop()
+            }
             if hasTurnInFlight {
-                completeTurnIfNeeded(status: .completed)
+                await completeTurnIfPiReportsIdle(eventType: "agent_end")
             }
         case let .extensionUIRequest(request):
             emit(.extensionUIRequest(request))
@@ -332,16 +400,110 @@ actor PiNativeSessionController {
             if let status = PiRunProgressPresentation.customMessageStatus(message) {
                 emit(.stream(AIStreamResult(type: "status", text: status)))
             }
+        case let .autoRetryStart(attempt, maxAttempts, delayMs, errorMessage):
+            autoRetryInProgress = true
+            clearPendingMessageStop()
+            emit(.stream(AIStreamResult(
+                type: "status",
+                text: Self.autoRetryStartStatus(
+                    attempt: attempt,
+                    maxAttempts: maxAttempts,
+                    delayMs: delayMs,
+                    errorMessage: errorMessage
+                )
+            )))
+        case let .autoRetryEnd(success, attempt, finalError):
+            autoRetryInProgress = false
+            if success {
+                emit(.stream(AIStreamResult(type: "status", text: "pi retry attempt \(attempt) resumed the turn")))
+            } else {
+                emit(.stream(AIStreamResult(
+                    type: "status",
+                    text: finalError.map { "pi retry attempt \(attempt) failed: \($0)" } ?? "pi retry attempt \(attempt) failed"
+                )))
+                emitPendingMessageStopIfNeeded(stopReasonOverride: "failed")
+                if hasTurnInFlight {
+                    completeTurnIfNeeded(status: .failed)
+                }
+            }
+        case let .compactionStart(reason):
+            compactionInProgress = true
+            emit(.stream(AIStreamResult(
+                type: "status",
+                text: reason.map { "pi is compacting context (\($0))" } ?? "pi is compacting context"
+            )))
+        case let .compactionEnd(_, _, _, willRetry, errorMessage):
+            compactionInProgress = false
+            if willRetry {
+                emit(.stream(AIStreamResult(
+                    type: "status",
+                    text: errorMessage.map { "pi compaction will retry after error: \($0)" } ?? "pi compaction will retry"
+                )))
+            } else if hasTurnInFlight {
+                await completeTurnIfPiReportsIdle(eventType: "compaction_end")
+            }
+        case .sessionInfoChanged, .thinkingLevelChanged:
+            await refreshCurrentSessionState()
+        case let .messageEnd(message):
+            if let usage = Self.usage(from: message) {
+                recordUsage(usage)
+            }
         case let .protocolDiagnostic(diagnostic):
             emit(.diagnostic(diagnostic))
         case let .transportClosed(reason):
             if hasTurnInFlight {
-                completeTurnIfNeeded(status: .failed)
+                emitPendingMessageStopIfNeeded(stopReasonOverride: "failed")
+                completeAllTurns(status: .failed)
             }
             emit(.error(reason))
-        case .messageStart, .messageEnd, .queueUpdate, .compactionStart, .compactionEnd, .unhandled:
+        case .messageStart, .queueUpdate, .unhandled:
             break
         }
+    }
+
+    private func ignoreLateEventAfterTerminalRecoveryIfNeeded(_ event: PiRPCClient.Event) -> Bool {
+        guard ignoringLateEventsAfterTerminalRecovery,
+              event.isLifecycleOrActivityEvent
+        else { return false }
+        emit(.diagnostic(.init(
+            kind: .lateEventAfterTerminalRecovery,
+            eventType: event.protocolType,
+            message: "Ignoring pi \(event.protocolType) received after pending-stop grace recovery already completed the turn.",
+            payloadPreview: nil,
+            occurrence: 1
+        )))
+        return true
+    }
+
+    private func deferPendingTurnRecoveryAfterLivenessEvent(_ event: PiRPCClient.Event) {
+        guard pendingMessageStopRecoveryToken != nil,
+              event.defersPendingMessageStopRecovery
+        else { return }
+        switch pendingTurnRecovery {
+        case .messageStop where hasPendingMessageStop:
+            schedulePendingMessageStopRecovery()
+        case .terminalCompletion:
+            cancelPendingMessageStopRecovery()
+        case .messageStop, .none:
+            return
+        }
+    }
+
+    private static func autoRetryStartStatus(
+        attempt: Int,
+        maxAttempts: Int,
+        delayMs: Int,
+        errorMessage: String
+    ) -> String {
+        let retryPrefix = if attempt > 0, maxAttempts > 0 {
+            "pi is retrying the turn (attempt \(attempt)/\(maxAttempts))"
+        } else if attempt > 0 {
+            "pi is retrying the turn (attempt \(attempt))"
+        } else {
+            "pi is retrying the turn"
+        }
+        let delayText = delayMs > 0 ? " after \(delayMs) ms" : ""
+        return "\(retryPrefix)\(delayText): \(errorMessage)"
     }
 
     private func toolInvocationID(for toolCallID: String) -> UUID {
@@ -353,8 +515,40 @@ actor PiNativeSessionController {
         return invocationID
     }
 
-    private func refreshCurrentSessionState() async {
-        guard let state = try? await client.getState() else { return }
+    @discardableResult
+    private func refreshCurrentSessionState() async -> Bool {
+        do {
+            let state = try await client.getState()
+            applySessionState(state)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func emitIdleSessionStateForTerminalCompletionFallback(eventType: String) {
+        guard let currentRef else { return }
+        emit(.sessionState(PiRPCClient.SessionState(
+            sessionID: currentRef.sessionID,
+            sessionFile: currentRef.sessionFile,
+            sessionName: nil,
+            thinkingLevel: currentRef.thinkingLevel,
+            isStreaming: false,
+            isCompacting: false,
+            messageCount: nil,
+            pendingMessageCount: 0,
+            model: nil
+        )))
+        emit(.diagnostic(.init(
+            kind: .pendingMessageStopRecovery,
+            eventType: eventType,
+            message: "pi \(eventType) was received, but get_state failed after bounded recovery; emitted an idle fallback session state so terminal completion is not suppressed by stale pending messages.",
+            payloadPreview: nil,
+            occurrence: 1
+        )))
+    }
+
+    private func applySessionState(_ state: PiRPCClient.SessionState) {
         currentRef = SessionRef(
             sessionID: state.sessionID,
             sessionFile: state.sessionFile,
@@ -364,10 +558,309 @@ actor PiNativeSessionController {
         emit(.sessionState(state))
     }
 
+    private func registerPendingTurnBoundary() -> UUID {
+        let turnID = UUID()
+        ignoringLateEventsAfterTerminalRecovery = false
+        autoRetryInProgress = false
+        compactionInProgress = false
+        pendingTurnIDs.append(turnID)
+        return turnID
+    }
+
+    private func completeTurnIfPiReportsIdle(eventType: String) async {
+        guard hasTurnInFlight else { return }
+        if compactionInProgress {
+            return
+        }
+
+        do {
+            let state = try await client.getState()
+            guard hasTurnInFlight else { return }
+            applySessionState(state)
+            if state.isStreaming || state.isCompacting || (state.pendingMessageCount ?? 0) > 0 {
+                emit(.diagnostic(.init(
+                    kind: .pendingMessageStopRecovery,
+                    eventType: eventType,
+                    message: "pi \(eventType) was received, but get_state still reports streaming, compaction, or pending queued messages; waiting for the true final agent_end before completing.",
+                    payloadPreview: nil,
+                    occurrence: 1
+                )))
+                return
+            }
+        } catch {
+            guard hasTurnInFlight else { return }
+            emit(.diagnostic(.init(
+                kind: .pendingMessageStopRecovery,
+                eventType: eventType,
+                message: "pi \(eventType) was received, but get_state could not confirm pi is idle; scheduling bounded terminal completion recovery.",
+                payloadPreview: String(describing: error),
+                occurrence: 1
+            )))
+            scheduleTerminalCompletionRecovery(eventType: eventType, stateFailureCount: 1)
+            return
+        }
+
+        // Installed pi get_state exposes model, thinkingLevel, isStreaming,
+        // isCompacting, steeringMode, followUpMode, sessionFile, sessionId,
+        // sessionName, autoCompactionEnabled, messageCount, and
+        // pendingMessageCount. pendingMessageCount is only the UI steering and
+        // follow-up arrays; extension pi.sendMessage continuations queued while
+        // streaming live in agent-core queues that get_state does not expose.
+        // Therefore an idle get_state is necessary but not sufficient. The pi
+        // RPC prompt response is only a preflight acknowledgement, not a drained
+        // run-completion signal, so use a bounded recovery timer plus a final
+        // get_state recheck to avoid hanging forever while still leaving room
+        // for post-agent_end continuation events to arrive.
+        scheduleTerminalCompletionRecovery(eventType: eventType, stateFailureCount: 0)
+    }
+
+    private func terminalizeTurnAfterPiTerminalSignal(eventType: String, usedStateFailureFallback: Bool) {
+        guard hasTurnInFlight else { return }
+        if usedStateFailureFallback {
+            emitIdleSessionStateForTerminalCompletionFallback(eventType: eventType)
+        }
+        if autoRetryInProgress {
+            autoRetryInProgress = false
+            emitPendingMessageStopIfNeeded(stopReasonOverride: "failed")
+            completeTurnIfNeeded(status: .failed)
+        } else {
+            completeTurnIfNeeded(status: .completed)
+        }
+    }
+
     private func completeTurnIfNeeded(status: TurnStatus) {
         guard !pendingTurnIDs.isEmpty else { return }
+        cancelPendingMessageStopRecovery()
         let turnID = pendingTurnIDs.removeFirst()
         emit(.turnCompleted(turnID: turnID, status: status))
+    }
+
+    private func completeTurn(turnID: UUID, status: TurnStatus) {
+        guard let index = pendingTurnIDs.firstIndex(of: turnID) else { return }
+        cancelPendingMessageStopRecovery()
+        pendingTurnIDs.remove(at: index)
+        emit(.turnCompleted(turnID: turnID, status: status))
+    }
+
+    private func completeAllTurns(status: TurnStatus) {
+        while !pendingTurnIDs.isEmpty {
+            completeTurnIfNeeded(status: status)
+        }
+    }
+
+    private func recordUsage(_ usage: PiUsage) {
+        pendingMessageStopUsage = usage
+    }
+
+    private func emitPendingMessageStopIfNeeded(defaultStopReason: String) {
+        emitPendingMessageStopIfNeeded(stopReasonOverride: nil, defaultStopReason: defaultStopReason)
+    }
+
+    private func emitPendingMessageStopIfNeeded(stopReasonOverride: String) {
+        emitPendingMessageStopIfNeeded(stopReasonOverride: stopReasonOverride, defaultStopReason: nil)
+    }
+
+    private func emitPendingMessageStopIfNeeded(stopReasonOverride: String?, defaultStopReason: String?) {
+        guard hasPendingMessageStop else { return }
+        emitMessageStop(stopReason: stopReasonOverride ?? pendingMessageStopReason ?? defaultStopReason ?? "completed")
+    }
+
+    private func schedulePendingMessageStopRecovery() {
+        cancelPendingMessageStopRecovery()
+        let token = UUID()
+        pendingMessageStopRecoveryToken = token
+        pendingTurnRecovery = .messageStop
+        let graceInterval = max(0, options.pendingMessageStopRecoveryGraceInterval)
+        let recoverySleeper = recoverySleeper
+        pendingMessageStopRecoveryTask = Task { [weak self] in
+            await recoverySleeper(graceInterval)
+            guard !Task.isCancelled else { return }
+            await self?.recoverPendingMessageStopIfStillPending(token: token, graceInterval: graceInterval)
+        }
+    }
+
+    private func scheduleTerminalCompletionRecovery(eventType: String, stateFailureCount: Int) {
+        cancelPendingMessageStopRecovery()
+        let token = UUID()
+        pendingMessageStopRecoveryToken = token
+        pendingTurnRecovery = .terminalCompletion(eventType: eventType, stateFailureCount: stateFailureCount)
+        let graceInterval = max(0, options.terminalCompletionGraceInterval)
+        let recoverySleeper = recoverySleeper
+        pendingMessageStopRecoveryTask = Task { [weak self] in
+            await recoverySleeper(graceInterval)
+            guard !Task.isCancelled else { return }
+            await self?.recoverTerminalCompletionIfStillPending(
+                token: token,
+                eventType: eventType,
+                stateFailureCount: stateFailureCount
+            )
+        }
+    }
+
+    private static func defaultRecoverySleep(_ graceInterval: TimeInterval) async {
+        let nanoseconds = UInt64(min(graceInterval, TimeInterval(UInt64.max) / 1_000_000_000) * 1_000_000_000)
+        if nanoseconds > 0 {
+            try? await Task.sleep(nanoseconds: nanoseconds)
+        }
+    }
+
+    private func recoverTerminalCompletionIfStillPending(
+        token: UUID,
+        eventType: String,
+        stateFailureCount: Int
+    ) async {
+        guard pendingMessageStopRecoveryToken == token,
+              hasTurnInFlight
+        else { return }
+        if compactionInProgress {
+            emit(.diagnostic(.init(
+                kind: .pendingMessageStopRecovery,
+                eventType: eventType,
+                message: "pi \(eventType) terminal completion grace expired, but compaction started; waiting for compaction_end before completing.",
+                payloadPreview: nil,
+                occurrence: 1
+            )))
+            cancelPendingMessageStopRecovery()
+            return
+        }
+
+        do {
+            let state = try await client.getState()
+            guard pendingMessageStopRecoveryToken == token,
+                  hasTurnInFlight
+            else { return }
+            applySessionState(state)
+            if state.isStreaming || state.isCompacting || (state.pendingMessageCount ?? 0) > 0 {
+                emit(.diagnostic(.init(
+                    kind: .pendingMessageStopRecovery,
+                    eventType: eventType,
+                    message: "pi \(eventType) terminal completion grace expired, but get_state still reports streaming, compaction, or pending queued messages; waiting for the true final agent_end before completing.",
+                    payloadPreview: nil,
+                    occurrence: 1
+                )))
+                cancelPendingMessageStopRecovery()
+                return
+            }
+            terminalizeTurnAfterPiTerminalSignal(eventType: eventType, usedStateFailureFallback: false)
+        } catch {
+            guard pendingMessageStopRecoveryToken == token,
+                  hasTurnInFlight
+            else { return }
+            let nextFailureCount = stateFailureCount + 1
+            if nextFailureCount < Self.terminalCompletionGetStateFailureLimit {
+                emit(.diagnostic(.init(
+                    kind: .pendingMessageStopRecovery,
+                    eventType: eventType,
+                    message: "pi \(eventType) terminal completion grace expired, but get_state still failed; retrying once before bounded fallback.",
+                    payloadPreview: String(describing: error),
+                    occurrence: 1
+                )))
+                scheduleTerminalCompletionRecovery(eventType: eventType, stateFailureCount: nextFailureCount)
+                return
+            }
+            emit(.diagnostic(.init(
+                kind: .pendingMessageStopRecovery,
+                eventType: eventType,
+                message: "pi \(eventType) terminal completion grace expired and get_state failed after bounded retries; completing from the pi terminal event to avoid a stuck turn.",
+                payloadPreview: String(describing: error),
+                occurrence: 1
+            )))
+            terminalizeTurnAfterPiTerminalSignal(eventType: eventType, usedStateFailureFallback: true)
+        }
+    }
+
+    private func recoverPendingMessageStopIfStillPending(token: UUID, graceInterval: TimeInterval) async {
+        guard pendingMessageStopRecoveryToken == token,
+              hasPendingMessageStop,
+              hasTurnInFlight
+        else { return }
+
+        do {
+            let state = try await client.getState()
+            guard pendingMessageStopRecoveryToken == token,
+                  hasPendingMessageStop,
+                  hasTurnInFlight
+            else { return }
+            applySessionState(state)
+            if state.isStreaming || state.isCompacting || (state.pendingMessageCount ?? 0) > 0 {
+                emit(.diagnostic(.init(
+                    kind: .pendingMessageStopRecovery,
+                    eventType: "turn_end",
+                    message: "pi turn_end was not followed by agent_end, turn_start, or retry within \(Self.formatGraceInterval(graceInterval)), but get_state still reports activity; deferring pending message_stop recovery.",
+                    payloadPreview: nil,
+                    occurrence: 1
+                )))
+                schedulePendingMessageStopRecovery()
+                return
+            }
+        } catch {
+            guard pendingMessageStopRecoveryToken == token,
+                  hasPendingMessageStop,
+                  hasTurnInFlight
+            else { return }
+            emit(.diagnostic(.init(
+                kind: .pendingMessageStopRecovery,
+                eventType: "turn_end",
+                message: "pi turn_end was not followed by agent_end, turn_start, or retry within \(Self.formatGraceInterval(graceInterval)), and get_state could not confirm pi is idle; completing failed instead of marking a possibly retrying turn completed.",
+                payloadPreview: String(describing: error),
+                occurrence: 1
+            )))
+            emitPendingMessageStopIfNeeded(stopReasonOverride: "failed")
+            completeTurnIfNeeded(status: .failed)
+            ignoringLateEventsAfterTerminalRecovery = true
+            return
+        }
+
+        // Grace recovery is only a dead-stream fallback: first verify pi still
+        // reports idle so a slow auto-retry cannot be committed as success.
+        emit(.diagnostic(.init(
+            kind: .pendingMessageStopRecovery,
+            eventType: "turn_end",
+            message: "pi turn_end was not followed by agent_end, turn_start, or retry within \(Self.formatGraceInterval(graceInterval)); get_state reports idle, completing with deferred message_stop.",
+            payloadPreview: nil,
+            occurrence: 1
+        )))
+        emitMessageStop(stopReason: pendingMessageStopReason ?? "end_turn")
+        completeTurnIfNeeded(status: .completed)
+        ignoringLateEventsAfterTerminalRecovery = true
+    }
+
+    private static func formatGraceInterval(_ interval: TimeInterval) -> String {
+        if interval.rounded() == interval {
+            return "\(Int(interval))s"
+        }
+        return "\(interval)s"
+    }
+
+    private func cancelPendingMessageStopRecovery() {
+        pendingMessageStopRecoveryTask?.cancel()
+        pendingMessageStopRecoveryTask = nil
+        pendingMessageStopRecoveryToken = nil
+        pendingTurnRecovery = nil
+    }
+
+    private func emitMessageStop(stopReason: String) {
+        let usage = pendingMessageStopUsage
+        if let usage {
+            emit(.stream(usage.streamResult(type: "usage", stopReason: nil)))
+        }
+        emit(.stream(usage?.streamResult(
+            type: "message_stop",
+            stopReason: stopReason
+        ) ?? AIStreamResult(
+            type: "message_stop",
+            text: nil,
+            stopReason: stopReason
+        )))
+        didEmitMessageStopSinceAgentStart = true
+        clearPendingMessageStop()
+    }
+
+    private func clearPendingMessageStop() {
+        cancelPendingMessageStopRecovery()
+        pendingMessageStopUsage = nil
+        pendingMessageStopReason = nil
+        hasPendingMessageStop = false
     }
 
     private func emit(_ event: Event) {
@@ -383,302 +876,5 @@ actor PiNativeSessionController {
             fatalError("PiNativeSessionController failed to create event stream")
         }
         return (stream, captured)
-    }
-
-    private static func streamResults(from event: PiRPCClient.PiAssistantMessageEvent) -> [AIStreamResult] {
-        switch event.type {
-        case "text_delta":
-            guard let delta = event.delta, !delta.isEmpty else { return [] }
-            return [AIStreamResult(type: "content", text: delta)]
-        case "thinking_delta":
-            guard let delta = event.delta, !delta.isEmpty else { return [] }
-            return [AIStreamResult(type: "content", text: nil, reasoning: delta)]
-        case "done":
-            return [AIStreamResult(type: "message_stop", text: nil, stopReason: event.reason)]
-        case "error":
-            return [AIStreamResult(type: "error", text: event.reason ?? "pi message stream failed")]
-        default:
-            return []
-        }
-    }
-
-    private static func toolOutputText(from value: PiJSONValue?) -> String? {
-        guard let value else { return nil }
-        if let text = value.stringValue {
-            return text
-        }
-        if let text = value.objectValue?["text"]?.stringValue {
-            return text
-        }
-        if let content = value.objectValue?["content"]?.arrayValue {
-            let parts = content.compactMap { entry -> String? in
-                guard let object = entry.objectValue else { return nil }
-                return object["text"]?.stringValue
-            }
-            if !parts.isEmpty {
-                return parts.joined(separator: "\n")
-            }
-        }
-        return jsonString(from: value)
-    }
-
-    private static func toolResultJSON(from value: PiJSONValue?) -> String? {
-        guard let value else { return nil }
-        if let bridgePayload = bridgeToolResultPayload(from: value) {
-            return bridgePayload
-        }
-        return jsonString(from: value)
-    }
-
-    private static func bridgeToolResultPayload(from value: PiJSONValue) -> String? {
-        guard let object = value.objectValue,
-              let details = object["details"]?.objectValue,
-              details["bridgeVersion"]?.stringValue != nil,
-              let output = toolOutputText(from: value)?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !output.isEmpty,
-              let data = output.data(using: .utf8),
-              (try? JSONSerialization.jsonObject(with: data)) != nil
-        else { return nil }
-        return output
-    }
-
-    private static func jsonString(from value: PiJSONValue) -> String? {
-        guard JSONSerialization.isValidJSONObject(value.toAny()),
-              let data = try? JSONSerialization.data(withJSONObject: value.toAny(), options: [.sortedKeys])
-        else { return nil }
-        return String(data: data, encoding: .utf8)
-    }
-
-    private func modelDisplayRaw(_ model: PiRPCClient.RemoteModel) -> String {
-        if let provider = normalized(model.provider) {
-            return "\(provider)/\(model.id)"
-        }
-        return model.id
-    }
-
-    private func normalized(_ value: String?) -> String? {
-        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let trimmed, !trimmed.isEmpty else { return nil }
-        guard trimmed.caseInsensitiveCompare(AgentModel.defaultModel.rawValue) != .orderedSame else { return nil }
-        return trimmed
-    }
-}
-
-enum PiRunProgressPresentation {
-    static func toolStartStatus(toolName: String, args: [String: PiJSONValue]) -> String? {
-        guard normalized(toolName) == "subagent" else { return nil }
-        return "Subagent \(subagentTarget(from: args) ?? "run") started"
-    }
-
-    static func toolUpdateStatus(toolName: String, partialResult: PiJSONValue?) -> String? {
-        guard normalized(toolName) == "subagent" else { return nil }
-        if let details = partialResult?.objectValue?["details"]?.objectValue,
-           let status = subagentStatus(fromDetails: details)
-        {
-            return status
-        }
-        return nil
-    }
-
-    static func toolEndStatus(toolName: String, result: PiJSONValue?, isError: Bool) -> String? {
-        guard normalized(toolName) == "subagent" else { return nil }
-        let prefix = "Subagent"
-        guard let object = result?.objectValue else { return isError ? "\(prefix) failed" : "\(prefix) completed" }
-        if let details = object["details"]?.objectValue,
-           let status = subagentStatus(fromDetails: details)
-        {
-            return status
-        }
-        if isError {
-            return "\(prefix) failed"
-        }
-        if isNonTerminalSubagentPlaceholder(object) {
-            return "\(prefix) running"
-        }
-        if let text = firstContentLine(from: object), !text.isEmpty {
-            return abbreviated(text, maxLength: 140)
-        }
-        return "\(prefix) completed"
-    }
-
-    static func customMessageStatus(_ message: PiRPCClient.PiCustomMessage) -> String? {
-        guard message.display else { return nil }
-        if message.customType == "subagent_control_notice",
-           let details = message.details,
-           let event = details["event"]?.objectValue
-        {
-            let agent = trimmed(event["agent"]?.stringValue)
-            let messageText = trimmed(event["message"]?.stringValue)
-            let currentTool = trimmed(event["currentTool"]?.stringValue)
-            var parts: [String] = []
-            if let agent {
-                parts.append("Subagent \(agent) needs attention")
-            } else {
-                parts.append("Subagent needs attention")
-            }
-            if let messageText {
-                parts.append(messageText)
-            }
-            if let currentTool {
-                parts.append("tool: \(currentTool)")
-            }
-            return abbreviated(parts.joined(separator: " • "), maxLength: 180)
-        }
-        if let content = trimmed(message.content) {
-            return abbreviated(firstLine(content), maxLength: 180)
-        }
-        return nil
-    }
-
-    private static func subagentStatus(fromDetails details: [String: PiJSONValue]) -> String? {
-        let runID = trimmed(details["runId"]?.stringValue)
-        let mode = trimmed(details["mode"]?.stringValue)
-        let results = details["results"]?.arrayValue?.compactMap(\.objectValue) ?? []
-        let firstResult = results.first
-        let agent = trimmed(firstResult?["agent"]?.stringValue)
-        let target = agent.map { "Subagent \($0)" } ?? "Subagent"
-        var parts: [String] = [target]
-        if let lifecycle = lifecycleStatus(from: results) {
-            parts.append(lifecycle)
-        } else if let mode {
-            parts.append(mode)
-        }
-        if let runID {
-            parts.append("run \(runID)")
-        }
-        return parts.joined(separator: " • ")
-    }
-
-    private static func lifecycleStatus(from results: [[String: PiJSONValue]]) -> String? {
-        guard !results.isEmpty else { return nil }
-        if results.contains(where: { $0["timedOut"]?.boolValue == true }) {
-            return "timed out"
-        }
-        if results.contains(where: { $0["interrupted"]?.boolValue == true }) {
-            return "interrupted"
-        }
-        if results.contains(where: { $0["resourceLimitExceeded"]?.objectValue != nil }) {
-            return "resource limit"
-        }
-        if results.contains(where: { trimmed($0["error"]?.stringValue) != nil }) {
-            return "failed"
-        }
-        let exitCodes = results.compactMap { $0["exitCode"]?.intValue }
-        if exitCodes.contains(where: { $0 > 0 }) {
-            return "failed"
-        }
-        if results.contains(where: { $0["detached"]?.boolValue == true }) {
-            return "detached"
-        }
-        if exitCodes.contains(-1) {
-            return "running"
-        }
-        if !exitCodes.isEmpty, exitCodes.allSatisfy({ $0 == 0 }) {
-            return "completed"
-        }
-        return nil
-    }
-
-    private static func isNonTerminalSubagentPlaceholder(_ object: [String: PiJSONValue]) -> Bool {
-        guard let status = trimmed(object["status"]?.stringValue)?.lowercased() else { return false }
-        return ["unknown", "pending", "running", "in_progress", "active"].contains(status)
-    }
-
-    private static func subagentTarget(from args: [String: PiJSONValue]) -> String? {
-        if let agent = trimmed(args["agent"]?.stringValue) {
-            return agent
-        }
-        if let tasks = args["tasks"]?.arrayValue, !tasks.isEmpty {
-            return "\(tasks.count) task\(tasks.count == 1 ? "" : "s")"
-        }
-        if let chain = args["chain"]?.arrayValue, !chain.isEmpty {
-            return "chain"
-        }
-        return nil
-    }
-
-    private static func firstContentLine(from object: [String: PiJSONValue]) -> String? {
-        guard let content = object["content"]?.arrayValue else { return nil }
-        for entry in content {
-            guard let text = trimmed(entry.objectValue?["text"]?.stringValue) else { continue }
-            return firstLine(text)
-        }
-        return nil
-    }
-
-    private static func normalized(_ toolName: String) -> String {
-        toolName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    }
-
-    private static func trimmed(_ value: String?) -> String? {
-        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let trimmed, !trimmed.isEmpty else { return nil }
-        return trimmed
-    }
-
-    private static func firstLine(_ value: String) -> String {
-        value.split(whereSeparator: \.isNewline).first.map(String.init) ?? value
-    }
-
-    private static func abbreviated(_ value: String, maxLength: Int) -> String {
-        guard value.count > maxLength else { return value }
-        return String(value.prefix(maxLength - 1)) + "…"
-    }
-}
-
-struct PiModelSpecifier: Equatable {
-    let provider: String?
-    let modelID: String
-    let thinkingLevel: String?
-
-    init(provider: String?, modelID: String, thinkingLevel: String?) {
-        self.provider = provider
-        self.modelID = modelID
-        self.thinkingLevel = thinkingLevel
-    }
-
-    var providerQualifiedModelRaw: String {
-        if let provider {
-            return "\(provider)/\(modelID)"
-        }
-        return modelID
-    }
-
-    init?(raw: String?) {
-        let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !trimmed.isEmpty,
-              trimmed.caseInsensitiveCompare(AgentModel.defaultModel.rawValue) != .orderedSame
-        else { return nil }
-
-        let providerSplit = trimmed.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
-        let provider: String?
-        let modelAndThinking: Substring
-        if providerSplit.count == 2 {
-            let rawProvider = providerSplit[0].trimmingCharacters(in: .whitespacesAndNewlines)
-            provider = rawProvider.isEmpty ? nil : rawProvider
-            modelAndThinking = providerSplit[1]
-        } else {
-            provider = nil
-            modelAndThinking = providerSplit[0]
-        }
-
-        let thinkingSplit = modelAndThinking.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
-        let modelID = thinkingSplit[0].trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !modelID.isEmpty else { return nil }
-        let thinkingLevel: String? = if thinkingSplit.count == 2 {
-            thinkingSplit[1].trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
-        } else {
-            nil
-        }
-
-        self.provider = provider
-        self.modelID = modelID
-        self.thinkingLevel = thinkingLevel
-    }
-}
-
-private extension String {
-    var nilIfEmpty: String? {
-        isEmpty ? nil : self
     }
 }

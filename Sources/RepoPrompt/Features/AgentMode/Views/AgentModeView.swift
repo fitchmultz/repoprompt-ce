@@ -3189,6 +3189,9 @@ struct AgentModeChatDetailView: View {
             modelOptionsProvider: { [weak agentModeVM] agent in
                 agentModeVM?.modelOptions(for: agent) ?? []
             },
+            piWorkspacePathProvider: { [weak agentModeVM] in
+                agentModeVM?.piModelCatalogWorkspacePath()
+            },
             windowID: windowID,
             buildPayloadForClipboard: { [weak agentModeVM] in
                 await agentModeVM?.buildHandoffPayload(upToItemID: itemID) ?? ""

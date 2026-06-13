@@ -7,6 +7,7 @@ enum AgentModelCatalog {
         let openCodeAvailable: Bool
         let cursorAvailable: Bool
         let piAvailable: Bool
+        let piWorkspacePath: String?
         let zaiConfigured: Bool
         let kimiConfigured: Bool
         let customClaudeCompatibleConfigured: Bool
@@ -17,6 +18,7 @@ enum AgentModelCatalog {
             openCodeAvailable: false,
             cursorAvailable: false,
             piAvailable: false,
+            piWorkspacePath: nil,
             zaiConfigured: false,
             kimiConfigured: false,
             customClaudeCompatibleConfigured: false
@@ -29,6 +31,7 @@ enum AgentModelCatalog {
                 openCodeAvailable: openCodeAvailable && providers.contains(.openCode),
                 cursorAvailable: cursorAvailable && providers.contains(.cursor),
                 piAvailable: piAvailable && providers.contains(.pi),
+                piWorkspacePath: piWorkspacePath,
                 zaiConfigured: zaiConfigured && providers.contains(.claudeCode),
                 kimiConfigured: kimiConfigured && providers.contains(.claudeCode),
                 customClaudeCompatibleConfigured: customClaudeCompatibleConfigured && providers.contains(.claudeCode)
@@ -43,6 +46,7 @@ enum AgentModelCatalog {
                 openCodeAvailable: true,
                 cursorAvailable: false,
                 piAvailable: false,
+                piWorkspacePath: nil,
                 zaiConfigured: backendIsAvailable(.glmZAI, store: store),
                 kimiConfigured: backendIsAvailable(.kimi, store: store),
                 customClaudeCompatibleConfigured: backendIsAvailable(.custom, store: store)
@@ -55,6 +59,7 @@ enum AgentModelCatalog {
             openCodeAvailable: Bool = true,
             cursorAvailable: Bool = false,
             piAvailable: Bool = false,
+            piWorkspacePath: String? = nil,
             zaiConfigured: Bool = false,
             kimiConfigured: Bool = false,
             customClaudeCompatibleConfigured: Bool = false
@@ -64,6 +69,7 @@ enum AgentModelCatalog {
             self.openCodeAvailable = openCodeAvailable
             self.cursorAvailable = cursorAvailable
             self.piAvailable = piAvailable
+            self.piWorkspacePath = AgentPiModelRegistry.canonicalWorkspacePath(piWorkspacePath)
             self.zaiConfigured = zaiConfigured
             self.kimiConfigured = kimiConfigured
             self.customClaudeCompatibleConfigured = customClaudeCompatibleConfigured
@@ -87,9 +93,24 @@ enum AgentModelCatalog {
                 openCodeAvailable: openCodeAvailable || agentKind == .openCode,
                 cursorAvailable: cursorAvailable || agentKind == .cursor,
                 piAvailable: piAvailable || agentKind == .pi,
+                piWorkspacePath: piWorkspacePath,
                 zaiConfigured: zaiConfigured || agentKind == .claudeCodeGLM,
                 kimiConfigured: kimiConfigured || agentKind == .kimiCode,
                 customClaudeCompatibleConfigured: customClaudeCompatibleConfigured || agentKind == .customClaudeCompatible
+            )
+        }
+
+        func withPiWorkspacePath(_ workspacePath: String?) -> AvailabilityContext {
+            AvailabilityContext(
+                claudeCodeAvailable: claudeCodeAvailable,
+                codexAvailable: codexAvailable,
+                openCodeAvailable: openCodeAvailable,
+                cursorAvailable: cursorAvailable,
+                piAvailable: piAvailable,
+                piWorkspacePath: workspacePath,
+                zaiConfigured: zaiConfigured,
+                kimiConfigured: kimiConfigured,
+                customClaudeCompatibleConfigured: customClaudeCompatibleConfigured
             )
         }
     }
@@ -385,7 +406,7 @@ enum AgentModelCatalog {
             return fallbacks
         }
         if agentKind == .pi,
-           let discoveredOptions = resolvedPiDiscoveredModels()?.options,
+           let discoveredOptions = resolvedPiDiscoveredModels(workspacePath: availability.piWorkspacePath)?.options,
            !discoveredOptions.isEmpty
         {
             return discoveredOptions
@@ -436,8 +457,10 @@ enum AgentModelCatalog {
             return true
         }
         if agentKind == .pi {
-            if let discoveredModels = resolvedPiDiscoveredModels() {
-                if let specifier = PiModelSpecifier(raw: normalized), let rawThinking = specifier.thinkingLevel {
+            if let discoveredModels = resolvedPiDiscoveredModels(workspacePath: availability.piWorkspacePath) {
+                if let specifier = PiModelSpecifier(raw: normalized, knownModelIDs: discoveredModels.knownModelIDs),
+                   let rawThinking = specifier.thinkingLevel
+                {
                     guard let level = PiThinkingLevel.parse(rawThinking) else { return false }
                     return discoveredModels.supportsThinkingLevel(level, for: specifier.providerQualifiedModelRaw)
                 }
@@ -446,7 +469,10 @@ enum AgentModelCatalog {
             if normalized.caseInsensitiveCompare(AgentModel.defaultModel.rawValue) == .orderedSame {
                 return true
             }
-            guard let specifier = PiModelSpecifier(raw: normalized) else { return false }
+            guard let specifier = PiModelSpecifier(
+                raw: normalized,
+                knownModelIDs: piKnownModelIDs(workspacePath: availability.piWorkspacePath)
+            ) else { return false }
             if let rawThinking = specifier.thinkingLevel {
                 return PiThinkingLevel.parse(rawThinking) != nil
             }
@@ -512,7 +538,11 @@ enum AgentModelCatalog {
             includeEffortSuffix: includeEffortSuffix
         )
         if agentKind == .pi {
-            return [agentKind.displayName] + piProviderDisplayComponents(for: rawModel, fallbackModelName: modelName)
+            return [agentKind.displayName] + piProviderDisplayComponents(
+                for: rawModel,
+                fallbackModelName: modelName,
+                workspacePath: availability.piWorkspacePath
+            )
         }
         return [agentKind.displayName, modelName]
             .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -536,7 +566,7 @@ enum AgentModelCatalog {
                 return compatibleDisplayName
             }
             if agentKind == .pi,
-               let discoveredOption = resolvedPiDiscoveredModels()?.option(matching: raw)
+               let discoveredOption = resolvedPiDiscoveredModels(workspacePath: availability.piWorkspacePath)?.option(matching: raw)
             {
                 return discoveredOption.displayName
             }
@@ -584,7 +614,7 @@ enum AgentModelCatalog {
         }
 
         if agentKind == .pi {
-            let specifier = PiModelSpecifier(raw: effectiveRaw)
+            let specifier = piModelSpecifier(raw: effectiveRaw, workspacePath: availability.piWorkspacePath)
             let baseRaw = specifier?.providerQualifiedModelRaw ?? effectiveRaw
             let baseName = baseDisplayName(for: baseRaw)
             guard includeEffortSuffix,
@@ -719,18 +749,22 @@ enum AgentModelCatalog {
         return OpenCodeMenu(providerGroups: providerGroups, groups: groups)
     }
 
-    static func piThinkingLevelOptions(for rawModel: String?) -> [PiThinkingLevel] {
+    static func piThinkingLevelOptions(for rawModel: String?, workspacePath: String? = nil) -> [PiThinkingLevel] {
         let trimmed = rawModel?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if trimmed.isEmpty || trimmed.caseInsensitiveCompare(AgentModel.defaultModel.rawValue) == .orderedSame {
-            if let discoveredModels = resolvedPiDiscoveredModels(),
+            if let discoveredModels = resolvedPiDiscoveredModels(workspacePath: workspacePath),
                let currentModelRaw = discoveredModels.currentModelRaw
             {
                 return discoveredModels.supportedThinkingLevels(for: currentModelRaw)
             }
             return PiThinkingLevel.standardModelOrder
         }
-        guard let specifier = PiModelSpecifier(raw: trimmed) else { return [] }
-        if let discoveredModels = resolvedPiDiscoveredModels() {
+        let discoveredModels = resolvedPiDiscoveredModels(workspacePath: workspacePath)
+        guard let specifier = PiModelSpecifier(
+            raw: trimmed,
+            knownModelIDs: discoveredModels?.knownModelIDs ?? []
+        ) else { return [] }
+        if let discoveredModels {
             return discoveredModels.supportedThinkingLevels(for: specifier.providerQualifiedModelRaw)
         }
         return PiThinkingLevel.standardModelOrder
@@ -738,7 +772,8 @@ enum AgentModelCatalog {
 
     static func piMenu(
         for options: [AgentModelOption],
-        includeThinkingLevelOptions: Bool = false
+        includeThinkingLevelOptions: Bool = false,
+        knownModelIDs: Set<String>? = nil
     ) -> PiMenu {
         let defaultOption = options.first { $0.isPlaceholderDefault }
         struct Entry {
@@ -758,6 +793,7 @@ enum AgentModelCatalog {
             let index: Int
         }
 
+        let effectiveKnownModelIDs = knownModelIDs ?? []
         var entries: [Entry] = []
         var baseModelCandidates: [BaseModelCandidate] = []
         var seenOptionRaws = Set<String>()
@@ -784,12 +820,15 @@ enum AgentModelCatalog {
 
         for (index, option) in options.enumerated() {
             guard !option.isPlaceholderDefault else { continue }
-            if let rawThinkingLevel = PiModelSpecifier(raw: option.rawValue)?.thinkingLevel,
-               PiThinkingLevel.parse(rawThinkingLevel) == nil
+            if let rawThinkingLevel = PiModelSpecifier(
+                raw: option.rawValue,
+                knownModelIDs: effectiveKnownModelIDs
+            )?.thinkingLevel,
+                PiThinkingLevel.parse(rawThinkingLevel) == nil
             {
                 continue
             }
-            let normalized = normalizedPiProviderModel(option: option)
+            let normalized = normalizedPiProviderModel(option: option, knownModelIDs: effectiveKnownModelIDs)
             appendEntry(
                 option: option,
                 providerID: normalized.providerID,
@@ -1171,7 +1210,8 @@ enum AgentModelCatalog {
         optionRaw: String,
         selectedRaw: String,
         agentKind: AgentProviderKind,
-        defaults: UserDefaults = .standard
+        defaults: UserDefaults = .standard,
+        knownModelIDs: Set<String> = []
     ) -> Bool {
         let option = optionRaw.trimmingCharacters(in: .whitespacesAndNewlines)
         let selected = selectedRaw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1181,8 +1221,8 @@ enum AgentModelCatalog {
         }
 
         if agentKind == .pi {
-            guard let selectedSpecifier = PiModelSpecifier(raw: selected) else { return false }
-            let optionSpecifier = PiModelSpecifier(raw: option)
+            guard let selectedSpecifier = PiModelSpecifier(raw: selected, knownModelIDs: knownModelIDs) else { return false }
+            let optionSpecifier = PiModelSpecifier(raw: option, knownModelIDs: knownModelIDs)
             let optionBase = optionSpecifier?.providerQualifiedModelRaw ?? option
             guard optionBase.caseInsensitiveCompare(selectedSpecifier.providerQualifiedModelRaw) == .orderedSame else {
                 return false
@@ -1416,7 +1456,8 @@ enum AgentModelCatalog {
     }
 
     private static func normalizedPiProviderModel(
-        option: AgentModelOption
+        option: AgentModelOption,
+        knownModelIDs: Set<String>
     ) -> (
         providerID: String?,
         baseModelRaw: String,
@@ -1425,7 +1466,7 @@ enum AgentModelCatalog {
     ) {
         let rawValue = option.rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let displayName = option.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let specifier = PiModelSpecifier(raw: rawValue)
+        let specifier = PiModelSpecifier(raw: rawValue, knownModelIDs: knownModelIDs)
         let providerID = specifier?.provider
         let modelID = specifier?.modelID ?? rawValue
         let baseModelRaw = specifier?.providerQualifiedModelRaw ?? rawValue
@@ -1503,9 +1544,13 @@ enum AgentModelCatalog {
         level?.displayName ?? "Model Default"
     }
 
-    private static func piProviderDisplayComponents(for rawModel: String, fallbackModelName: String) -> [String] {
+    private static func piProviderDisplayComponents(
+        for rawModel: String,
+        fallbackModelName: String,
+        workspacePath: String?
+    ) -> [String] {
         let normalized = rawModel.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let specifier = PiModelSpecifier(raw: normalized),
+        guard let specifier = piModelSpecifier(raw: normalized, workspacePath: workspacePath),
               let provider = specifier.provider?.trimmingCharacters(in: .whitespacesAndNewlines),
               !provider.isEmpty
         else { return [fallbackModelName] }
@@ -1795,8 +1840,30 @@ enum AgentModelCatalog {
         }
     }
 
-    private static func resolvedPiDiscoveredModels() -> PiDiscoveredModels? {
-        guard let snapshot = AgentPiModelRegistry.shared.resolvedSnapshot(),
+    static func piModelSpecifier(
+        raw: String?,
+        workspacePath: String? = nil,
+        fallbackKnownModelIDs: Set<String> = []
+    ) -> PiModelSpecifier? {
+        let workspaceKnownModelIDs = piKnownModelIDs(workspacePath: workspacePath)
+        let knownModelIDs = workspaceKnownModelIDs.isEmpty ? fallbackKnownModelIDs : workspaceKnownModelIDs
+        return PiModelSpecifier(raw: raw, knownModelIDs: knownModelIDs)
+    }
+
+    static func piKnownModelIDs(workspacePath: String? = nil) -> Set<String> {
+        resolvedPiDiscoveredModels(workspacePath: workspacePath)?.knownModelIDs ?? []
+    }
+
+    static func piKnownModelIDs(from options: [AgentModelOption]) -> Set<String> {
+        Set(options.compactMap { option in
+            guard !option.isPlaceholderDefault else { return nil }
+            let trimmed = option.rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        })
+    }
+
+    private static func resolvedPiDiscoveredModels(workspacePath: String? = nil) -> PiDiscoveredModels? {
+        guard let snapshot = AgentPiModelRegistry.shared.resolvedSnapshot(workspacePath: workspacePath),
               !snapshot.options.isEmpty
         else {
             return nil

@@ -38,8 +38,8 @@ enum PiRepoPromptBridgeExtensionInstaller {
     }
 
     static let extensionVersion = "6"
-    private static let bridgeClientName = "pi"
-    private static let bridgeExecutionClientName = "pi-schema"
+    static let personalBridgeClientName = "repoprompt-pi-bridge"
+    static let managedBridgeExecutionClientName = "pi-schema"
     private static let managedMarker = "// RepoPrompt CE managed pi bridge extension"
     private static let globalExtensionFileName = "repoprompt-bridge.ts"
 
@@ -155,7 +155,6 @@ enum PiRepoPromptBridgeExtensionInstaller {
         let replacements: [String: String] = [
             "\"__REPOPROMPT_BRIDGE_VERSION__\"": jsonStringLiteral(extensionVersion),
             "\"__REPOPROMPT_CLI__\"": jsonStringLiteral(cliPath),
-            "\"__REPOPROMPT_CLIENT_NAME__\"": jsonStringLiteral(bridgeClientName),
             "\"__REPOPROMPT_WINDOW_ID__\"": windowID.map { jsonStringLiteral(String($0)) } ?? "undefined",
             "\"__REPOPROMPT_MANAGED_RUN_ENV__\"": jsonStringLiteral(PiIntegrationConfiguration.managedRunEnvironmentKey),
             "\"__REPOPROMPT_SCHEMA_ARGS_JSON__\"": jsonStringLiteral(jsonStringArray(schemaArgs(windowID: windowID))),
@@ -170,11 +169,11 @@ enum PiRepoPromptBridgeExtensionInstaller {
         guard let windowID else {
             return ["--tools-schema", "--compact"]
         }
-        return ["--client-name", bridgeExecutionClientName, "--tools-schema", "--compact", "-w", String(windowID)]
+        return ["--client-name", managedBridgeExecutionClientName, "--tools-schema", "--compact", "-w", String(windowID)]
     }
 
     static func toolArgsPrefix(windowID: Int?) -> [String] {
-        let clientName = windowID == nil ? bridgeClientName : bridgeExecutionClientName
+        let clientName = windowID == nil ? personalBridgeClientName : managedBridgeExecutionClientName
         var args = ["--client-name", clientName, "--raw-json"]
         if let windowID {
             args.append(contentsOf: ["-w", String(windowID)])

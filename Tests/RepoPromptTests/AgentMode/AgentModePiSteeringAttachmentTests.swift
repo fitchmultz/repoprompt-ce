@@ -32,7 +32,8 @@ final class AgentModePiSteeringAttachmentTests: XCTestCase {
             "Agent Mode must own pi model polling freshness instead of relying on Settings side effects."
         )
         XCTAssertTrue(
-            viewModelSource.contains("PiModelPollingService.shared.subscribe"),
+            viewModelSource.contains("let pollingService = piModelPollingService")
+                && viewModelSource.contains("pollingService.subscribe(workspacePath: workspacePath)"),
             "Agent Mode pi model polling must subscribe to the pi polling service."
         )
 

@@ -356,6 +356,7 @@ public class APISettingsViewModel: ObservableObject {
     private var cursorModelsTask: Task<Void, Never>?
     private var piPreflightTask: Task<Void, Never>?
     private var piModelsTask: Task<Void, Never>?
+    private var piModelsSubscribedWorkspacePath: String?
     private var openRouterModelsTask: Task<Void, Never>?
     private var cliConnectionCancellables = Set<AnyCancellable>()
     private var hasLoadedStoredData = false
@@ -1282,6 +1283,7 @@ public class APISettingsViewModel: ObservableObject {
         piPreflightTask = nil
         piModelsTask?.cancel()
         piModelsTask = nil
+        piModelsSubscribedWorkspacePath = nil
         openRouterModelsTask?.cancel()
         openRouterModelsTask = nil
 
@@ -1978,6 +1980,11 @@ public class APISettingsViewModel: ObservableObject {
 
         func test_reloadCLIConnectionFlagsFromDefaults() {
             reloadCLIConnectionFlagsFromDefaults()
+        }
+
+
+        var test_piModelsSubscribedWorkspacePath: String? {
+            piModelsSubscribedWorkspacePath
         }
 
         func test_completeContextBuilderProviderValidation(
@@ -3494,10 +3501,15 @@ public class APISettingsViewModel: ObservableObject {
     }
 
     private func startPiModelsSubscriptionIfNeeded(workspacePath: String?) {
-        guard piModelsTask == nil else { return }
+        let canonicalWorkspacePath = AgentPiModelRegistry.canonicalWorkspacePath(workspacePath)
+        if piModelsTask != nil {
+            guard piModelsSubscribedWorkspacePath != canonicalWorkspacePath else { return }
+            stopPiModelsSubscription()
+        }
+        piModelsSubscribedWorkspacePath = canonicalWorkspacePath
         let pollingService = piModelPollingService
-        piModelsTask = Task { [weak self, pollingService, workspacePath] in
-            let stream = await pollingService.subscribe(workspacePath: workspacePath)
+        piModelsTask = Task { [weak self, pollingService, canonicalWorkspacePath] in
+            let stream = await pollingService.subscribe(workspacePath: canonicalWorkspacePath)
             for await event in stream {
                 guard !Task.isCancelled else { break }
                 await MainActor.run { [weak self] in
@@ -3512,8 +3524,11 @@ public class APISettingsViewModel: ObservableObject {
                     }
                 }
             }
+            guard !Task.isCancelled else { return }
             await MainActor.run { [weak self] in
+                guard self?.piModelsSubscribedWorkspacePath == canonicalWorkspacePath else { return }
                 self?.piModelsTask = nil
+                self?.piModelsSubscribedWorkspacePath = nil
             }
         }
     }
@@ -3521,6 +3536,7 @@ public class APISettingsViewModel: ObservableObject {
     private func stopPiModelsSubscription(clearModels: Bool = false) {
         piModelsTask?.cancel()
         piModelsTask = nil
+        piModelsSubscribedWorkspacePath = nil
         if clearModels {
             availablePiModelOptions = []
         }

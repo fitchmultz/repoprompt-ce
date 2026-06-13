@@ -7,10 +7,25 @@ enum PiRunTerminalCleanup {
         controller: PiNativeSessionController,
         runID: UUID,
         windowID: Int,
-        terminalState: AgentSessionRunState? = nil
+        terminalState: AgentSessionRunState? = nil,
+        restoreUndeliveredPiSteeringDrafts: ((_ tabID: UUID, _ text: String, _ message: String, _ strategy: AgentModeRunService.DraftRestorationStrategy) -> Void)? = nil
     ) -> AgentRunAttemptTerminalResources.Teardown {
+        let undeliveredDrafts = session.pendingPiSteeringInstructions
+            .map(\.draftText)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
         if session.piController === controller {
             session.piController = nil
+        }
+        session.piExtensionUIResponseInFlight = false
+        session.clearPendingPiSteeringInstructions()
+        if !undeliveredDrafts.isEmpty {
+            restoreUndeliveredPiSteeringDrafts?(
+                session.tabID,
+                undeliveredDrafts.joined(separator: "\n"),
+                "Restored undelivered pi steering messages because the run ended before pi accepted them.",
+                .prependAlways
+            )
         }
         if session.runID == runID {
             session.runID = nil

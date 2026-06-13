@@ -4,6 +4,40 @@ import XCTest
 
 @MainActor
 final class PiReasoningTranscriptTests: XCTestCase {
+    func testPiMessageStopTokenUsagePersistsNonZeroProviderTokens() async throws {
+        let viewModel = AgentModeViewModel(
+            codexControllerFactory: { _, _, _, _, _, _ in PiReasoningNoopCodexController() }
+        )
+        let tabID = UUID()
+        let session = await viewModel.ensureSessionReady(tabID: tabID)
+        let runID = UUID()
+        let runAttemptID = UUID()
+        session.selectedAgent = .pi
+        session.runID = runID
+        session.beginRunAttempt(source: "test.piUsage", attemptID: runAttemptID)
+
+        await viewModel.test_handleStreamResult(
+            AIStreamResult(type: "message_stop", text: nil, promptTokens: 13, completionTokens: 7, contextUsedTokens: 20),
+            session: session,
+            runID: runID,
+            runAttemptID: runAttemptID
+        )
+
+        XCTAssertEqual(session.providerTokenUsageByTurn.count, 1)
+        XCTAssertEqual(session.providerTokenUsageByTurn.first?.promptTokens, 13)
+        XCTAssertEqual(session.providerTokenUsageByTurn.first?.completionTokens, 7)
+
+        let persisted = AgentSession(
+            providerSessionID: "pi-session-id",
+            providerTokenUsageByTurn: session.providerTokenUsageByTurn,
+            piSessionFile: "/tmp/pi-session.jsonl"
+        )
+        let data = try JSONEncoder().encode(persisted)
+        let decoded = try JSONDecoder().decode(AgentSession.self, from: data)
+        XCTAssertEqual(decoded.providerTokenUsageByTurn.first?.promptTokens, 13)
+        XCTAssertEqual(decoded.providerTokenUsageByTurn.first?.completionTokens, 7)
+    }
+
     func testPiReasoningDeltasBecomePersistedThinkingItems() async {
         let viewModel = AgentModeViewModel(
             codexControllerFactory: { _, _, _, _, _, _ in PiReasoningNoopCodexController() }

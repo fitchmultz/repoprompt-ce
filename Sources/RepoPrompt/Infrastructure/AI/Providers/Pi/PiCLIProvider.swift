@@ -40,32 +40,38 @@ final class PiCLIProvider: AIProvider {
                 do {
                     try await controller.startOrResume(existing: nil, model: modelName)
                     let events = await controller.events
-                    let collector = Task { () -> PiNativeSessionController.TurnStatus in
+                    let collector = Task { () -> (PiNativeSessionController.TurnStatus, Bool) in
+                        var sawMessageStop = false
                         for await event in events {
                             switch event {
                             case let .stream(result):
+                                if result.type == "message_stop" {
+                                    sawMessageStop = true
+                                }
                                 continuation.yield(result)
                             case let .turnCompleted(_, status):
-                                return status
+                                return (status, sawMessageStop)
                             case let .extensionUIRequest(request):
                                 if request.requiresResponse {
                                     try? await controller.respondToExtensionUIRequest(.cancelled(id: request.id))
                                 }
                             case let .error(message):
                                 continuation.finish(throwing: AIProviderError.invalidConfiguration(detail: message))
-                                return .failed
+                                return (.failed, sawMessageStop)
                             case .sessionState, .diagnostic:
                                 break
                             }
                         }
-                        return .failed
+                        return (.failed, sawMessageStop)
                     }
 
                     _ = try await controller.sendUserMessage(makePrompt(from: aiMessage))
-                    let status = await collector.value
+                    let (status, sawMessageStop) = await collector.value
                     switch status {
                     case .completed:
-                        continuation.yield(AIStreamResult(type: "message_stop", text: nil, stopReason: "completed"))
+                        if !sawMessageStop {
+                            continuation.yield(AIStreamResult(type: "message_stop", text: nil, stopReason: "completed"))
+                        }
                         continuation.finish()
                     case .cancelled:
                         continuation.finish(throwing: CancellationError())

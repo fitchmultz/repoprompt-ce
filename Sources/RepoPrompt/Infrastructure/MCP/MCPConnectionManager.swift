@@ -874,6 +874,7 @@ actor ServerNetworkManager {
         private let debugRestartStatusLimit = 50
         private var debugResolvedToolOperationOverrides: [String: @Sendable () async throws -> Value] = [:]
         private var debugExecutionWatchdogAbortTargets: [UUID: any MCPServerConnection] = [:]
+        private var debugPeerPIDByConnectionID: [UUID: Int] = [:]
     #endif
 
     private var connections: [UUID: any MCPServerConnection] = [:]
@@ -8131,6 +8132,7 @@ actor ServerNetworkManager {
         func debugRemoveConnection(_ id: UUID) async {
             #if DEBUG
                 debugExecutionWatchdogAbortTargets.removeValue(forKey: id)
+                debugPeerPIDByConnectionID.removeValue(forKey: id)
             #endif
             await removeConnection(id)
         }
@@ -8232,6 +8234,14 @@ actor ServerNetworkManager {
                     lifecycleGeneration: lifecycleGeneration,
                     connectionLifecycleGeneration: connectionLifecycleGenerationByID[connectionID]
                 )
+            }
+
+            func debugSetPeerPIDForTesting(_ pid: Int?, connectionID: UUID) {
+                if let pid {
+                    debugPeerPIDByConnectionID[connectionID] = pid
+                } else {
+                    debugPeerPIDByConnectionID.removeValue(forKey: connectionID)
+                }
             }
 
             func debugBindSessionTokenForAdmissionTesting(_ sessionToken: String, to connectionID: UUID) {
@@ -11762,6 +11772,11 @@ actor ServerNetworkManager {
 
     /// Returns the verified peer PID for a bootstrap socket connection, if available.
     func peerPID(for connectionID: UUID) async -> Int? {
+        #if DEBUG
+            if let debugPeerPID = debugPeerPIDByConnectionID[connectionID] {
+                return debugPeerPID
+            }
+        #endif
         guard let connection = connections[connectionID] else { return nil }
         guard let bootstrap = connection as? BootstrapSocketConnectionManager else { return nil }
         return await bootstrap.peerPID()

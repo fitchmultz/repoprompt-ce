@@ -60,6 +60,14 @@ final class PiIntegrationConfigurationTests: XCTestCase {
         XCTAssertFalse(arguments.contains("--no-builtin-tools"))
     }
 
+    func testManagedRPCAvailabilityUsesColdStartTolerantProbeTimeouts() {
+        XCTAssertGreaterThan(PiIntegrationConfiguration.managedRPCVersionProbeTimeout, 5)
+        XCTAssertGreaterThan(
+            PiIntegrationConfiguration.managedRPCColdStartRetryTimeout,
+            PiIntegrationConfiguration.managedRPCVersionProbeTimeout
+        )
+    }
+
     func testPiRPCDefaultsUseManagedLaunchArguments() {
         XCTAssertEqual(
             PiRPCClient.Config().launchArguments,
@@ -178,21 +186,21 @@ final class PiIntegrationConfigurationTests: XCTestCase {
         await PiIntegrationConfiguration.resetSupportedVersionCacheForTests()
     }
 
-    func testManagedRPCAvailabilityDoesNotUseCacheForFirstTimeout() async throws {
+    func testManagedRPCAvailabilityRetriesFirstTimeoutBeforeFailingSetup() async throws {
         await PiIntegrationConfiguration.resetSupportedVersionCacheForTests()
-        let scriptURL = try makeFakePiVersionScript(exitCode: 0, stdout: "pi 0.79.1\n", sleepSeconds: 2)
+        let scriptURL = try makeFakePiVersionScript(exitCode: 0, stdout: "pi 0.79.1\n", sleepSeconds: 0.2)
 
         let availability = await PiIntegrationConfiguration.checkManagedRPCAvailability(
             commandName: scriptURL.path,
-            timeout: 0.1,
-            allowCachedSupportedVersionOnTimeout: true
+            timeout: 0.05,
+            allowCachedSupportedVersionOnTimeout: true,
+            firstTimeoutRetryTimeout: 2
         )
 
-        XCTAssertFalse(availability.isAvailable)
-        XCTAssertNil(availability.version)
-        XCTAssertEqual(availability.failureKind, .timedOut)
+        XCTAssertTrue(availability.isAvailable)
+        XCTAssertEqual(availability.version, "0.79.1")
+        XCTAssertNil(availability.failureKind)
         XCTAssertFalse(availability.usedCachedSupportedVersion)
-        XCTAssertTrue(availability.diagnostic?.contains(scriptURL.path) ?? false)
         await PiIntegrationConfiguration.resetSupportedVersionCacheForTests()
     }
 

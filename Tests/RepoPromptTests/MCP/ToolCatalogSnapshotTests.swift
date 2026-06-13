@@ -121,6 +121,11 @@ final class ToolCatalogSnapshotTests: XCTestCase {
         ]
 
         for identity in codexIdentities {
+            XCTAssertEqual(
+                MCPClientIdentity.canonicalFamilyID(identity),
+                "codex-mcp-client",
+                identity ?? "nil"
+            )
             let projected = CodexMCPToolAnnotationProjection.project(
                 canonical,
                 clientIdentifier: identity

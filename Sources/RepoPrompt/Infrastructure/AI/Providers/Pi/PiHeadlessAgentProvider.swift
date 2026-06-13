@@ -71,32 +71,46 @@ final class PiHeadlessAgentProvider: HeadlessAgentProvider {
                 do {
                     try await controller.startOrResume(existing: nil, model: modelString)
                     let events = await controller.events
-                    let collector = Task { () -> PiNativeSessionController.TurnStatus in
+                    let collector = Task { () -> (PiNativeSessionController.TurnStatus, Bool) in
+                        var sawMessageStop = false
                         for await event in events {
                             switch event {
                             case let .stream(result):
-                                continuation.yield(result)
+                                if result.type == "message_stop" {
+                                    sawMessageStop = true
+                                    if result.providerSessionID == nil,
+                                       let ref = await controller.currentSessionRef()
+                                    {
+                                        continuation.yield(Self.streamResult(result, providerSessionID: ref.sessionID))
+                                    } else {
+                                        continuation.yield(result)
+                                    }
+                                } else {
+                                    continuation.yield(result)
+                                }
                             case let .turnCompleted(_, status):
-                                return status
+                                return (status, sawMessageStop)
                             case let .extensionUIRequest(request):
                                 if request.requiresResponse {
                                     try? await controller.respondToExtensionUIRequest(.cancelled(id: request.id))
                                 }
                             case let .error(message):
                                 continuation.finish(throwing: AIProviderError.invalidConfiguration(detail: message))
-                                return .failed
+                                return (.failed, sawMessageStop)
                             case .sessionState, .diagnostic:
                                 break
                             }
                         }
-                        return .failed
+                        return (.failed, sawMessageStop)
                     }
 
                     _ = try await controller.sendUserMessage(Self.promptText(from: message))
-                    let status = await collector.value
+                    let (status, sawMessageStop) = await collector.value
                     switch status {
                     case .completed:
-                        if let ref = await controller.currentSessionRef() {
+                        if !sawMessageStop,
+                           let ref = await controller.currentSessionRef()
+                        {
                             continuation.yield(AIStreamResult(
                                 type: "message_stop",
                                 text: nil,
@@ -134,6 +148,29 @@ final class PiHeadlessAgentProvider: HeadlessAgentProvider {
             await controller.shutdown()
         }
         controller = nil
+    }
+
+    private static func streamResult(_ result: AIStreamResult, providerSessionID: String) -> AIStreamResult {
+        AIStreamResult(
+            type: result.type,
+            text: result.text,
+            reasoning: result.reasoning,
+            promptTokens: result.promptTokens,
+            completionTokens: result.completionTokens,
+            cost: result.cost,
+            toolName: result.toolName,
+            toolArgs: result.toolArgs,
+            toolOutput: result.toolOutput,
+            toolInvocationID: result.toolInvocationID,
+            toolResultJSON: result.toolResultJSON,
+            toolArgsJSON: result.toolArgsJSON,
+            toolIsError: result.toolIsError,
+            providerSessionID: providerSessionID,
+            stopReason: result.stopReason,
+            modelContextWindow: result.modelContextWindow,
+            contextUsedTokens: result.contextUsedTokens,
+            contentMessageID: result.contentMessageID
+        )
     }
 
     private static func promptText(from message: AgentMessage) -> String {

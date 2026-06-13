@@ -1,4 +1,7 @@
+import Darwin
+import MCP
 @testable import RepoPrompt
+import RepoPromptShared
 import XCTest
 
 final class ServerControllerAdmissionTests: XCTestCase {
@@ -16,12 +19,15 @@ final class ServerControllerAdmissionTests: XCTestCase {
 
     func testDefaultAllowListDoesNotIncludeRepoPromptCLIOrPi() {
         #if DEBUG
+            let allowed = ServerController.test_defaultAlwaysAllowedClients
             XCTAssertFalse(
-                ServerController.test_defaultAlwaysAllowedClients.contains {
+                allowed.contains {
                     ServerController.test_isRepoPromptCLIClientName($0)
                 }
             )
-            XCTAssertFalse(ServerController.test_defaultAlwaysAllowedClients.contains("pi"))
+            XCTAssertFalse(allowed.contains("pi"))
+            XCTAssertFalse(allowed.contains(PiRepoPromptBridgeExtensionInstaller.managedBridgeExecutionClientName))
+            XCTAssertFalse(allowed.contains(PiRepoPromptBridgeExtensionInstaller.personalBridgeClientName))
         #else
             throw XCTSkip("DEBUG-only ServerController admission seams are unavailable in release builds")
         #endif
@@ -38,55 +44,277 @@ final class ServerControllerAdmissionTests: XCTestCase {
         #endif
     }
 
-    func testServerControllerHasExpectedAgentClientAutoApprovalBeforeGenericAllowList() throws {
-        let source = try String(
-            contentsOf: RepoRoot.url().appendingPathComponent("Sources/RepoPrompt/Infrastructure/MCP/ServerController.swift"),
-            encoding: .utf8
-        )
-        let expectedAgentRange = try XCTUnwrap(source.range(of: "shouldAutoApproveExpectedAgentClient"))
-        let allowListRange = try XCTUnwrap(source.range(of: "isClientAlwaysAllowed", range: expectedAgentRange.upperBound ..< source.endIndex))
-        XCTAssertLessThan(expectedAgentRange.lowerBound, allowListRange.lowerBound)
-        XCTAssertTrue(source.contains("expected managed agent client"))
+    func testManagedPiBridgeAutoApprovesThroughServerControllerWhenExpectedPIDMatches() async throws {
+        #if DEBUG
+            let manager = ServerNetworkManager()
+            let controller = ServerController(
+                networkManager: manager,
+                installsNetworkCallbacks: false,
+                autoApproveAllClientsPreference: .fixed(false)
+            )
+            let runID = UUID()
+            let connectionID = UUID()
+            let windowID = 63001
+            let pid = getpid()
+            let clientName = PiRepoPromptBridgeExtensionInstaller.managedBridgeExecutionClientName
+            let autoApproveAllClients = await controller.getAutoApproveAllClients()
+            XCTAssertFalse(autoApproveAllClients)
+            await manager.installClientConnectionPolicy(
+                for: AgentProviderKind.piMCPClientID,
+                windowID: windowID,
+                restrictedTools: AgentModeMCPToolPolicy.restrictedTools,
+                oneShot: false,
+                reason: "server controller managed pi bridge admission test",
+                ttl: 10,
+                tabID: nil,
+                runID: runID,
+                additionalTools: [MCPWindowToolName.workspaceContext],
+                purpose: .agentModeRun,
+                taskLabelKind: nil,
+                allowsAgentExternalControlTools: false,
+                requiresExpectedAgentPID: true
+            )
+            await manager.registerExpectedAgentPID(pid, for: AgentProviderKind.piMCPClientID, runID: runID)
+            await manager.debugInstallDirectAdmissionConnectionForTesting(
+                connectionID: connectionID,
+                connection: ServerControllerAdmissionTestConnection()
+            )
+            await manager.debugSetPeerPIDForTesting(Int(pid), connectionID: connectionID)
+
+            let approved = await controller.test_handleConnectionApproval(connectionID: connectionID, clientName: clientName)
+            let mappedRunID = await manager.runIDForConnection(connectionID)
+            let policyState = await manager.debugConnectionPolicyState(for: connectionID)
+
+            await cleanupPiAdmissionFixture(manager: manager, runID: runID, windowID: windowID, connectionID: connectionID, pid: pid)
+
+            XCTAssertTrue(approved)
+            XCTAssertEqual(mappedRunID, runID)
+            XCTAssertEqual(policyState.purpose, .agentModeRun)
+            XCTAssertEqual(policyState.restrictedTools, AgentModeMCPToolPolicy.restrictedTools)
+        #else
+            throw XCTSkip("DEBUG-only ServerController admission seams are unavailable in release builds")
+        #endif
     }
 
-    func testExpectedPIDAutoApprovalDoesNotRequirePriorAdmittedBootstrap() async throws {
-        let manager = ServerNetworkManager.shared
-        let runID = UUID()
-        let pid = getpid()
-        let clientName = try XCTUnwrap(AgentProviderKind.pi.mcpClientNameHint)
-        await manager.debugSeedRunPolicyState(
-            runID: runID,
-            windowID: 1,
-            restrictedTools: [],
-            additionalTools: nil,
-            purpose: .agentModeRun
-        )
-        await manager.registerExpectedAgentPID(pid, for: clientName, runID: runID)
+    func testManagedPiBridgeAlwaysAllowCannotBypassExpectedPIDGate() async throws {
+        #if DEBUG
+            let manager = ServerNetworkManager()
+            let controller = ServerController(
+                networkManager: manager,
+                installsNetworkCallbacks: false,
+                autoApproveAllClientsPreference: .fixed(false)
+            )
+            let runID = UUID()
+            let connectionID = UUID()
+            let windowID = 63002
+            let pid = getpid()
+            let clientName = PiRepoPromptBridgeExtensionInstaller.managedBridgeExecutionClientName
+            let autoApproveAllClients = await controller.getAutoApproveAllClients()
+            XCTAssertFalse(autoApproveAllClients)
+            await controller.setAlwaysAllowed(clientID: clientName, allowed: true)
+            await controller.setApprovalCallback { [weak controller] _ in
+                await controller?.resolvePendingApproval(allow: false)
+            }
+            let alwaysAllowedClientIDs = await controller.alwaysAllowedClientIDs()
+            XCTAssertFalse(alwaysAllowedClientIDs.contains(clientName))
+            await installPiAdmissionFixture(manager: manager, runID: runID, windowID: windowID, pid: nil)
+            await manager.debugInstallDirectAdmissionConnectionForTesting(
+                connectionID: connectionID,
+                connection: ServerControllerAdmissionTestConnection()
+            )
+            await manager.debugSetPeerPIDForTesting(Int(pid), connectionID: connectionID)
 
-        let approved = await manager.debugShouldAutoApproveExpectedAgentClient(
-            clientName: clientName,
-            clientPid: Int(pid)
-        )
+            let approved = await controller.test_handleConnectionApproval(connectionID: connectionID, clientName: clientName)
+            let mappedRunID = await manager.runIDForConnection(connectionID)
 
-        await manager.clearExpectedAgentPID(pid, for: clientName, runID: runID)
-        await manager.cleanupRunRoutingState(for: runID, windowID: 1)
+            await cleanupPiAdmissionFixture(manager: manager, runID: runID, windowID: windowID, connectionID: connectionID, pid: pid)
 
-        XCTAssertTrue(approved)
+            XCTAssertFalse(approved)
+            XCTAssertNil(mappedRunID)
+        #else
+            throw XCTSkip("DEBUG-only ServerController admission seams are unavailable in release builds")
+        #endif
     }
 
-    func testSanitizerRemovesPersistedRepoPromptCLIAllowListEntries() {
+    func testNearMatchPiNamesDoNotAutoApproveThroughServerController() async throws {
+        #if DEBUG
+            let manager = ServerNetworkManager()
+            let controller = ServerController(
+                networkManager: manager,
+                installsNetworkCallbacks: false,
+                autoApproveAllClientsPreference: .fixed(false)
+            )
+            let runID = UUID()
+            let windowID = 63003
+            let pid = getpid()
+            let rejectedClientNames = ["pischema", "pi-schema-evil", "pifoo", "xpi", "pi2"]
+            var connectionIDs: [UUID] = []
+            await controller.setApprovalCallback { [weak controller] _ in
+                await controller?.resolvePendingApproval(allow: false)
+            }
+            await installPiAdmissionFixture(manager: manager, runID: runID, windowID: windowID, pid: pid)
+
+            for rejectedClientName in rejectedClientNames {
+                let connectionID = UUID()
+                connectionIDs.append(connectionID)
+                await manager.debugInstallDirectAdmissionConnectionForTesting(
+                    connectionID: connectionID,
+                    connection: ServerControllerAdmissionTestConnection()
+                )
+                await manager.debugSetPeerPIDForTesting(Int(pid), connectionID: connectionID)
+
+                let approved = await controller.test_handleConnectionApproval(
+                    connectionID: connectionID,
+                    clientName: rejectedClientName
+                )
+                let mappedRunID = await manager.runIDForConnection(connectionID)
+
+                XCTAssertFalse(approved, "\(rejectedClientName) must not be auto-approved as managed pi")
+                XCTAssertNil(mappedRunID, "\(rejectedClientName) must not consume managed pi run routing")
+            }
+
+            await cleanupPiAdmissionFixture(
+                manager: manager,
+                runID: runID,
+                windowID: windowID,
+                connectionIDs: connectionIDs,
+                pid: pid
+            )
+        #else
+            throw XCTSkip("DEBUG-only ServerController admission seams are unavailable in release builds")
+        #endif
+    }
+
+    #if DEBUG
+        private func installPiAdmissionFixture(
+            manager: ServerNetworkManager,
+            runID: UUID,
+            windowID: Int,
+            pid: pid_t?
+        ) async {
+            await manager.installClientConnectionPolicy(
+                for: AgentProviderKind.piMCPClientID,
+                windowID: windowID,
+                restrictedTools: AgentModeMCPToolPolicy.restrictedTools,
+                oneShot: false,
+                reason: "server controller managed pi bridge admission test",
+                ttl: 10,
+                tabID: nil,
+                runID: runID,
+                additionalTools: [MCPWindowToolName.workspaceContext],
+                purpose: .agentModeRun,
+                taskLabelKind: nil,
+                allowsAgentExternalControlTools: false,
+                requiresExpectedAgentPID: true
+            )
+            if let pid {
+                await manager.registerExpectedAgentPID(pid, for: AgentProviderKind.piMCPClientID, runID: runID)
+            }
+        }
+
+        private func cleanupPiAdmissionFixture(
+            manager: ServerNetworkManager,
+            runID: UUID,
+            windowID: Int,
+            connectionID: UUID,
+            pid: pid_t
+        ) async {
+            await cleanupPiAdmissionFixture(
+                manager: manager,
+                runID: runID,
+                windowID: windowID,
+                connectionIDs: [connectionID],
+                pid: pid
+            )
+        }
+
+        private func cleanupPiAdmissionFixture(
+            manager: ServerNetworkManager,
+            runID: UUID,
+            windowID: Int,
+            connectionIDs: [UUID],
+            pid: pid_t
+        ) async {
+            await manager.clearExpectedAgentPID(pid, for: AgentProviderKind.piMCPClientID, runID: runID)
+            await manager.clearExpectedAgentPID(pid, for: PiRepoPromptBridgeExtensionInstaller.managedBridgeExecutionClientName, runID: runID)
+            for connectionID in connectionIDs {
+                await manager.debugSetPeerPIDForTesting(nil, connectionID: connectionID)
+                await manager.debugRemoveConnection(connectionID)
+            }
+            await manager.clearClientConnectionPolicy(for: AgentProviderKind.piMCPClientID, windowID: windowID, runID: runID)
+            await manager.cleanupRunRoutingState(for: runID, windowID: windowID)
+        }
+    #endif
+
+    func testSanitizerRemovesPersistedRepoPromptCLIAndManagedPiAllowListEntries() {
         #if DEBUG
             let sanitized = ServerController.test_sanitizedAlwaysAllowedClients([
                 "RepoPrompt CLI",
                 "RepoPrompt CLI (Exec)",
                 "RepoPrompt CLI 1.2.3",
+                "pi",
+                PiRepoPromptBridgeExtensionInstaller.managedBridgeExecutionClientName,
+                PiRepoPromptBridgeExtensionInstaller.personalBridgeClientName,
                 "claude-code",
                 "custom-client"
             ])
 
-            XCTAssertEqual(sanitized, ["claude-code", "custom-client"])
+            XCTAssertEqual(sanitized, [
+                "claude-code",
+                "custom-client",
+                PiRepoPromptBridgeExtensionInstaller.personalBridgeClientName
+            ])
         #else
             throw XCTSkip("DEBUG-only ServerController admission seams are unavailable in release builds")
         #endif
     }
 }
+
+#if DEBUG
+    private actor ServerControllerAdmissionTestConnection: MCPServerConnection {
+        nonisolated var isFilesystemBacked: Bool {
+            false
+        }
+
+        nonisolated var connectionFolderURL: URL? {
+            nil
+        }
+
+        nonisolated var capabilityToken: String? {
+            nil
+        }
+
+        func start(approvalHandler _: @escaping (MCP.Client.Info) async -> Bool) async throws {}
+
+        func stop() async {}
+
+        func abortForExecutionWatchdog() async {}
+
+        func notifyToolListChanged() async {}
+
+        func connectionState() -> ConnectionStateSnapshot {
+            .ready
+        }
+
+        func isViableForRetention() -> Bool {
+            true
+        }
+
+        func secondsSinceLastActivity() async -> TimeInterval {
+            0
+        }
+
+        func transportIngressSnapshot() async -> MCPTransportIngressSnapshot? {
+            nil
+        }
+
+        func terminate(reason _: TerminationReason, message _: String?) async {}
+
+        func sendProgress(
+            tool _: String,
+            kind _: RepoPromptProgressKind,
+            stage _: String,
+            message _: String
+        ) async {}
+    }
+#endif

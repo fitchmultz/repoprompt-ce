@@ -6885,6 +6885,17 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         updateCodexStallWatchdogState(for: session)
     }
 
+    private func publishRunInteractionStateChange(
+        for session: AgentModeViewModel.TabSession,
+        reason: AgentModeViewModel.RunInteractionStateChangeReason
+    ) {
+        if let viewModel {
+            viewModel.publishRunInteractionStateChange(for: session, reason: reason)
+        } else {
+            handleRunInteractionStateChange(for: session, reason: reason)
+        }
+    }
+
     private func ensureCodexStallWatchdog(for session: AgentModeViewModel.TabSession) {
         guard !codexStallWatchdogTasksByTabID.hasTask(for: session.tabID) else { return }
         let tabID = session.tabID
@@ -7477,7 +7488,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         let result = buildApprovalResult(decision: decision, request: request)
         session.pendingApproval = nil
         viewModel?.reconcileInteractiveRunState(session)
-        handleRunInteractionStateChange(for: session, reason: .approvalResponseSubmitted)
+        publishRunInteractionStateChange(for: session, reason: .approvalResponseSubmitted)
         viewModel?.requestUIRefresh(tabID: session.tabID, urgent: true)
         guard case let .codex(requestID) = request.requestID else {
             return
@@ -7500,7 +7511,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         let result = Self.buildPermissionsResult(decision: decision, request: request)
         session.pendingPermissionsRequest = nil
         viewModel?.reconcileInteractiveRunState(session)
-        handleRunInteractionStateChange(for: session, reason: .permissionsResponseSubmitted)
+        publishRunInteractionStateChange(for: session, reason: .permissionsResponseSubmitted)
         viewModel?.requestUIRefresh(tabID: session.tabID, urgent: true)
         let authoritativeTurnID = session.codexAuthoritativeActiveTurn?.turnID
         Task { [controller] in

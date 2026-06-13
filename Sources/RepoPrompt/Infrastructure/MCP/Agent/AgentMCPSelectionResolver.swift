@@ -62,7 +62,11 @@ enum AgentMCPSelectionResolver {
             if let defaultKind = defaultTaskLabel,
                let resolved = resolveRoleSelection(defaultKind, availability: availability, roleSelectionProvider: roleSelectionProvider)
             {
-                let normalizedPiSelection = normalizedPiSelection(agent: resolved.agent, modelRaw: resolved.modelRaw)
+                let normalizedPiSelection = normalizedPiSelection(
+                    agent: resolved.agent,
+                    modelRaw: resolved.modelRaw,
+                    availability: availability
+                )
                 return ResolvedSelection(
                     agentRaw: resolved.agent.rawValue,
                     modelRaw: normalizedPiSelection.modelRaw,
@@ -80,7 +84,11 @@ enum AgentMCPSelectionResolver {
                 guard let resolved = resolveRoleSelection(entry.kind, availability: availability, roleSelectionProvider: roleSelectionProvider) else {
                     throw MCPError.invalidParams("No available agent/model for task label '\(trimmed)'.")
                 }
-                let normalizedPiSelection = normalizedPiSelection(agent: resolved.agent, modelRaw: resolved.modelRaw)
+                let normalizedPiSelection = normalizedPiSelection(
+                    agent: resolved.agent,
+                    modelRaw: resolved.modelRaw,
+                    availability: availability
+                )
                 return ResolvedSelection(
                     agentRaw: resolved.agent.rawValue,
                     modelRaw: normalizedPiSelection.modelRaw,
@@ -122,7 +130,7 @@ enum AgentMCPSelectionResolver {
             }
         }
 
-        let normalizedPiSelection = normalizedPiSelection(agent: agent, modelRaw: parsed.modelRaw)
+        let normalizedPiSelection = normalizedPiSelection(agent: agent, modelRaw: parsed.modelRaw, availability: availability)
         return ResolvedSelection(
             agentRaw: parsed.agentRaw,
             modelRaw: normalizedPiSelection.modelRaw,
@@ -131,9 +139,15 @@ enum AgentMCPSelectionResolver {
         )
     }
 
-    private static func normalizedPiSelection(agent: AgentProviderKind, modelRaw: String) -> (modelRaw: String, reasoningEffortRaw: String?) {
+    private static func normalizedPiSelection(
+        agent: AgentProviderKind,
+        modelRaw: String,
+        availability: AgentModelCatalog.AvailabilityContext
+    ) -> (modelRaw: String, reasoningEffortRaw: String?) {
+        let knownModelIDs = AgentPiModelRegistry.shared
+            .resolvedSnapshot(workspacePath: availability.piWorkspacePath)?.knownModelIDs ?? []
         guard agent == .pi,
-              let specifier = PiModelSpecifier(raw: modelRaw),
+              let specifier = PiModelSpecifier(raw: modelRaw, knownModelIDs: knownModelIDs),
               let thinkingLevel = specifier.thinkingLevel
         else {
             return (modelRaw, nil)

@@ -10,7 +10,13 @@ enum PiThinkingLevel: String, CaseIterable, Hashable, Codable {
 
     static let displayOrder: [PiThinkingLevel] = [.off, .minimal, .low, .medium, .high, .xhigh]
     static let standardModelOrder: [PiThinkingLevel] = [.off, .minimal, .low, .medium, .high]
+    static let canonicalRawValues: Set<String> = ["off", "minimal", "low", "medium", "high", "xhigh"]
     static let noOverrideDisplayName = "No Override"
+
+    static func isCanonicalRawValue(_ raw: String?) -> Bool {
+        guard let raw else { return false }
+        return canonicalRawValues.contains(raw)
+    }
 
     static func parse(_ raw: String?) -> PiThinkingLevel? {
         let normalized = raw?

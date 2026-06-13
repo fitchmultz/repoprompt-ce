@@ -54,7 +54,7 @@ pi is not a Claude-compatible provider plugin. It remains app-integrated because
     │
     ▼
 +---------------------------- RepoPrompt MCP CLI ----------------------------+
-| repoprompt-mcp routed by --client-name pi and optional -w <windowID>        |
+| repoprompt-mcp routed by managed pi-schema identity and -w <windowID>      |
 +----------------------------------------------------------------------------+
 ```
 
@@ -149,7 +149,7 @@ RepoPrompt installs a managed pi extension that dynamically exposes RepoPrompt M
 - Global bridge: installed at `~/.pi/agent/extensions/repoprompt-bridge.ts` only through explicit RepoPrompt settings/UI flows. It is unmanaged by a specific window and must not load during `REPOPROMPT_PI_MANAGED_RUN=1`.
 - Managed marker: `// RepoPrompt CE managed pi bridge extension`. Never overwrite an extension at the global path unless this marker is present.
 
-The bridge source is maintained as `AppResources/PiBridge/repoprompt-bridge.ts` and rendered by Swift with placeholder substitution for the CLI path, window ID, managed env key, and argument arrays.
+The bridge source is maintained as `AppResources/PiBridge/repoprompt-bridge.ts` and rendered by Swift with placeholder substitution for the CLI path, window ID, managed env key, client identity, and argument arrays.
 
 Bridge constants:
 
@@ -166,7 +166,7 @@ The bridge also registers a fixed read-only `repoprompt_window_status` tool. It 
 
 Agent Mode connections must allow `bind_context` execution for read-only `op=list` and `op=status` so pi can inspect its own tab/window binding. Mutating `bind_context` operations and workspace-level routing mutation through `manage_workspaces` remain restricted during Agent Mode runs.
 
-The managed pi bridge registers an explicit read-only `bind_context` wrapper plus the `repoprompt_window_status` alias. Bridge schema discovery and tool calls use the non-agent `pi-schema` client name to avoid PID-gated startup deadlocks, so the bridge exposes only an explicit dynamic allowlist of read-only/context/control tools (`workspace_context`, tree/code/read/search, `agent_manage`, oracle chat/log, user/status, app settings). Mutable file/workspace/routing tools such as `apply_edits`, `file_actions`, `manage_selection`, `prompt`, `manage_workspaces`, and raw dynamic `bind_context` stay hidden; the wrapper preserves the read-only routing boundary for `bind_context`.
+The managed pi bridge registers an explicit read-only `bind_context` wrapper plus the `repoprompt_window_status` alias. Window-scoped managed bridge schema discovery and tool calls use `--client-name pi-schema`; `MCPClientIdentity` canonicalizes only the exact client names `pi` and `pi-schema` into the managed `pi` Agent Mode identity family so the existing pi lease, expected-PID, routing, and tool-policy gates govern every managed bridge MCP call. Separator-less or suffixed near-matches such as `pischema`, `pi-schema-evil`, and `pifoo` are not managed pi identities. The global/personal bridge uses the separate `repoprompt-pi-bridge` client name and does not belong to the managed `pi` identity family. The managed bridge still exposes only an explicit dynamic allowlist of read-only/context/control tools (`workspace_context`, tree/code/read/search, `agent_manage`, oracle chat/log, user/status, app settings). Mutable file/workspace/routing tools such as `apply_edits`, `file_actions`, `manage_selection`, `prompt`, `manage_workspaces`, and raw dynamic `bind_context` stay hidden; the wrapper preserves the read-only routing boundary for `bind_context`.
 
 ### MCP routing and permissions
 

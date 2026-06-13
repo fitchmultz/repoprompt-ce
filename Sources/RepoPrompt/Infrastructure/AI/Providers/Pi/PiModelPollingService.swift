@@ -64,16 +64,22 @@ actor PiModelPollingService: PiModelPolling {
         case failure(Failure)
     }
 
+    private struct WorkspacePollingContext {
+        var pollingTask: Task<Void, Never>?
+        var inFlightRefresh: Task<Void, Never>?
+        var continuations: [UUID: AsyncStream<Event>.Continuation] = [:]
+        var latest: Snapshot?
+        var shouldPublishNextSuccessfulRefresh = false
+        #if DEBUG
+            var publishedEventCount = 0
+        #endif
+    }
+
     private let client: any PiModelDiscoveryClient
     private let intervalNanos: UInt64
     private let startsPollingOnSubscribe: Bool
 
-    private var pollingTask: Task<Void, Never>?
-    private var inFlightRefresh: Task<Void, Never>?
-    private var continuations: [UUID: AsyncStream<Event>.Continuation] = [:]
-    private var latest: Snapshot?
-    private var shouldPublishNextSuccessfulRefresh = false
-    private var preferredWorkspacePath: String?
+    private var contexts: [PiModelWorkspaceScope: WorkspacePollingContext] = [:]
     private var isShutdown = false
 
     init(
@@ -87,23 +93,28 @@ actor PiModelPollingService: PiModelPolling {
     }
 
     func latestSnapshot() async -> Snapshot? {
-        if let latest { return latest }
-        return await registrySnapshotAfterWarmingStore()
+        await latestSnapshot(workspacePath: nil)
+    }
+
+    func latestSnapshot(workspacePath: String?) async -> Snapshot? {
+        let scope = PiModelWorkspaceScope(workspacePath: workspacePath)
+        if let latest = contexts[scope]?.latest { return latest }
+        return await registrySnapshotAfterWarmingStore(scope: scope)
     }
 
     /// Force a foreground pi RPC model discovery and return the normalized snapshot.
     func discoverOnce(workspacePath: String?) async throws -> Snapshot? {
         guard !isShutdown else { return nil }
-        preferredWorkspacePath = normalizedWorkspacePath(workspacePath)
-        if let existing = inFlightRefresh {
+        let scope = PiModelWorkspaceScope(workspacePath: workspacePath)
+        if let existing = contexts[scope]?.inFlightRefresh {
             await existing.value
-            return await latestSnapshot()
+            return await latestSnapshot(workspacePath: scope.workspacePath)
         }
-        guard let discovered = try await client.discoverModels(workspacePath: preferredWorkspacePath) else {
+        guard let discovered = try await client.discoverModels(workspacePath: scope.workspacePath) else {
             return nil
         }
-        applyRefreshResult(discovered)
-        return await latestSnapshot()
+        applyRefreshResult(discovered, scope: scope)
+        return await latestSnapshot(workspacePath: scope.workspacePath)
     }
 
     func subscribe(workspacePath: String?) async -> AsyncStream<Event> {
@@ -113,66 +124,78 @@ actor PiModelPollingService: PiModelPolling {
             }
         }
 
-        preferredWorkspacePath = normalizedWorkspacePath(workspacePath)
+        let scope = PiModelWorkspaceScope(workspacePath: workspacePath)
         let id = UUID()
         let (stream, continuation) = AsyncStream<Event>.makeStream(bufferingPolicy: .bufferingNewest(1))
-        continuations[id] = continuation
+        var context = contexts[scope] ?? WorkspacePollingContext()
+        context.continuations[id] = continuation
+        contexts[scope] = context
         continuation.onTermination = { [weak self] _ in
-            Task { await self?.removeSubscriber(id) }
+            Task { await self?.removeSubscriber(id, scope: scope) }
         }
 
-        if latest == nil, let cached = await registrySnapshotAfterWarmingStore() {
+        if contexts[scope]?.latest == nil, let cached = await registrySnapshotAfterWarmingStore(scope: scope) {
             guard !isShutdown else {
                 continuation.finish()
                 return stream
             }
-            if latest == nil {
-                latest = cached
+            if contexts[scope]?.latest == nil {
+                var refreshedContext = contexts[scope] ?? WorkspacePollingContext()
+                refreshedContext.latest = cached
+                contexts[scope] = refreshedContext
             }
         }
-        if let latest {
+        if let latest = contexts[scope]?.latest {
             continuation.yield(.snapshot(latest))
+            #if DEBUG
+                contexts[scope]?.publishedEventCount += 1
+            #endif
         }
 
         guard !isShutdown else { return stream }
         if startsPollingOnSubscribe {
-            startPollingIfNeeded()
+            startPollingIfNeeded(scope: scope)
         }
         return stream
     }
 
     func refreshNow(workspacePath: String?) async {
         guard !isShutdown else { return }
-        preferredWorkspacePath = normalizedWorkspacePath(workspacePath)
-        if let existing = inFlightRefresh {
+        let scope = PiModelWorkspaceScope(workspacePath: workspacePath)
+        if let existing = contexts[scope]?.inFlightRefresh {
             await existing.value
             return
         }
-        await performRefresh()
+        await performRefresh(scope: scope)
     }
 
     func shutdown(finishSubscribers: Bool = true) async {
         isShutdown = true
-        pollingTask?.cancel()
-        pollingTask = nil
-        inFlightRefresh?.cancel()
-        inFlightRefresh = nil
+        for scope in contexts.keys {
+            contexts[scope]?.pollingTask?.cancel()
+            contexts[scope]?.inFlightRefresh?.cancel()
+        }
         if finishSubscribers {
-            let activeContinuations = continuations
-            continuations.removeAll()
-            for continuation in activeContinuations.values {
+            let activeContinuations = contexts.values.flatMap(\.continuations.values)
+            contexts.removeAll()
+            for continuation in activeContinuations {
                 continuation.finish()
+            }
+        } else {
+            for scope in contexts.keys {
+                contexts[scope]?.pollingTask = nil
+                contexts[scope]?.inFlightRefresh = nil
             }
         }
     }
 
-    private func startPollingIfNeeded() {
+    private func startPollingIfNeeded(scope: PiModelWorkspaceScope) {
         guard !isShutdown else { return }
-        guard pollingTask == nil else { return }
-        pollingTask = Task { [weak self] in
+        guard contexts[scope]?.pollingTask == nil else { return }
+        let task = Task { [weak self, scope] in
             guard let self else { return }
             while !Task.isCancelled {
-                await performRefresh()
+                await performRefresh(scope: scope)
                 do {
                     try await Task.sleep(nanoseconds: intervalNanos)
                 } catch {
@@ -180,76 +203,100 @@ actor PiModelPollingService: PiModelPolling {
                 }
             }
         }
+        var context = contexts[scope] ?? WorkspacePollingContext()
+        context.pollingTask = task
+        contexts[scope] = context
     }
 
-    private func stopPollingIfIdle() {
-        guard continuations.isEmpty else { return }
-        pollingTask?.cancel()
-        pollingTask = nil
+    private func stopPollingIfIdle(scope: PiModelWorkspaceScope) {
+        guard contexts[scope]?.continuations.isEmpty ?? true else { return }
+        contexts[scope]?.pollingTask?.cancel()
+        contexts[scope]?.pollingTask = nil
     }
 
-    private func removeSubscriber(_ id: UUID) {
-        continuations.removeValue(forKey: id)
-        stopPollingIfIdle()
+    private func removeSubscriber(_ id: UUID, scope: PiModelWorkspaceScope) {
+        contexts[scope]?.continuations.removeValue(forKey: id)
+        stopPollingIfIdle(scope: scope)
     }
 
-    private func performRefresh() async {
+    private func performRefresh(scope: PiModelWorkspaceScope) async {
         guard !isShutdown else { return }
-        if let existing = inFlightRefresh {
+        if let existing = contexts[scope]?.inFlightRefresh {
             await existing.value
             return
         }
 
-        let workspacePath = preferredWorkspacePath
-        let task = Task { [weak self, workspacePath] in
+        let workspacePath = scope.workspacePath
+        let task = Task { [weak self, scope, workspacePath] in
             guard let self else { return }
             do {
                 guard let discovered = try await client.discoverModels(workspacePath: workspacePath) else { return }
                 guard !Task.isCancelled else { return }
-                await applyRefreshResult(discovered)
+                await applyRefreshResult(discovered, scope: scope)
             } catch {
-                await publishFailure(Failure(message: error.localizedDescription))
+                await publishFailure(Failure(message: error.localizedDescription), scope: scope)
             }
         }
-        inFlightRefresh = task
-        defer { inFlightRefresh = nil }
+        var context = contexts[scope] ?? WorkspacePollingContext()
+        context.inFlightRefresh = task
+        contexts[scope] = context
+        defer { contexts[scope]?.inFlightRefresh = nil }
         await task.value
     }
 
-    private func applyRefreshResult(_ discovered: PiDiscoveredModels) {
+    private func applyRefreshResult(_ discovered: PiDiscoveredModels, scope: PiModelWorkspaceScope) {
         guard !isShutdown else { return }
-        _ = AgentPiModelRegistry.shared.updateDiscoveredModels(discovered)
-        guard let normalized = AgentPiModelRegistry.shared.resolvedSnapshot() else { return }
+        _ = AgentPiModelRegistry.shared.updateDiscoveredModels(discovered, workspacePath: scope.workspacePath)
+        guard let normalized = AgentPiModelRegistry.shared.resolvedSnapshot(workspacePath: scope.workspacePath) else { return }
         let snapshot = Snapshot(models: normalized, fetchedAt: Date())
-        guard shouldPublishNextSuccessfulRefresh || latest?.models != snapshot.models else { return }
-        shouldPublishNextSuccessfulRefresh = false
-        latest = snapshot
-        for continuation in continuations.values {
+        var context = contexts[scope] ?? WorkspacePollingContext()
+        guard context.shouldPublishNextSuccessfulRefresh || context.latest?.models != snapshot.models else {
+            contexts[scope] = context
+            return
+        }
+        context.shouldPublishNextSuccessfulRefresh = false
+        context.latest = snapshot
+        let continuations = context.continuations.values
+        contexts[scope] = context
+        for continuation in continuations {
             continuation.yield(.snapshot(snapshot))
         }
+        #if DEBUG
+            contexts[scope]?.publishedEventCount += continuations.count
+        #endif
     }
 
-    private func publishFailure(_ failure: Failure) {
+    private func publishFailure(_ failure: Failure, scope: PiModelWorkspaceScope) {
         guard !isShutdown else { return }
-        shouldPublishNextSuccessfulRefresh = true
-        for continuation in continuations.values {
+        var context = contexts[scope] ?? WorkspacePollingContext()
+        context.shouldPublishNextSuccessfulRefresh = true
+        let continuations = context.continuations.values
+        contexts[scope] = context
+        for continuation in continuations {
             continuation.yield(.failure(failure))
         }
+        #if DEBUG
+            contexts[scope]?.publishedEventCount += continuations.count
+        #endif
     }
 
-    private func registrySnapshotAfterWarmingStore() async -> Snapshot? {
-        guard let models = await AgentPiModelRegistry.shared.resolvedSnapshotAfterWarmingStandardStore() else {
+    #if DEBUG
+        func test_publishedEventCount(workspacePath: String?) -> Int {
+            let scope = PiModelWorkspaceScope(workspacePath: workspacePath)
+            return contexts[scope]?.publishedEventCount ?? 0
+        }
+    #endif
+
+    private func registrySnapshotAfterWarmingStore(scope: PiModelWorkspaceScope) async -> Snapshot? {
+        guard let models = await AgentPiModelRegistry.shared.resolvedSnapshotAfterWarmingStandardStore(
+            workspacePath: scope.workspacePath
+        ) else {
             return nil
         }
         let snapshot = Snapshot(models: models, fetchedAt: Date())
-        latest = snapshot
+        var context = contexts[scope] ?? WorkspacePollingContext()
+        context.latest = snapshot
+        contexts[scope] = context
         return snapshot
-    }
-
-    private func normalizedWorkspacePath(_ workspacePath: String?) -> String? {
-        guard let trimmed = workspacePath?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
-            return nil
-        }
-        return trimmed
     }
 }

@@ -7,16 +7,26 @@ struct PiRunCompletionGate: Equatable {
         latestPendingMessageCount = state.pendingMessageCount ?? 0
     }
 
-    mutating func terminalState(for status: PiNativeSessionController.TurnStatus) -> AgentSessionRunState? {
-        if status == .completed, latestPendingMessageCount > 0 {
-            latestPendingMessageCount -= 1
-            return nil
-        }
-        return switch status {
+    func terminalState(for status: PiNativeSessionController.TurnStatus) -> AgentSessionRunState? {
+        switch status {
         case .completed: .completed
         case .cancelled: .cancelled
         case .failed: .failed
         }
+    }
+}
+
+enum PiRunDiagnosticPresentation {
+    static func statusText(from diagnostic: PiRPCClient.ProtocolDiagnostic) -> String {
+        var parts = ["pi diagnostic: \(diagnostic.kind.rawValue)"]
+        if let eventType = diagnostic.eventType?.trimmingCharacters(in: .whitespacesAndNewlines), !eventType.isEmpty {
+            parts.append(eventType)
+        }
+        let message = diagnostic.message.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !message.isEmpty {
+            parts.append(message)
+        }
+        return parts.joined(separator: " • ")
     }
 }
 

@@ -62,6 +62,8 @@ enum PiIntegrationConfiguration {
 
     static let providerDisplayName = "pi"
     static let minimumSupportedVersion = "0.79.0"
+    static let managedRPCVersionProbeTimeout: TimeInterval = 15
+    static let managedRPCColdStartRetryTimeout: TimeInterval = 30
     private static let supportedVersionCacheMaxAge: TimeInterval = 6 * 60 * 60
     private static let supportedVersionCache = SupportedVersionCache()
     static let managedRunEnvironmentKey = "REPOPROMPT_PI_MANAGED_RUN"
@@ -174,9 +176,10 @@ enum PiIntegrationConfiguration {
     static func checkManagedRPCAvailability(
         commandName: String = CLILaunchProfiles.pi.commandName,
         workingDirectory: String? = nil,
-        timeout: TimeInterval = 5,
+        timeout: TimeInterval = managedRPCVersionProbeTimeout,
         enableDebugLogging: Bool = false,
-        allowCachedSupportedVersionOnTimeout: Bool = false
+        allowCachedSupportedVersionOnTimeout: Bool = false,
+        firstTimeoutRetryTimeout: TimeInterval? = managedRPCColdStartRetryTimeout
     ) async -> Availability {
         let availability = await checkAvailability(
             commandName: commandName,
@@ -185,21 +188,34 @@ enum PiIntegrationConfiguration {
             enableDebugLogging: enableDebugLogging
         )
         guard availability.isAvailable else {
-            if allowCachedSupportedVersionOnTimeout,
-               availability.failureKind == .timedOut,
-               let cached = await supportedVersionCache.entry(
-                   for: commandName,
-                   maxAge: supportedVersionCacheMaxAge
-               )
-            {
-                return Availability(
-                    isAvailable: true,
-                    commandPath: cached.commandPath,
-                    version: cached.version,
-                    diagnostic: "Using last verified supported pi \(cached.version) at \(cached.commandPath) because fresh pi --version timed out after \(timeout) seconds.",
-                    failureKind: nil,
-                    usedCachedSupportedVersion: true
-                )
+            if availability.failureKind == .timedOut {
+                if allowCachedSupportedVersionOnTimeout,
+                   let cached = await supportedVersionCache.entry(
+                       for: commandName,
+                       maxAge: supportedVersionCacheMaxAge
+                   )
+                {
+                    return Availability(
+                        isAvailable: true,
+                        commandPath: cached.commandPath,
+                        version: cached.version,
+                        diagnostic: "Using last verified supported pi \(cached.version) at \(cached.commandPath) because fresh pi --version timed out after \(timeout) seconds.",
+                        failureKind: nil,
+                        usedCachedSupportedVersion: true
+                    )
+                }
+                if let firstTimeoutRetryTimeout,
+                   firstTimeoutRetryTimeout > timeout
+                {
+                    return await checkManagedRPCAvailability(
+                        commandName: commandName,
+                        workingDirectory: workingDirectory,
+                        timeout: firstTimeoutRetryTimeout,
+                        enableDebugLogging: enableDebugLogging,
+                        allowCachedSupportedVersionOnTimeout: false,
+                        firstTimeoutRetryTimeout: nil
+                    )
+                }
             }
             return availability
         }

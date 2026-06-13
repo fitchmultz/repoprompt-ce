@@ -18,6 +18,7 @@ extension AgentModeViewModel {
             if session.runState == .waitingForApproval {
                 session.runState = .running
             }
+            publishRunInteractionStateChange(for: session, reason: .approvalResponseSubmitted)
             requestUIRefresh(tabID: tabID, urgent: true)
             Task { [controller = session.acpController] in
                 await controller?.respondToPermissionRequest(id: requestID, decision: decision)

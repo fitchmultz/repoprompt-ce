@@ -918,6 +918,35 @@ final class AgentModeRunServiceLifecycleTests: XCTestCase {
         )
     }
 
+    func testPiExtensionUIResponseGateClearsWhenResponseAndCancellationBothThrow() async {
+        let recorder = LifecycleRecorder()
+        let session = AgentModeViewModel.TabSession(tabID: UUID())
+        let hooks = makeHooks(recorder: recorder)
+        let runner = PiIntegratedAgentModeRunner(
+            windowID: 1,
+            hooks: hooks,
+            terminalCommitBarrier: AgentRunTerminalCommitBarrier(hooks: hooks)
+        )
+        let request = PiRPCClient.PiExtensionUIRequest(
+            id: "ui-request-1",
+            method: "confirm",
+            title: nil,
+            message: "Continue?",
+            statusText: nil,
+            raw: [:]
+        )
+
+        var responses: [PiExtensionUIResponse] = []
+        await runner.test_handleBlockingExtensionUIRequest(request, session: session) { response in
+            responses.append(response)
+            throw LifecyclePiExtensionUIResponseError()
+        }
+
+        XCTAssertFalse(session.piExtensionUIResponseInFlight)
+        XCTAssertEqual(responses.count, 2)
+        XCTAssertEqual(recorder.events.count(where: { $0 == "pi-flush-after-ui-response" }), 0)
+    }
+
     func testCancellationPublishesTerminalStateBeforeSlowHeadlessDisposalCompletes() async throws {
         let recorder = LifecycleRecorder()
         let provider = LifecycleBlockingHeadlessProvider(recorder: recorder)
@@ -1046,6 +1075,28 @@ final class AgentModeRunServiceLifecycleTests: XCTestCase {
 
         XCTAssertTrue(recorder.contains("late-cleanup:return"))
         XCTAssertEqual(recorder.events.count(where: { $0 == "headless:blocking-dispose-finish" }), 1)
+    }
+
+    func testExecutionLocationCancellationRestoresQueuedPiDraftExactlyOnce() async {
+        let recorder = LifecycleRecorder()
+        let harness = makeHarness(recorder: recorder)
+        let session = AgentModeViewModel.TabSession(tabID: UUID())
+        session.selectedAgent = .pi
+        session.runState = .running
+        session.runID = UUID()
+        session.beginRunAttempt(source: "test.piExecutionLocationDraft")
+        session.pendingPiSteeringInstructions.append(makePiSteeringInstruction(session: session, text: "queued pi draft"))
+
+        await harness.service.cancelRun(
+            tabID: session.tabID,
+            session: session,
+            intent: .executionLocationChange,
+            completion: .terminalPublished
+        )
+
+        XCTAssertTrue(session.pendingPiSteeringInstructions.isEmpty)
+        XCTAssertEqual(recorder.events.count(where: { $0 == "draft:queued pi draft" }), 1)
+        XCTAssertEqual(recorder.events.count(where: { $0.hasPrefix("draft:") }), 1)
     }
 
     func testExecutionLocationCancellationReturnsAfterSynchronousProviderDetachment() async throws {
@@ -1438,6 +1489,8 @@ final class AgentModeRunServiceLifecycleTests: XCTestCase {
             notifyAgentTurnComplete: { _ in },
             handleHeadlessStreamResult: { _, _, _, _ in },
             askUserInteraction: { _, _ in AgentAskUserResponse(answersByQuestionID: [:], timedOut: false, skipped: true, elapsedSeconds: 0) },
+            setPiExtensionUIResponseInFlight: { session, isInFlight in session.piExtensionUIResponseInFlight = isInFlight },
+            flushQueuedPiSteeringAfterBlockingResponse: { _ in recorder.record("pi-flush-after-ui-response") },
             buildHeadlessAgentMessage: { _, text, _, _ in AgentMessage(userMessage: text) },
             finalizeStreamingItems: { _ in },
             finalizePendingToolCalls: { _, _ in },
@@ -1476,6 +1529,22 @@ final class AgentModeRunServiceLifecycleTests: XCTestCase {
         session.beginRunAttempt(source: "test")
         session.claudeController = controller
         return session
+    }
+
+    private func makePiSteeringInstruction(
+        session: AgentModeViewModel.TabSession,
+        text: String
+    ) -> AgentModeViewModel.TabSession.PiSteeringInstruction {
+        AgentModeViewModel.TabSession.PiSteeringInstruction(
+            id: UUID(),
+            targetRunID: session.runID,
+            targetRunAttemptID: session.activeRunAttemptID,
+            providerText: text,
+            attachments: [],
+            draftText: text,
+            optimisticUserItemID: nil,
+            createdAt: Date()
+        )
     }
 
     private func makeClaudeSteeringInstruction(
@@ -1785,6 +1854,8 @@ final class AgentModeRunServiceLifecycleTests: XCTestCase {
 }
 
 private typealias LifecycleMCPIdleWaiter = (_ runID: UUID) async throws -> Void
+
+private struct LifecyclePiExtensionUIResponseError: Error {}
 
 private struct LifecycleTimeoutError: LocalizedError {
     let operation: String

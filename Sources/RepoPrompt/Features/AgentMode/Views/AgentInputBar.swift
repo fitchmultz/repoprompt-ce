@@ -28,6 +28,7 @@ struct AgentComposerActions {
     let reasoningEffortOptionsForCurrentSelection: () -> [CodexReasoningEffort]
     let selectReasoningEffort: (_ effort: CodexReasoningEffort?) -> Void
     let piThinkingLevelOptions: () -> [PiThinkingLevel]
+    let piModelSpecifier: (_ raw: String?) -> PiModelSpecifier?
     let selectPiThinkingLevel: (_ level: PiThinkingLevel?) -> Void
     let setAutoEditEnabled: (_ enabled: Bool) -> Void
     let setProviderPermissionLevel: (_ id: AgentProviderPermissionLevelID) -> Void
@@ -142,7 +143,10 @@ struct AgentInputBar: View {
             selectAgentModel: { agent, rawModel in
                 agentModeVM.selectedAgent = agent
                 if agent == .pi {
-                    if let specifier = PiModelSpecifier(raw: rawModel) {
+                    if let specifier = AgentModelCatalog.piModelSpecifier(
+                        raw: rawModel,
+                        workspacePath: agentModeVM.piModelCatalogWorkspacePath()
+                    ) {
                         agentModeVM.selectedReasoningEffortRaw = PiThinkingLevel.parse(specifier.thinkingLevel)?.rawValue
                         agentModeVM.selectModel(rawModel: specifier.providerQualifiedModelRaw)
                     } else {
@@ -156,10 +160,14 @@ struct AgentInputBar: View {
             reasoningEffortOptionsForCurrentSelection: { agentModeVM.reasoningEffortOptionsForCurrentSelection() },
             selectReasoningEffort: { effort in agentModeVM.selectReasoningEffort(effort) },
             piThinkingLevelOptions: { agentModeVM.piThinkingLevelOptionsForCurrentSelection() },
+            piModelSpecifier: { raw in
+                AgentModelCatalog.piModelSpecifier(raw: raw, workspacePath: agentModeVM.piModelCatalogWorkspacePath())
+            },
             selectPiThinkingLevel: { level in
-                if let specifier = PiModelSpecifier(raw: agentModeVM.selectedModelRaw),
-                   specifier.thinkingLevel != nil
-                {
+                if let specifier = AgentModelCatalog.piModelSpecifier(
+                    raw: agentModeVM.selectedModelRaw,
+                    workspacePath: agentModeVM.piModelCatalogWorkspacePath()
+                ), specifier.thinkingLevel != nil {
                     agentModeVM.selectModel(rawModel: specifier.providerQualifiedModelRaw)
                 }
                 agentModeVM.selectedReasoningEffortRaw = level?.rawValue
@@ -999,7 +1007,7 @@ struct AgentComposerView: View, Equatable {
         if props.selectedAgent == .pi {
             let levels = actions.piThinkingLevelOptions()
             let selectedLevel = PiThinkingLevel.parse(props.selectedReasoningEffortRaw)
-                ?? PiThinkingLevel.parse(PiModelSpecifier(raw: props.selectedModelRaw)?.thinkingLevel)
+                ?? PiThinkingLevel.parse(actions.piModelSpecifier(props.selectedModelRaw)?.thinkingLevel)
             Menu {
                 Button {
                     actions.selectPiThinkingLevel(nil)

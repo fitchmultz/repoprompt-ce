@@ -220,6 +220,15 @@ extension AgentModeViewModel {
         }
 
         var pendingPiSteeringInstructions: [PiSteeringInstruction] = []
+        var piSteeringFlushTask: Task<Void, Never>?
+        var piExtensionUIResponseInFlight: Bool = false
+
+        func clearPendingPiSteeringInstructions() {
+            piSteeringFlushTask?.cancel()
+            piSteeringFlushTask = nil
+            pendingPiSteeringInstructions.removeAll()
+            piExtensionUIResponseInFlight = false
+        }
 
         /// Number of upcoming turnCompleted events that should be treated as intermediate
         /// because we successfully queued a follow-up prompt during the same run.

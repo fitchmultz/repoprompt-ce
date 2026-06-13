@@ -1976,7 +1976,10 @@ struct CLIProvidersSettingsView: View {
         if count == 0 {
             return "Model discovery will refresh in the background."
         }
-        let providerCount = AgentModelCatalog.piMenu(for: options).providerGroups.count
+        let providerCount = AgentModelCatalog.piMenu(
+            for: options,
+            knownModelIDs: AgentModelCatalog.piKnownModelIDs()
+        ).providerGroups.count
         if providerCount > 1 {
             return "\(count) models discovered across \(providerCount) providers."
         }

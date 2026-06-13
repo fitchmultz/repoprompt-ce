@@ -60,6 +60,8 @@ final class AgentModeRunService {
         let notifyAgentTurnComplete: (AgentModeViewModel.TabSession) -> Void
         let handleHeadlessStreamResult: (AIStreamResult, AgentModeViewModel.TabSession, UUID, UUID) async -> Void
         let askUserInteraction: (UUID, AgentAskUserInteraction) async throws -> AgentAskUserResponse
+        let setPiExtensionUIResponseInFlight: (AgentModeViewModel.TabSession, Bool) -> Void
+        let flushQueuedPiSteeringAfterBlockingResponse: (AgentModeViewModel.TabSession) -> Void
         let buildHeadlessAgentMessage: (AgentModeViewModel.TabSession, String, UUID, [AgentImageAttachment]) -> AgentMessage
         let finalizeStreamingItems: (AgentModeViewModel.TabSession) -> Void
         let finalizePendingToolCalls: (AgentModeViewModel.TabSession, AgentSessionRunState) -> Void
@@ -943,6 +945,7 @@ final class AgentModeRunService {
         let drafts = (
             session.pendingClaudeSteeringInstructions.map(\.draftText)
                 + session.pendingACPSteeringInstructions.map(\.draftText)
+                + session.pendingPiSteeringInstructions.map(\.draftText)
                 + session.pendingInstructions
         )
         .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -986,6 +989,23 @@ final class AgentModeRunService {
             }
             return
         }
+        let pendingPiSteeringDrafts = session.pendingPiSteeringInstructions
+            .map(\.draftText)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let hadPendingPiSteeringInstructions = !session.pendingPiSteeringInstructions.isEmpty
+
+        // A cwd-changing cancellation restores every queued, undelivered draft once
+        // before pi steering is cleared; the aggregate helper already includes pi
+        // drafts. Ordinary stop keeps the previous provider-specific restoration.
+        if intent == .executionLocationChange {
+            restoreAllQueuedDraftsForExecutionLocationChange(tabID: tabID, session: session, strategy: .prependAlways)
+        }
+
+        // Clear pi steering before interaction cancellation publishes state changes;
+        // otherwise resolving the blocking UI during cancel can flush stale pi input.
+        session.clearPendingPiSteeringInstructions()
+
         hooks.cancelPendingQuestion(session)
         hooks.cancelPendingApproval(session)
         hooks.cancelPendingApplyEditsReview(session, "Run cancelled")
@@ -997,14 +1017,13 @@ final class AgentModeRunService {
         session.acpSteeringFlushTask?.cancel()
         session.acpSteeringFlushTask = nil
 
-        // Ordinary stop keeps existing behavior. A cwd-changing cancellation
-        // restores every queued, undelivered draft once without replaying the
-        // already-delivered active prompt.
-        switch intent {
-        case .userStop:
+        if intent == .userStop {
             restoreAllQueuedClaudeSteeringDrafts(tabID: tabID, session: session, strategy: .prependAlways)
-        case .executionLocationChange:
-            restoreAllQueuedDraftsForExecutionLocationChange(tabID: tabID, session: session, strategy: .prependAlways)
+            restoreClaudeSteeringDrafts(
+                pendingPiSteeringDrafts,
+                tabID: tabID,
+                strategy: .prependAlways
+            )
         }
 
         let hadPendingTokenQueue = !session.pendingNonCodexUserInputTokenQueue.isEmpty
@@ -1012,11 +1031,13 @@ final class AgentModeRunService {
         let hadPendingInstructions = !session.pendingInstructions.isEmpty
             || !session.pendingClaudeSteeringInstructions.isEmpty
             || !session.pendingACPSteeringInstructions.isEmpty
+            || hadPendingPiSteeringInstructions
         session.pendingNonCodexUserInputTokenQueue.removeAll()
         session.activeNonCodexTurnTokenAccumulator = nil
         session.pendingInstructions.removeAll()
         session.pendingClaudeSteeringInstructions.removeAll()
         session.pendingACPSteeringInstructions.removeAll()
+        session.clearPendingPiSteeringInstructions()
         session.pendingSupersedingTurnCompletions = 0
         session.claudeSupersedingProtectedTurnIDs.removeAll()
         session.claudeExpectedTurnIDs.removeAll()

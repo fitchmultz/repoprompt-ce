@@ -60,6 +60,131 @@ final class PiModelCatalogTests: XCTestCase {
         XCTAssertFalse(AgentModelCatalog.isValid(rawModel: "missing/gpt-5.5:low", for: .pi, availability: availability))
     }
 
+    func testPiModelSpecifierUsesStrictCanonicalThinkingSuffixesAndKnownModelPrecedence() throws {
+        let rawModel = "custom/provider-model:high"
+        let snapshot = AgentPiModelRegistry.discoveredModels(
+            from: [
+                .init(
+                    provider: "custom",
+                    id: "provider-model:high",
+                    displayName: "Provider Model High",
+                    description: nil,
+                    raw: ["reasoning": .bool(false)]
+                )
+            ],
+            currentModel: nil
+        )
+
+        XCTAssertNotNil(snapshot)
+        XCTAssertTrue(try AgentPiModelRegistry.shared.updateDiscoveredModels(XCTUnwrap(snapshot)))
+        let availability = AgentModelCatalog.AvailabilityContext(piAvailable: true)
+
+        XCTAssertTrue(AgentModelCatalog.isValid(rawModel: rawModel, for: .pi, availability: availability))
+        XCTAssertFalse(AgentModelCatalog.isValid(
+            rawModel: "provider/model:none",
+            for: .pi,
+            availability: availability
+        ))
+        XCTAssertFalse(AgentModelCatalog.isValid(
+            rawModel: "provider/model:x-high",
+            for: .pi,
+            availability: availability
+        ))
+        XCTAssertFalse(AgentModelCatalog.isValid(
+            rawModel: "provider/model:high",
+            for: .pi,
+            availability: availability
+        ))
+        XCTAssertEqual(AgentModelCatalog.piThinkingLevelOptions(for: rawModel), [])
+    }
+
+    func testColonBearingKnownPiModelResolvesAcrossPickerMenuAndDisplayPaths() throws {
+        let workspace = "/tmp/pi-known-colon-workspace"
+        let rawModel = "custom/provider-model:high"
+        let snapshot = Self.snapshot(
+            rawValue: rawModel,
+            displayName: "Provider Model High",
+            thinkingLevels: []
+        )
+        XCTAssertTrue(AgentPiModelRegistry.shared.updateDiscoveredModels(snapshot, workspacePath: workspace))
+        let availability = AgentModelCatalog.AvailabilityContext(piAvailable: true, piWorkspacePath: workspace)
+        let options = AgentModelCatalog.options(for: .pi, availability: availability)
+        let knownModelIDs = AgentModelCatalog.piKnownModelIDs(workspacePath: workspace)
+
+        let specifier = try XCTUnwrap(AgentModelCatalog.piModelSpecifier(raw: rawModel, workspacePath: workspace))
+        XCTAssertEqual(specifier.providerQualifiedModelRaw, rawModel)
+        XCTAssertNil(specifier.thinkingLevel)
+        XCTAssertEqual(
+            AgentModelCatalog.displayName(for: rawModel, agentKind: .pi, availability: availability),
+            "Provider Model High"
+        )
+        XCTAssertEqual(
+            AgentModelCatalog.qualifiedDisplayName(for: rawModel, agentKind: .pi, availability: availability),
+            "pi · Custom · Provider Model High"
+        )
+        XCTAssertTrue(AgentModelCatalog.modelOptionIsSelected(
+            optionRaw: rawModel,
+            selectedRaw: rawModel,
+            agentKind: .pi,
+            knownModelIDs: knownModelIDs
+        ))
+
+        let menu = AgentModelCatalog.piMenu(for: options, includeThinkingLevelOptions: true, knownModelIDs: knownModelIDs)
+        let group = try XCTUnwrap(menu.providerGroups.first?.groups.first)
+        XCTAssertEqual(group.baseModelRaw, rawModel)
+        XCTAssertEqual(group.options.map(\.option.rawValue), [rawModel])
+        XCTAssertEqual(group.options.map(\.thinkingLevel), [nil])
+    }
+
+    func testUnknownPiModelWithCanonicalThinkingSuffixStillSplits() throws {
+        let specifier = try XCTUnwrap(PiModelSpecifier(raw: "custom/provider-model:high", knownModelIDs: []))
+
+        XCTAssertEqual(specifier.providerQualifiedModelRaw, "custom/provider-model")
+        XCTAssertEqual(specifier.thinkingLevel, "high")
+    }
+
+    func testColonBearingPiModelIDsRemainSelectableAndSupportThinkingVariants() throws {
+        let rawModel = "amazon-bedrock/amazon.nova-2-lite-v1:0"
+        let snapshot = AgentPiModelRegistry.discoveredModels(
+            from: [
+                .init(
+                    provider: "amazon-bedrock",
+                    id: "amazon.nova-2-lite-v1:0",
+                    displayName: "Nova 2 Lite",
+                    description: nil,
+                    raw: ["reasoning": .bool(true)]
+                )
+            ],
+            currentModel: nil
+        )
+
+        XCTAssertNotNil(snapshot)
+        XCTAssertTrue(try AgentPiModelRegistry.shared.updateDiscoveredModels(XCTUnwrap(snapshot)))
+        let availability = AgentModelCatalog.AvailabilityContext(piAvailable: true)
+
+        XCTAssertTrue(AgentModelCatalog.isValid(rawModel: rawModel, for: .pi, availability: availability))
+        XCTAssertTrue(AgentModelCatalog.isValid(rawModel: "\(rawModel):high", for: .pi, availability: availability))
+        XCTAssertEqual(
+            AgentModelCatalog.displayName(for: "\(rawModel):high", agentKind: .pi, availability: availability),
+            "Nova 2 Lite High"
+        )
+
+        let menu = AgentModelCatalog.piMenu(
+            for: AgentModelCatalog.options(for: .pi, availability: availability),
+            includeThinkingLevelOptions: true
+        )
+        let group = try XCTUnwrap(menu.providerGroups.first?.groups.first)
+        XCTAssertEqual(group.displayName, "Nova 2 Lite")
+        XCTAssertEqual(group.options.map(\.option.rawValue), [
+            rawModel,
+            "\(rawModel):off",
+            "\(rawModel):minimal",
+            "\(rawModel):low",
+            "\(rawModel):medium",
+            "\(rawModel):high"
+        ])
+    }
+
     func testPiDefaultThinkingOptionsFollowCurrentDiscoveredModel() {
         let snapshot = PiDiscoveredModels(
             options: [
@@ -200,22 +325,76 @@ final class PiModelCatalogTests: XCTestCase {
         XCTAssertEqual(snapshot.option(matching: "openai-codex/gpt-5.5")?.supportedPiThinkingLevels, [.off, .low, .medium, .high, .xhigh])
     }
 
+    func testPiModelCatalogResolvesDiscoveredModelsByWorkspaceAvailability() {
+        let workspaceA = "/tmp/pi-model-catalog-workspace-a"
+        let workspaceB = "/tmp/pi-model-catalog-workspace-b"
+        let snapshotA = Self.snapshot(rawValue: "workspace-a/model", displayName: "Workspace A Model")
+        let snapshotB = Self.snapshot(rawValue: "workspace-b/model", displayName: "Workspace B Model")
+
+        XCTAssertTrue(AgentPiModelRegistry.shared.updateDiscoveredModels(snapshotA, workspacePath: workspaceA))
+        XCTAssertTrue(AgentPiModelRegistry.shared.updateDiscoveredModels(snapshotB, workspacePath: workspaceB))
+
+        let optionsA = AgentModelCatalog.options(
+            for: .pi,
+            availability: .init(piAvailable: true, piWorkspacePath: workspaceA)
+        )
+        let optionsB = AgentModelCatalog.options(
+            for: .pi,
+            availability: .init(piAvailable: true, piWorkspacePath: workspaceB)
+        )
+
+        XCTAssertEqual(optionsA.map(\.rawValue), ["default", "workspace-a/model"])
+        XCTAssertEqual(optionsB.map(\.rawValue), ["default", "workspace-b/model"])
+        XCTAssertEqual(
+            AgentModelCatalog.piThinkingLevelOptions(for: "workspace-a/model", workspacePath: workspaceB),
+            []
+        )
+    }
+
+    func testWorkspaceScopedPiModelResolutionUsesAvailabilityWorkspacePath() {
+        let workspaceA = "/tmp/pi-model-resolution-workspace-a"
+        let workspaceB = "/tmp/pi-model-resolution-workspace-b"
+        let snapshotA = Self.snapshot(
+            rawValue: "workspace-a/model",
+            displayName: "Workspace A Model",
+            thinkingLevels: [.off, .low]
+        )
+        let snapshotB = Self.snapshot(
+            rawValue: "workspace-b/model",
+            displayName: "Workspace B Model",
+            thinkingLevels: [.off, .high]
+        )
+        XCTAssertTrue(AgentPiModelRegistry.shared.updateDiscoveredModels(snapshotA, workspacePath: workspaceA))
+        XCTAssertTrue(AgentPiModelRegistry.shared.updateDiscoveredModels(snapshotB, workspacePath: workspaceB))
+        let availabilityA = AgentModelCatalog.AvailabilityContext(piAvailable: true, piWorkspacePath: workspaceA)
+        let availabilityB = AgentModelCatalog.AvailabilityContext(piAvailable: true, piWorkspacePath: workspaceB)
+
+        XCTAssertEqual(
+            AgentModelCatalog.modelOption(matching: "workspace-a/model", for: .pi, availability: availabilityA)?.displayName,
+            "Workspace A Model"
+        )
+        XCTAssertNil(AgentModelCatalog.modelOption(matching: "workspace-a/model", for: .pi, availability: availabilityB))
+        XCTAssertTrue(AgentModelCatalog.isValid(rawModel: "workspace-b/model:high", for: .pi, availability: availabilityB))
+        XCTAssertFalse(AgentModelCatalog.isValid(rawModel: "workspace-b/model:high", for: .pi, availability: availabilityA))
+        XCTAssertEqual(
+            AgentModelCatalog.displayName(for: "workspace-b/model:high", agentKind: .pi, availability: availabilityB),
+            "Workspace B Model High"
+        )
+        XCTAssertEqual(
+            AgentModelCatalog.resolveSelectionID("pi:workspace-b/model:high", availability: availabilityB)?.modelRaw,
+            "workspace-b/model:high"
+        )
+    }
+
     func testPiDynamicModelStorePersistsSnapshot() throws {
         let suiteName = "PiModelCatalogTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
-        let snapshot = PiDiscoveredModels(
-            options: [
-                AgentModelOption(rawValue: "default", displayName: "Default", description: nil, isDefault: true),
-                AgentModelOption(
-                    rawValue: "zai/glm-5.1",
-                    displayName: "GLM 5.1",
-                    description: "Strong GLM",
-                    isDefault: true,
-                    supportedPiThinkingLevels: [.off, .low, .high]
-                )
-            ],
-            currentModelRaw: "zai/glm-5.1"
+        let snapshot = Self.snapshot(
+            rawValue: "zai/glm-5.1",
+            displayName: "GLM 5.1",
+            description: "Strong GLM",
+            thinkingLevels: [.off, .low, .high]
         )
 
         PiDynamicModelStore.save(snapshot, defaults: defaults)
@@ -225,5 +404,70 @@ final class PiModelCatalogTests: XCTestCase {
         XCTAssertEqual(loaded?.options.map(\.rawValue), ["default", "zai/glm-5.1"])
         XCTAssertEqual(loaded?.options.last?.description, "Strong GLM")
         XCTAssertEqual(loaded?.options.last?.supportedPiThinkingLevels, [.off, .low, .high])
+    }
+
+    func testPiDynamicModelStorePersistsWorkspaceSnapshotsWithoutGlobalFallback() throws {
+        let suiteName = "PiModelCatalogTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let workspaceA = "/tmp/pi-cache-root/../pi-cache-root/workspace-a"
+        let canonicalWorkspaceA = try XCTUnwrap(AgentPiModelRegistry.canonicalWorkspacePath(workspaceA))
+        let workspaceB = "/tmp/pi-cache-root/workspace-b"
+        let globalSnapshot = Self.snapshot(rawValue: "global/model", displayName: "Global Model")
+        let snapshotA = Self.snapshot(rawValue: "workspace-a/model", displayName: "Workspace A Model")
+        let snapshotB = Self.snapshot(rawValue: "workspace-b/model", displayName: "Workspace B Model")
+
+        PiDynamicModelStore.save(globalSnapshot, defaults: defaults)
+        PiDynamicModelStore.save(snapshotA, workspacePath: workspaceA, defaults: defaults)
+        PiDynamicModelStore.save(snapshotB, workspacePath: workspaceB, defaults: defaults)
+
+        XCTAssertEqual(PiDynamicModelStore.load(defaults: defaults), globalSnapshot)
+        XCTAssertEqual(PiDynamicModelStore.load(workspacePath: canonicalWorkspaceA, defaults: defaults), snapshotA)
+        XCTAssertEqual(PiDynamicModelStore.load(workspacePath: workspaceB, defaults: defaults), snapshotB)
+        XCTAssertNil(PiDynamicModelStore.load(workspacePath: "/tmp/pi-cache-root/missing", defaults: defaults))
+    }
+
+    func testPiDynamicModelStoreConcurrentWorkspaceSavesPreserveSnapshots() throws {
+        let suiteName = "PiModelCatalogTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let workspaceCount = 64
+
+        DispatchQueue.concurrentPerform(iterations: workspaceCount) { index in
+            let workspacePath = "/tmp/pi-concurrent-cache/workspace-\(index)"
+            let snapshot = Self.snapshot(
+                rawValue: "workspace-\(index)/model",
+                displayName: "Workspace \(index) Model"
+            )
+            PiDynamicModelStore.save(snapshot, workspacePath: workspacePath, defaults: defaults)
+        }
+
+        for index in 0 ..< workspaceCount {
+            let workspacePath = "/tmp/pi-concurrent-cache/workspace-\(index)"
+            let loaded = PiDynamicModelStore.load(workspacePath: workspacePath, defaults: defaults)
+            XCTAssertEqual(loaded?.currentModelRaw, "workspace-\(index)/model")
+            XCTAssertEqual(loaded?.options.map(\.rawValue), ["default", "workspace-\(index)/model"])
+        }
+    }
+
+    private static func snapshot(
+        rawValue: String,
+        displayName: String,
+        description: String? = nil,
+        thinkingLevels: [PiThinkingLevel] = []
+    ) -> PiDiscoveredModels {
+        PiDiscoveredModels(
+            options: [
+                AgentModelOption(rawValue: "default", displayName: "Default", description: nil, isDefault: true),
+                AgentModelOption(
+                    rawValue: rawValue,
+                    displayName: displayName,
+                    description: description,
+                    isDefault: true,
+                    supportedPiThinkingLevels: thinkingLevels
+                )
+            ],
+            currentModelRaw: rawValue
+        )
     }
 }

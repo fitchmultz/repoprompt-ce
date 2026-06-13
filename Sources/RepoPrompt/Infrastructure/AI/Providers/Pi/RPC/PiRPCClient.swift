@@ -77,6 +77,8 @@ actor PiRPCClient {
             case unknownEventType
             case malformedEventPayload
             case lateResponse
+            case pendingMessageStopRecovery
+            case lateEventAfterTerminalRecovery
         }
 
         var kind: Kind
@@ -88,7 +90,7 @@ actor PiRPCClient {
 
     enum Event: Equatable {
         case agentStart
-        case agentEnd(messages: [[String: PiJSONValue]])
+        case agentEnd(messages: [[String: PiJSONValue]], willRetry: Bool)
         case turnStart
         case turnEnd(message: [String: PiJSONValue]?, toolResults: [[String: PiJSONValue]])
         case messageStart(message: [String: PiJSONValue]?)
@@ -99,7 +101,11 @@ actor PiRPCClient {
         case toolExecutionEnd(toolCallID: String, toolName: String, result: PiJSONValue?, isError: Bool)
         case queueUpdate(steering: [String], followUp: [String])
         case compactionStart(reason: String?)
-        case compactionEnd(result: PiJSONValue?)
+        case compactionEnd(reason: String?, result: PiJSONValue?, aborted: Bool, willRetry: Bool, errorMessage: String?)
+        case autoRetryStart(attempt: Int, maxAttempts: Int, delayMs: Int, errorMessage: String)
+        case autoRetryEnd(success: Bool, attempt: Int, finalError: String?)
+        case sessionInfoChanged(name: String?)
+        case thinkingLevelChanged(level: String)
         case extensionUIRequest(PiExtensionUIRequest)
         case extensionError(String)
         case customMessage(PiCustomMessage)
@@ -994,7 +1000,7 @@ actor PiRPCClient {
             return .agentStart
         case "agent_end":
             let messages = payload["messages"]?.arrayValue?.compactMap(\.objectValue) ?? []
-            return .agentEnd(messages: messages)
+            return .agentEnd(messages: messages, willRetry: payload["willRetry"]?.boolValue ?? false)
         case "turn_start":
             return .turnStart
         case "turn_end":
@@ -1041,7 +1047,30 @@ actor PiRPCClient {
         case "compaction_start":
             return .compactionStart(reason: payload["reason"]?.stringValue)
         case "compaction_end":
-            return .compactionEnd(result: payload["result"])
+            return .compactionEnd(
+                reason: payload["reason"]?.stringValue,
+                result: payload["result"],
+                aborted: payload["aborted"]?.boolValue ?? false,
+                willRetry: payload["willRetry"]?.boolValue ?? false,
+                errorMessage: payload["errorMessage"]?.stringValue
+            )
+        case "auto_retry_start":
+            return .autoRetryStart(
+                attempt: payload["attempt"]?.intValue ?? 0,
+                maxAttempts: payload["maxAttempts"]?.intValue ?? 0,
+                delayMs: payload["delayMs"]?.intValue ?? 0,
+                errorMessage: payload["errorMessage"]?.stringValue ?? "pi agent request failed."
+            )
+        case "auto_retry_end":
+            return .autoRetryEnd(
+                success: payload["success"]?.boolValue ?? false,
+                attempt: payload["attempt"]?.intValue ?? 0,
+                finalError: payload["finalError"]?.stringValue
+            )
+        case "session_info_changed":
+            return .sessionInfoChanged(name: payload["name"]?.stringValue)
+        case "thinking_level_changed":
+            return .thinkingLevelChanged(level: payload["level"]?.stringValue ?? "")
         case "extension_error":
             return .extensionError(payload["error"]?.stringValue ?? payload["message"]?.stringValue ?? "pi extension error")
         default:

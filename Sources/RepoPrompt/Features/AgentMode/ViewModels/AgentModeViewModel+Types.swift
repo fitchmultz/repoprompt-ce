@@ -77,6 +77,8 @@ extension AgentModeViewModel {
     }
 
     enum RunInteractionStateChangeReason: String, Equatable {
+        case askUserResponseSubmitted
+        case askUserResponseTimedOut
         case userInputResponseSubmitted
         case pendingQuestionCancelled
         case pendingApprovalCancelled

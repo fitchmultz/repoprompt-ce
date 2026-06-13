@@ -320,13 +320,14 @@ final class AgentModeViewModel: ObservableObject {
                     if previousAgent == .pi {
                         session.providerSessionID = nil
                         session.piSessionFile = nil
+                        session.clearPendingPiSteeringInstructions()
                         Task { await session.piController?.shutdown() }
                         session.piController = nil
                     }
                 }
                 session.selectedAgent = selectedAgent
-                if !isModelRawValid(selectedModelRaw, for: selectedAgent) {
-                    selectedModelRaw = defaultModelRaw(for: selectedAgent)
+                if !isModelRawValid(selectedModelRaw, for: selectedAgent, session: session) {
+                    selectedModelRaw = defaultModelRaw(for: selectedAgent, session: session)
                 }
                 normalizePiThinkingSelectionForSession(session)
                 codexCoordinator.normalizeCodexSelectionForSession(session, preservingExplicitEffort: false)
@@ -355,9 +356,9 @@ final class AgentModeViewModel: ObservableObject {
                 syncRunInteractionUIState()
                 return
             }
-            if !isModelRawValid(selectedModelRaw, for: selectedAgent) {
+            if !isModelRawValid(selectedModelRaw, for: selectedAgent, session: activeSession) {
                 isRestoringState = true
-                selectedModelRaw = defaultModelRaw(for: selectedAgent)
+                selectedModelRaw = defaultModelRaw(for: selectedAgent, session: activeSession)
                 isRestoringState = false
             }
             // Persist last-used model for this agent so it survives app reboot
@@ -540,6 +541,7 @@ final class AgentModeViewModel: ObservableObject {
     let attachmentStore = AgentAttachmentStore()
     let attachmentWorkspaceDirectoryProvider: () -> URL?
     private let workspacePathProvider: () -> String?
+    private let piModelPollingService: any PiModelPolling
     private let skillCatalog: AgentSkillCatalog
     private let headlessProviderFactory: HeadlessProviderFactory
     private let acpProviderFactory: ACPProviderFactory
@@ -579,6 +581,7 @@ final class AgentModeViewModel: ObservableObject {
     private var openCodeModelsSubscriptionTask: Task<Void, Never>?
     private var cursorModelsSubscriptionTask: Task<Void, Never>?
     private var piModelsSubscriptionTask: Task<Void, Never>?
+    private var piModelsSubscribedWorkspacePath: String?
     private var skillCatalogDeltaObservationTask: Task<Void, Never>?
     private var skillCatalogRefreshDebounceTask: Task<Void, Never>?
     private var sessionListCacheTask: Task<Void, Never>?
@@ -606,6 +609,7 @@ final class AgentModeViewModel: ObservableObject {
         private var test_currentTabIDOverride: UUID?
         private var test_allowsScheduledDerivedTranscriptRefreshWithoutPromptManager = false
         private var test_afterMCPStoreEpochBegan: (@MainActor () async -> Void)?
+        private var test_piSteeringMCPToolDrainTimeoutOverride: TimeInterval?
         private var test_terminalPublicationOverride: ((
             AgentRunTerminalCommitRevision,
             AgentRunEpochTransitionKind?,
@@ -621,6 +625,7 @@ final class AgentModeViewModel: ObservableObject {
     private nonisolated static let pendingToolFinalizationNonToolBoundary = 200
     private nonisolated static let staleComposerSubmitTargetMessage = "This composer changed before the message could be sent. Please try again."
     private nonisolated static let childAgentRunWaitDrainTimeoutSeconds: TimeInterval = 2.0
+    private nonisolated static let piSteeringMCPToolDrainTimeoutSeconds: TimeInterval = 30.0
 
     #if DEBUG
         var test_updateBindingsCallCount: Int = 0
@@ -651,6 +656,14 @@ final class AgentModeViewModel: ObservableObject {
             piModelsSubscriptionTask != nil
         }
 
+        var test_piModelsSubscribedWorkspacePath: String? {
+            piModelsSubscribedWorkspacePath
+        }
+
+        func test_updateDynamicModelPolling() {
+            updateDynamicModelPolling()
+        }
+
         func test_setActiveSessionBindingsAreHydrated(_ value: Bool) {
             setActiveTranscriptBindingsHydrated(value)
         }
@@ -665,6 +678,10 @@ final class AgentModeViewModel: ObservableObject {
 
         func test_setAfterMCPStoreEpochBegan(_ hook: (@MainActor () async -> Void)?) {
             test_afterMCPStoreEpochBegan = hook
+        }
+
+        func test_setPiSteeringMCPToolDrainTimeout(_ timeout: TimeInterval?) {
+            test_piSteeringMCPToolDrainTimeoutOverride = timeout
         }
 
         func test_setTerminalPublicationOverride(
@@ -937,14 +954,21 @@ final class AgentModeViewModel: ObservableObject {
 
     func piThinkingLevelOptionsForCurrentSelection() -> [PiThinkingLevel] {
         guard selectedAgent == .pi else { return [] }
-        return AgentModelCatalog.piThinkingLevelOptions(for: selectedModelRaw)
+        return AgentModelCatalog.piThinkingLevelOptions(for: selectedModelRaw, workspacePath: piWorkspacePath(for: activeSession))
+    }
+
+    func piModelCatalogWorkspacePath() -> String? {
+        piWorkspacePath(for: activeSession)
     }
 
     private func normalizePiThinkingSelectionForSession(_ session: TabSession) {
         guard session.selectedAgent == .pi,
               let selectedLevel = PiThinkingLevel.parse(session.selectedReasoningEffortRaw)
         else { return }
-        let supportedLevels = AgentModelCatalog.piThinkingLevelOptions(for: session.selectedModelRaw)
+        let supportedLevels = AgentModelCatalog.piThinkingLevelOptions(
+            for: session.selectedModelRaw,
+            workspacePath: piWorkspacePath(for: session)
+        )
         guard !supportedLevels.contains(selectedLevel) else { return }
         session.selectedReasoningEffortRaw = nil
         if activeSession === session {
@@ -1027,8 +1051,30 @@ final class AgentModeViewModel: ObservableObject {
         )
     }
 
+    #if DEBUG
+        private var testAgentAvailabilityContextOverride: AgentModelCatalog.AvailabilityContext?
+
+        func test_setAgentAvailabilityContextOverride(_ context: AgentModelCatalog.AvailabilityContext?) {
+            testAgentAvailabilityContextOverride = context
+        }
+    #endif
+
     private var agentAvailabilityContext: AgentModelCatalog.AvailabilityContext {
-        promptManager?.apiSettingsViewModel?.agentModeAvailabilityContext ?? .current
+        agentAvailabilityContext(for: activeSession)
+    }
+
+    private func agentAvailabilityContext(for session: TabSession?) -> AgentModelCatalog.AvailabilityContext {
+        let base: AgentModelCatalog.AvailabilityContext
+        #if DEBUG
+            if let testAgentAvailabilityContextOverride {
+                base = testAgentAvailabilityContextOverride
+            } else {
+                base = promptManager?.apiSettingsViewModel?.agentModeAvailabilityContext ?? .current
+            }
+        #else
+            base = promptManager?.apiSettingsViewModel?.agentModeAvailabilityContext ?? .current
+        #endif
+        return base.withPiWorkspacePath(piWorkspacePath(for: session))
     }
 
     var hasAvailableAgentProviders: Bool {
@@ -1057,29 +1103,35 @@ final class AgentModeViewModel: ObservableObject {
 
     private func isModelRawValid(
         _ rawModel: String,
-        for agent: AgentProviderKind
+        for agent: AgentProviderKind,
+        session: TabSession? = nil
     ) -> Bool {
         AgentModelCatalog.isValid(
             rawModel: rawModel,
             for: agent,
-            availability: agentAvailabilityContext,
+            availability: agentAvailabilityContext(for: session ?? activeSession),
             codexDynamicModels: codexDynamicModels
         )
     }
 
-    func defaultModelRaw(for agent: AgentProviderKind) -> String {
-        AgentModelCatalog.defaultModelRaw(for: agent, availability: agentAvailabilityContext, codexDynamicModels: codexDynamicModels)
+    func defaultModelRaw(for agent: AgentProviderKind, session: TabSession? = nil) -> String {
+        AgentModelCatalog.defaultModelRaw(
+            for: agent,
+            availability: agentAvailabilityContext(for: session ?? activeSession),
+            codexDynamicModels: codexDynamicModels
+        )
     }
 
     private func normalizedSelection(
         agentRaw: String?,
         modelRaw: String?,
-        preserveUnavailableAgent: Bool = false
+        preserveUnavailableAgent: Bool = false,
+        session: TabSession? = nil
     ) -> AgentModelCatalog.NormalizedAgentSelection {
         AgentModelCatalog.normalizeSelection(
             agentRaw: agentRaw,
             modelRaw: modelRaw,
-            availability: agentAvailabilityContext,
+            availability: agentAvailabilityContext(for: session ?? activeSession),
             codexDynamicModels: codexDynamicModels,
             preserveUnavailableAgent: preserveUnavailableAgent
         )
@@ -1202,10 +1254,15 @@ final class AgentModeViewModel: ObservableObject {
     }
 
     private func startPiModelsSubscriptionIfNeeded() {
-        guard piModelsSubscriptionTask == nil else { return }
-        let workspacePath = workspacePathProvider()
-        piModelsSubscriptionTask = Task { [weak self, workspacePath] in
-            let stream = await PiModelPollingService.shared.subscribe(workspacePath: workspacePath)
+        let workspacePath = AgentPiModelRegistry.canonicalWorkspacePath(piWorkspacePath(for: activeSession))
+        if piModelsSubscriptionTask != nil {
+            guard piModelsSubscribedWorkspacePath != workspacePath else { return }
+            stopPiModelsSubscription()
+        }
+        piModelsSubscribedWorkspacePath = workspacePath
+        let pollingService = piModelPollingService
+        piModelsSubscriptionTask = Task { [weak self, pollingService, workspacePath] in
+            let stream = await pollingService.subscribe(workspacePath: workspacePath)
             for await _ in stream {
                 guard !Task.isCancelled else { return }
                 await MainActor.run { [weak self] in
@@ -1217,12 +1274,19 @@ final class AgentModeViewModel: ObservableObject {
                     syncComposerUIState()
                 }
             }
+            guard !Task.isCancelled else { return }
+            await MainActor.run { [weak self] in
+                guard self?.piModelsSubscribedWorkspacePath == workspacePath else { return }
+                self?.piModelsSubscriptionTask = nil
+                self?.piModelsSubscribedWorkspacePath = nil
+            }
         }
     }
 
     private func stopPiModelsSubscription() {
         piModelsSubscriptionTask?.cancel()
         piModelsSubscriptionTask = nil
+        piModelsSubscribedWorkspacePath = nil
     }
 
     private func syncSelectedACPModelFromRegistryIfNeeded(for agent: AgentProviderKind) {
@@ -1351,6 +1415,7 @@ final class AgentModeViewModel: ObservableObject {
         self.oracleViewModel = oracleViewModel
         self.applyEditsApprovalStore = applyEditsApprovalStore
         self.skillCatalog = skillCatalog ?? AgentSkillCatalog()
+        piModelPollingService = PiModelPollingService.shared
         let codexWorkspacePathProvider = { [weak workspaceManager] in
             workspaceManager?.activeWorkspace?.repoPaths.first
         }
@@ -1513,6 +1578,7 @@ final class AgentModeViewModel: ObservableObject {
         init(
             testWindowID: Int = 1,
             testWorkspacePath: String? = nil,
+            testWorkspacePathProvider: (() -> String?)? = nil,
             testWorkspaceDirectory: URL? = nil,
             applyEditsApprovalStore: ApplyEditsApprovalStore = .shared,
             clearConsumedAttachmentsAfterProviderConsumption: Bool = true,
@@ -1566,6 +1632,7 @@ final class AgentModeViewModel: ObservableObject {
             },
             mcpRunToolCanceller: MCPRunToolCanceller? = nil,
             mcpServerEnabler: @escaping MCPServerEnabler = {},
+            piModelPollingService: any PiModelPolling = PiModelPollingService.shared,
             testMCPServer: MCPServerViewModel? = nil,
             testCodexActiveToolQuery: CodexActiveToolQuery? = nil,
             testCodexActiveAgentRunWaitQuery: CodexAgentRunWaitQuery? = nil,
@@ -1584,13 +1651,14 @@ final class AgentModeViewModel: ObservableObject {
             mcpServer = testMCPServer
             self.applyEditsApprovalStore = applyEditsApprovalStore
             self.skillCatalog = skillCatalog ?? AgentSkillCatalog()
+            self.piModelPollingService = piModelPollingService
             attachmentWorkspaceDirectoryProvider = {
                 if let testWorkspaceDirectory {
                     return testWorkspaceDirectory
                 }
                 return FileManager.default.temporaryDirectory
             }
-            let codexWorkspacePathProvider = { testWorkspacePath }
+            let codexWorkspacePathProvider = testWorkspacePathProvider ?? { testWorkspacePath }
             let sessionWorkspacePathProvider: (TabSession) throws -> String? = { session in
                 try Self.effectiveWorkspacePath(
                     for: session,
@@ -1833,6 +1901,11 @@ final class AgentModeViewModel: ObservableObject {
         Self.standardizedWorkspacePath(workspacePathProvider())
     }
 
+    private func piWorkspacePath(for session: TabSession?) -> String? {
+        guard let session else { return currentWorkspacePath() }
+        return try? effectiveWorkspacePath(for: session)
+    }
+
     /// Returns all repo paths from the active workspace for skill discovery.
     /// Unlike `currentWorkspacePath()` which returns only the first root,
     /// this returns every loaded root so skills from all directories are discovered.
@@ -1999,6 +2072,12 @@ final class AgentModeViewModel: ObservableObject {
                     throw MCPError.internalError("Agent Mode is no longer available for the pi UI request.")
                 }
                 return try await askUserInteraction(tabID: tabID, interaction: interaction)
+            },
+            setPiExtensionUIResponseInFlight: { session, isInFlight in
+                session.piExtensionUIResponseInFlight = isInFlight
+            },
+            flushQueuedPiSteeringAfterBlockingResponse: { [weak self] session in
+                self?.flushQueuedPiSteeringIfReady(session: session)
             },
             buildHeadlessAgentMessage: { [weak self] session, initialMessage, runID, attachments in
                 self?.buildHeadlessAgentMessage(
@@ -2604,6 +2683,7 @@ final class AgentModeViewModel: ObservableObject {
         claudeCoordinator.stop()
         stopOpenCodeModelsSubscription()
         stopCursorModelsSubscription()
+        stopPiModelsSubscription()
         sidebarAutoArchiveTask?.cancel()
         sidebarAutoArchiveTask = nil
         uiRefreshTask?.cancel()
@@ -3787,12 +3867,12 @@ final class AgentModeViewModel: ObservableObject {
         if !AgentModelCatalog.isValid(
             rawModel: session.selectedModelRaw,
             for: session.selectedAgent,
-            availability: agentAvailabilityContext,
+            availability: agentAvailabilityContext(for: session),
             codexDynamicModels: codexDynamicModels
         ) {
             session.selectedModelRaw = AgentModelCatalog.defaultModelRaw(
                 for: session.selectedAgent,
-                availability: agentAvailabilityContext,
+                availability: agentAvailabilityContext(for: session),
                 codexDynamicModels: codexDynamicModels
             )
         }
@@ -4045,6 +4125,7 @@ final class AgentModeViewModel: ObservableObject {
         session.queuedUserInputRequests.removeAll()
         session.queuedMCPElicitationRequests.removeAll()
         session.pendingInstructions.removeAll()
+        session.clearPendingPiSteeringInstructions()
         session.pendingImageAttachments.removeAll()
         session.pendingTaggedFileAttachments.removeAll()
         session.pendingTurnRuntimeAnchors.removeAll()
@@ -4150,6 +4231,7 @@ final class AgentModeViewModel: ObservableObject {
             didChangeRunInteractionStateFor: session,
             reason: reason
         )
+        flushQueuedPiSteeringIfReady(session: session)
     }
 
     private func handleObservedMCPStateChange(for session: TabSession) {
@@ -5563,6 +5645,7 @@ final class AgentModeViewModel: ObservableObject {
             await piController.shutdown()
             session.piController = nil
         }
+        session.clearPendingPiSteeringInstructions()
         session.providerSessionID = nil
         session.piSessionFile = nil
         session.contextUsageSnapshot = nil
@@ -5762,7 +5845,8 @@ final class AgentModeViewModel: ObservableObject {
         let normalized = normalizedSelection(
             agentRaw: agentRaw ?? session.selectedAgent.rawValue,
             modelRaw: modelRaw ?? session.selectedModelRaw,
-            preserveUnavailableAgent: true
+            preserveUnavailableAgent: true,
+            session: session
         )
         if session.activeAgentSessionID != nil,
            normalized.agent != session.selectedAgent,
@@ -5786,6 +5870,7 @@ final class AgentModeViewModel: ObservableObject {
             if previousAgent == .pi {
                 session.providerSessionID = nil
                 session.piSessionFile = nil
+                session.clearPendingPiSteeringInstructions()
                 await session.piController?.shutdown()
                 session.piController = nil
             }
@@ -6134,18 +6219,38 @@ final class AgentModeViewModel: ObservableObject {
         Self.steeringDebugLog("[AgentRunSteeringWake] mcpDispatch yielded after steering wake sessionID=\(sessionID)")
     }
 
+    @discardableResult
+    private func discardStaleQueuedPiSteering(session: TabSession) -> Int {
+        var discarded = 0
+        while let steering = session.pendingPiSteeringInstructions.first,
+              steering.targetRunID != session.runID || steering.targetRunAttemptID != session.activeRunAttemptID
+        {
+            session.pendingPiSteeringInstructions.removeFirst()
+            discarded += 1
+            Self.steeringDebugLog("[AgentRunSteeringWake] discarded stale pi steering tab=\(session.tabID) targetRun=\(String(describing: steering.targetRunID)) liveRun=\(String(describing: session.runID)) targetAttempt=\(String(describing: steering.targetRunAttemptID)) liveAttempt=\(String(describing: session.activeRunAttemptID))")
+        }
+        if discarded > 0 {
+            session.isDirty = true
+            updateBindingsFromSession(session)
+            scheduleSave(for: session.tabID)
+        }
+        return discarded
+    }
+
     private func submitQueuedPiSteeringIfSupported(session: TabSession) async throws {
-        guard session.runState == .running,
-              session.pendingApproval == nil,
-              session.pendingAskUser == nil,
-              session.pendingUserInputRequest == nil,
-              session.pendingPermissionsRequest == nil,
-              let controller = session.piController,
-              let steering = session.pendingPiSteeringInstructions.first,
-              steering.targetRunID == session.runID,
-              steering.targetRunAttemptID == session.activeRunAttemptID
-        else {
+        discardStaleQueuedPiSteering(session: session)
+        guard !session.pendingPiSteeringInstructions.isEmpty else {
+            throw MCPError.internalError("pi steer could not be sent because no queued instruction targets the current run.")
+        }
+        try await awaitNoActiveMCPToolsBeforePiSteering(session: session)
+        guard activePiSteerIsAvailable(for: session, attachments: []) else {
             throw MCPError.internalError("pi steer could not be sent because the run is no longer ready for native steering.")
+        }
+        discardStaleQueuedPiSteering(session: session)
+        guard let controller = session.piController,
+              let steering = session.pendingPiSteeringInstructions.first
+        else {
+            throw MCPError.internalError("pi steer could not be sent because no queued instruction targets the current run.")
         }
 
         session.pendingPiSteeringInstructions.removeFirst()
@@ -6153,6 +6258,11 @@ final class AgentModeViewModel: ObservableObject {
             let images = try PiRPCImageContentBuilder.images(from: steering.attachments)
             try await controller.steer(steering.providerText, images: images)
         } catch {
+            restorePiInstructionDraft(
+                steering.draftText,
+                session: session,
+                message: "Restored undelivered pi steering because delivery failed."
+            )
             appendPiInstructionDeliveryError(
                 "pi steer failed: \(error.localizedDescription)",
                 session: session,
@@ -6160,6 +6270,22 @@ final class AgentModeViewModel: ObservableObject {
             )
             throw MCPError.internalError("pi steer failed: \(error.localizedDescription)")
         }
+    }
+
+    @MainActor
+    private func restorePiInstructionDraft(
+        _ draftText: String,
+        session: TabSession,
+        message: String
+    ) {
+        let trimmedDraft = draftText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedDraft.isEmpty else { return }
+        restoreComposerDraft(
+            tabID: session.tabID,
+            text: trimmedDraft,
+            message: message,
+            strategy: .prependAlways
+        )
     }
 
     @MainActor
@@ -9141,6 +9267,7 @@ final class AgentModeViewModel: ObservableObject {
         session.acpSteeringFlushTask?.cancel()
         session.acpSteeringFlushTask = nil
         session.pendingACPSteeringInstructions.removeAll()
+        session.clearPendingPiSteeringInstructions()
         if let controller = session.acpController {
             session.acpController = nil
             AgentModeProcessRunIdentity.clearProcessRunID(for: session)
@@ -9189,6 +9316,7 @@ final class AgentModeViewModel: ObservableObject {
         claudeCoordinator.stop()
         stopOpenCodeModelsSubscription()
         stopCursorModelsSubscription()
+        stopPiModelsSubscription()
         sidebarAutoArchiveTask?.cancel()
         sidebarAutoArchiveTask = nil
         uiRefreshTask?.cancel()
@@ -10614,7 +10742,7 @@ final class AgentModeViewModel: ObservableObject {
         guard !trimmedText.isEmpty || !attachments.isEmpty || !taggedFiles.isEmpty else {
             return .blocked(message: "")
         }
-        guard AgentModelCatalog.isAgentAvailable(session.selectedAgent, availability: agentAvailabilityContext) else {
+        guard AgentModelCatalog.isAgentAvailable(session.selectedAgent, availability: agentAvailabilityContext(for: session)) else {
             return .blocked(message: unavailableAgentMessage(for: session.selectedAgent))
         }
         let workflow = session.selectedWorkflow
@@ -10835,7 +10963,7 @@ final class AgentModeViewModel: ObservableObject {
         guard !trimmedText.isEmpty || !attachmentsToSend.isEmpty || !taggedFilesToSend.isEmpty else {
             return .blocked(message: "")
         }
-        guard AgentModelCatalog.isAgentAvailable(session.selectedAgent, availability: agentAvailabilityContext) else {
+        guard AgentModelCatalog.isAgentAvailable(session.selectedAgent, availability: agentAvailabilityContext(for: session)) else {
             return .blocked(message: unavailableAgentMessage(for: session.selectedAgent))
         }
 
@@ -11271,6 +11399,7 @@ final class AgentModeViewModel: ObservableObject {
                 session: session,
                 wrappedText: wrappedText,
                 attachmentsToSend: attachmentsToSend,
+                draftText: trimmedText,
                 userItem: userItem
             )
         } else {
@@ -11313,16 +11442,21 @@ final class AgentModeViewModel: ObservableObject {
         return nil
     }
 
+    private func piSteeringIsBlockedByPendingInteraction(for session: TabSession) -> Bool {
+        session.pendingApproval != nil
+            || session.pendingAskUser != nil
+            || session.pendingUserInputRequest != nil
+            || session.pendingPermissionsRequest != nil
+            || session.piExtensionUIResponseInFlight
+    }
+
     private func activePiSteerIsAvailable(
         for session: TabSession,
         attachments _: [AgentImageAttachment]
     ) -> Bool {
         guard session.selectedAgent == .pi,
               session.runState == .running,
-              session.pendingApproval == nil,
-              session.pendingAskUser == nil,
-              session.pendingUserInputRequest == nil,
-              session.pendingPermissionsRequest == nil,
+              !piSteeringIsBlockedByPendingInteraction(for: session),
               session.runID != nil,
               session.activeRunAttemptID != nil,
               session.piController != nil
@@ -11330,6 +11464,78 @@ final class AgentModeViewModel: ObservableObject {
             return false
         }
         return true
+    }
+
+    private func enqueuePiSteering(
+        session: TabSession,
+        wrappedText: String,
+        attachments: [AgentImageAttachment],
+        draftText: String,
+        optimisticUserItemID: UUID?
+    ) -> TabSession.PiSteeringInstruction {
+        let steering = TabSession.PiSteeringInstruction(
+            id: UUID(),
+            targetRunID: session.runID,
+            targetRunAttemptID: session.activeRunAttemptID,
+            providerText: wrappedText,
+            attachments: attachments,
+            draftText: draftText,
+            optimisticUserItemID: optimisticUserItemID,
+            createdAt: Date()
+        )
+        session.pendingPiSteeringInstructions.append(steering)
+        Self.steeringDebugLog("[AgentRunSteeringWake] pi steering queued tab=\(session.tabID) runID=\(String(describing: session.runID)) attempt=\(String(describing: session.activeRunAttemptID)) queue=\(session.pendingPiSteeringInstructions.count) mcpDispatch=\(session.isMCPInstructionDispatchInProgress)")
+        return steering
+    }
+
+    private func flushQueuedPiSteeringIfReady(session: TabSession) {
+        guard session.piSteeringFlushTask == nil,
+              !session.pendingPiSteeringInstructions.isEmpty,
+              activePiSteerIsAvailable(for: session, attachments: [])
+        else { return }
+        session.piSteeringFlushTask = Task { @MainActor [weak self, weak session] in
+            guard let session else { return }
+            defer { session.piSteeringFlushTask = nil }
+            guard let self else { return }
+            while !Task.isCancelled,
+                  !session.pendingPiSteeringInstructions.isEmpty,
+                  activePiSteerIsAvailable(for: session, attachments: [])
+            {
+                do {
+                    try await submitQueuedPiSteeringIfSupported(session: session)
+                    await signalMCPInstructionDelivered(for: session)
+                } catch {
+                    return
+                }
+            }
+        }
+    }
+
+    private func awaitNoActiveMCPToolsBeforePiSteering(session: TabSession) async throws {
+        guard let runID = session.runID,
+              let mcpServer
+        else { return }
+        let timeout: TimeInterval = {
+            #if DEBUG
+                if let test_piSteeringMCPToolDrainTimeoutOverride {
+                    return test_piSteeringMCPToolDrainTimeoutOverride
+                }
+            #endif
+            return Self.piSteeringMCPToolDrainTimeoutSeconds
+        }()
+        let result = try await mcpServer.awaitNoActiveToolExecutions(runID: runID, timeout: timeout)
+        guard result == .timedOut else { return }
+        let message = "Continuing pi steering after waiting \(Self.formatSeconds(timeout)) for active MCP tools to finish."
+        session.setRunningStatus(message, source: .transport)
+        requestUIRefresh(tabID: session.tabID, urgent: true)
+        Self.steeringDebugLog("[AgentRunSteeringWake] \(message) runID=\(runID) tab=\(session.tabID)")
+    }
+
+    private nonisolated static func formatSeconds(_ seconds: TimeInterval) -> String {
+        if seconds.rounded() == seconds {
+            return "\(Int(seconds))s"
+        }
+        return "\(seconds)s"
     }
 
     private func activeACPPromptIsAvailable(
@@ -11361,11 +11567,44 @@ final class AgentModeViewModel: ObservableObject {
         session: TabSession,
         wrappedText: String,
         attachmentsToSend: [AgentImageAttachment],
+        draftText: String,
         userItem: AgentChatItem
     ) {
+        if piSteeringIsBlockedByPendingInteraction(for: session) {
+            _ = enqueuePiSteering(
+                session: session,
+                wrappedText: wrappedText,
+                attachments: attachmentsToSend,
+                draftText: draftText,
+                optimisticUserItemID: userItem.id
+            )
+            flushQueuedPiSteeringIfReady(session: session)
+            return
+        }
+
+        guard let expectedRunID = session.runID,
+              let expectedRunAttemptID = session.activeRunAttemptID
+        else {
+            restorePiInstructionDraft(
+                draftText,
+                session: session,
+                message: "Restored undelivered pi follow-up because the native pi run is no longer active."
+            )
+            appendPiInstructionDeliveryError(
+                "pi follow-up could not be queued because the native pi run is no longer active.",
+                session: session,
+                optimisticUserItemID: userItem.id
+            )
+            return
+        }
         Task { [weak self, weak session] in
             guard let self, let session else { return }
-            guard let controller = session.piController else {
+            guard session.piController != nil else {
+                restorePiInstructionDraft(
+                    draftText,
+                    session: session,
+                    message: "Restored undelivered pi follow-up because the native pi session is no longer available."
+                )
                 appendPiInstructionDeliveryError(
                     "pi follow-up could not be queued because the native pi session is no longer available.",
                     session: session,
@@ -11374,10 +11613,46 @@ final class AgentModeViewModel: ObservableObject {
                 return
             }
             do {
+                try await awaitNoActiveMCPToolsBeforePiSteering(session: session)
+                guard session.runID == expectedRunID,
+                      session.activeRunAttemptID == expectedRunAttemptID,
+                      session.runState.isActive,
+                      let controller = session.piController
+                else {
+                    restorePiInstructionDraft(
+                        draftText,
+                        session: session,
+                        message: "Restored undelivered pi follow-up because the native pi session is no longer active."
+                    )
+                    appendPiInstructionDeliveryError(
+                        "pi follow-up could not be queued because the native pi session is no longer active.",
+                        session: session,
+                        optimisticUserItemID: userItem.id
+                    )
+                    return
+                }
+                if piSteeringIsBlockedByPendingInteraction(for: session)
+                    || activePiSteerIsAvailable(for: session, attachments: attachmentsToSend)
+                {
+                    _ = enqueuePiSteering(
+                        session: session,
+                        wrappedText: wrappedText,
+                        attachments: attachmentsToSend,
+                        draftText: draftText,
+                        optimisticUserItemID: userItem.id
+                    )
+                    flushQueuedPiSteeringIfReady(session: session)
+                    return
+                }
                 let images = try PiRPCImageContentBuilder.images(from: attachmentsToSend)
                 try await controller.followUp(wrappedText, images: images)
                 await signalMCPInstructionDelivered(for: session)
             } catch {
+                restorePiInstructionDraft(
+                    draftText,
+                    session: session,
+                    message: "Restored undelivered pi follow-up because delivery failed."
+                )
                 appendPiInstructionDeliveryError(
                     "pi follow-up failed: \(error.localizedDescription)",
                     session: session,
@@ -11399,42 +11674,18 @@ final class AgentModeViewModel: ObservableObject {
     ) {
         switch route {
         case .piNativeSteer:
-            let steering = TabSession.PiSteeringInstruction(
-                id: UUID(),
-                targetRunID: session.runID,
-                targetRunAttemptID: session.activeRunAttemptID,
-                providerText: wrappedText,
+            _ = enqueuePiSteering(
+                session: session,
+                wrappedText: wrappedText,
                 attachments: attachmentsToSend,
                 draftText: trimmedText,
-                optimisticUserItemID: userItem.id,
-                createdAt: Date()
+                optimisticUserItemID: userItem.id
             )
-            session.pendingPiSteeringInstructions.append(steering)
-            Self.steeringDebugLog("[AgentRunSteeringWake] pi steering queued tab=\(session.tabID) runID=\(String(describing: session.runID)) attempt=\(String(describing: session.activeRunAttemptID)) queue=\(session.pendingPiSteeringInstructions.count) mcpDispatch=\(session.isMCPInstructionDispatchInProgress)")
             guard !session.isMCPInstructionDispatchInProgress else {
                 Self.steeringDebugLog("[AgentRunSteeringWake] pi steering flush owned by MCP dispatch tab=\(session.tabID) queue=\(session.pendingPiSteeringInstructions.count)")
                 return
             }
-            Task { [weak self, weak session] in
-                guard let self, let session else { return }
-                do {
-                    try await submitQueuedPiSteeringIfSupported(session: session)
-                    await signalMCPInstructionDelivered(for: session)
-                } catch {
-                    if let queuedIndex = session.pendingPiSteeringInstructions.firstIndex(where: { $0.id == steering.id }) {
-                        let queued = session.pendingPiSteeringInstructions.remove(at: queuedIndex)
-                        appendPiInstructionDeliveryError(
-                            "pi steer could not be queued: \(error.localizedDescription)",
-                            session: session,
-                            optimisticUserItemID: queued.optimisticUserItemID
-                        )
-                    } else {
-                        session.isDirty = true
-                        updateBindingsFromSession(session)
-                        scheduleSave(for: session.tabID)
-                    }
-                }
-            }
+            flushQueuedPiSteeringIfReady(session: session)
         case .acpPrompt:
             // ACP live steering uses the same serialized queued-flush shape as
             // Claude native steering. The run service waits for MCP tools to go idle,
@@ -12600,7 +12851,7 @@ final class AgentModeViewModel: ObservableObject {
                 session.codexDispatchSerialGate.finish(codexDispatchTicket)
             }
         }
-        guard AgentModelCatalog.isAgentAvailable(session.selectedAgent, availability: agentAvailabilityContext) else {
+        guard AgentModelCatalog.isAgentAvailable(session.selectedAgent, availability: agentAvailabilityContext(for: session)) else {
             if session.mcpFollowUpRunPending {
                 session.mcpFollowUpRunPending = false
                 handleObservedMCPStateChange(for: session)
@@ -14108,6 +14359,7 @@ final class AgentModeViewModel: ObservableObject {
                 elapsedSeconds: elapsedSeconds
             )
             continuation.resume(returning: response)
+            publishRunInteractionStateChange(for: session, reason: .askUserResponseTimedOut)
         }
     }
 
@@ -14170,6 +14422,7 @@ final class AgentModeViewModel: ObservableObject {
         // Note: We don't append a .user item here - the response will be shown
         // via the ask_user tool_result.
         continuation.resume(returning: response)
+        publishRunInteractionStateChange(for: session, reason: .askUserResponseSubmitted)
     }
 
     /// Legacy single-question UI shim retained for tests and old call sites during migration.
@@ -14684,6 +14937,7 @@ final class AgentModeViewModel: ObservableObject {
         session.acpSteeringFlushTask?.cancel()
         session.acpSteeringFlushTask = nil
         session.pendingACPSteeringInstructions.removeAll()
+        session.clearPendingPiSteeringInstructions()
         if let controller = session.acpController {
             session.acpController = nil
             AgentModeProcessRunIdentity.clearProcessRunID(for: session)

@@ -247,8 +247,15 @@ final class PiIntegratedAgentModeRunner {
                             notifyTurnComplete: false
                         )
                         return
-                    case .diagnostic:
-                        break
+                    case let .diagnostic(diagnostic):
+                        let diagnosticText = PiRunDiagnosticPresentation.statusText(from: diagnostic)
+                        session.setRunningStatus(diagnosticText, source: .transport)
+                        await hooks.handleHeadlessStreamResult(
+                            AIStreamResult(type: "status", text: diagnosticText),
+                            session,
+                            runID,
+                            runAttemptID
+                        )
                     }
                 }
             }
@@ -302,7 +309,8 @@ final class PiIntegratedAgentModeRunner {
             controller: controller,
             runID: runID,
             windowID: windowID,
-            terminalState: terminalState
+            terminalState: terminalState,
+            restoreUndeliveredPiSteeringDrafts: hooks.restoreDraftText
         )
     }
 
@@ -312,27 +320,62 @@ final class PiIntegratedAgentModeRunner {
         controller: PiNativeSessionController
     ) async {
         guard let interaction = PiExtensionUIInteractionMapper.interaction(from: request) else {
-            await cancelExtensionUIRequest(request, controller: controller)
+            try? await controller.respondToExtensionUIRequest(.cancelled(id: request.id))
             return
         }
 
+        await deliverBlockingExtensionUIResponse(
+            request,
+            interaction: interaction,
+            session: session,
+            respond: { response in
+                try await controller.respondToExtensionUIRequest(response)
+            }
+        )
+    }
+
+    private func deliverBlockingExtensionUIResponse(
+        _ request: PiRPCClient.PiExtensionUIRequest,
+        interaction: AgentAskUserInteraction,
+        session: AgentModeViewModel.TabSession,
+        respond: (PiExtensionUIResponse) async throws -> Void
+    ) async {
+        hooks.setPiExtensionUIResponseInFlight(session, true)
+        var didDeliverResponse = false
+        defer {
+            hooks.setPiExtensionUIResponseInFlight(session, false)
+            if didDeliverResponse {
+                hooks.flushQueuedPiSteeringAfterBlockingResponse(session)
+            }
+        }
         do {
             let response = try await hooks.askUserInteraction(session.tabID, interaction)
             let rpcResponse = PiExtensionUIInteractionMapper.response(for: request, from: response)
-            try await controller.respondToExtensionUIRequest(rpcResponse)
+            try await respond(rpcResponse)
+            didDeliverResponse = true
         } catch {
-            await cancelExtensionUIRequest(request, controller: controller)
+            do {
+                try await respond(.cancelled(id: request.id))
+                didDeliverResponse = true
+            } catch {
+                // The follow-up error will surface through the pi event stream or transport close.
+            }
         }
     }
 
-    private func cancelExtensionUIRequest(
-        _ request: PiRPCClient.PiExtensionUIRequest,
-        controller: PiNativeSessionController
-    ) async {
-        do {
-            try await controller.respondToExtensionUIRequest(.cancelled(id: request.id))
-        } catch {
-            // The follow-up error will surface through the pi event stream or transport close.
+    #if DEBUG
+        func test_handleBlockingExtensionUIRequest(
+            _ request: PiRPCClient.PiExtensionUIRequest,
+            session: AgentModeViewModel.TabSession,
+            respond: @escaping (PiExtensionUIResponse) async throws -> Void
+        ) async {
+            guard let interaction = PiExtensionUIInteractionMapper.interaction(from: request) else { return }
+            await deliverBlockingExtensionUIResponse(
+                request,
+                interaction: interaction,
+                session: session,
+                respond: respond
+            )
         }
-    }
+    #endif
 }

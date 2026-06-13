@@ -101,7 +101,8 @@ struct AgentModelOptionsMenuContent: View {
                 }
             }
         } else if agentKind == .pi {
-            let piMenu = AgentModelCatalog.piMenu(for: options)
+            let piKnownModelIDs = AgentModelCatalog.piKnownModelIDs(from: options)
+            let piMenu = AgentModelCatalog.piMenu(for: options, knownModelIDs: piKnownModelIDs)
             if let defaultOption = piMenu.defaultOption {
                 modelOptionButton(defaultOption)
             }
@@ -155,7 +156,8 @@ struct AgentModelOptionsMenuContent: View {
                 if selectedAgent == agentKind, AgentModelCatalog.modelOptionIsSelected(
                     optionRaw: option.rawValue,
                     selectedRaw: selectedModelRaw,
-                    agentKind: agentKind
+                    agentKind: agentKind,
+                    knownModelIDs: agentKind == .pi ? AgentModelCatalog.piKnownModelIDs(from: options) : []
                 ) {
                     Spacer()
                     Image(systemName: "checkmark")
@@ -429,7 +431,12 @@ enum AgentModelStableMenuItems {
         includeThinkingLevelOptions: Bool,
         onSelect: @escaping (AgentProviderKind, AgentModelOption) -> Void
     ) -> [StableMenuItem] {
-        let piMenu = AgentModelCatalog.piMenu(for: options, includeThinkingLevelOptions: includeThinkingLevelOptions)
+        let piKnownModelIDs = AgentModelCatalog.piKnownModelIDs(from: options)
+        let piMenu = AgentModelCatalog.piMenu(
+            for: options,
+            includeThinkingLevelOptions: includeThinkingLevelOptions,
+            knownModelIDs: piKnownModelIDs
+        )
         var items: [StableMenuItem] = []
         if let defaultOption = piMenu.defaultOption {
             items.append(
@@ -451,6 +458,7 @@ enum AgentModelStableMenuItems {
                         group: group,
                         selectedAgent: selectedAgent,
                         selectedModelRaw: selectedModelRaw,
+                        knownModelIDs: piKnownModelIDs,
                         onSelect: onSelect
                     )
                 }
@@ -464,6 +472,7 @@ enum AgentModelStableMenuItems {
         group: AgentModelCatalog.PiModelMenuGroup,
         selectedAgent: AgentProviderKind,
         selectedModelRaw: String,
+        knownModelIDs: Set<String>,
         onSelect: @escaping (AgentProviderKind, AgentModelOption) -> Void
     ) -> StableMenuItem {
         if group.rendersAsSubmenu {
@@ -476,6 +485,7 @@ enum AgentModelStableMenuItems {
                         agentKind: agentKind,
                         selectedAgent: selectedAgent,
                         selectedModelRaw: selectedModelRaw,
+                        knownModelIDs: knownModelIDs,
                         onSelect: onSelect
                     )
                 }
@@ -488,6 +498,7 @@ enum AgentModelStableMenuItems {
                 agentKind: agentKind,
                 selectedAgent: selectedAgent,
                 selectedModelRaw: selectedModelRaw,
+                knownModelIDs: knownModelIDs,
                 onSelect: onSelect
             )
         }
@@ -500,6 +511,7 @@ enum AgentModelStableMenuItems {
         agentKind: AgentProviderKind,
         selectedAgent: AgentProviderKind,
         selectedModelRaw: String,
+        knownModelIDs: Set<String> = [],
         onSelect: @escaping (AgentProviderKind, AgentModelOption) -> Void
     ) -> StableMenuItem {
         StableMenuItem.action(
@@ -507,7 +519,8 @@ enum AgentModelStableMenuItems {
             isSelected: selectedAgent == agentKind && AgentModelCatalog.modelOptionIsSelected(
                 optionRaw: option.rawValue,
                 selectedRaw: selectedModelRaw,
-                agentKind: agentKind
+                agentKind: agentKind,
+                knownModelIDs: knownModelIDs
             ),
             imageSystemName: AgentModelSelectionWarningVisuals.stableMenuImageSystemName(agent: agentKind, rawModel: option.rawValue),
             style: AgentModelSelectionWarningVisuals.stableMenuStyle(agent: agentKind, rawModel: option.rawValue)
