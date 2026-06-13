@@ -34,6 +34,25 @@ final class PiRepoPromptBridgeExtensionInstallerTests: XCTestCase {
         )
     }
 
+    func testManagedInstallUsesWindowScopedBridgePath() throws {
+        let home = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let appSupport = home.appendingPathComponent("Application Support", isDirectory: true)
+        let fileManager = StubApplicationSupportFileManager(applicationSupportURL: appSupport)
+        let cliPath = #"/tmp/RepoPrompt Debug/repoprompt-mcp"#
+
+        let first = try PiRepoPromptBridgeExtensionInstaller.install(windowID: 4, fileManager: fileManager, cliPath: cliPath)
+        let second = try PiRepoPromptBridgeExtensionInstaller.install(windowID: 5, fileManager: fileManager, cliPath: cliPath)
+
+        XCTAssertEqual(first.lastPathComponent, "repoprompt-bridge-window-4.ts")
+        XCTAssertEqual(second.lastPathComponent, "repoprompt-bridge-window-5.ts")
+        XCTAssertNotEqual(first, second)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: first.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: second.path))
+        XCTAssertTrue(try String(contentsOf: first, encoding: .utf8).contains(#"const REPOPROMPT_WINDOW_ID: string | undefined = "4""#))
+        XCTAssertTrue(try String(contentsOf: second, encoding: .utf8).contains(#"const REPOPROMPT_WINDOW_ID: string | undefined = "5""#))
+    }
+
     func testManagedBridgeIdentityBelongsToPiAgentFamilyButPersonalBridgeDoesNot() {
         XCTAssertEqual(MCPClientIdentity.managedPiFamilyClientNames, Set([
             AgentProviderKind.piMCPClientID,
@@ -232,5 +251,21 @@ final class PiRepoPromptBridgeExtensionInstallerTests: XCTestCase {
             .appendingPathComponent("PiRepoPromptBridgeExtensionInstallerTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
+    }
+}
+
+private final class StubApplicationSupportFileManager: FileManager, @unchecked Sendable {
+    private let applicationSupportURL: URL
+
+    init(applicationSupportURL: URL) {
+        self.applicationSupportURL = applicationSupportURL
+        super.init()
+    }
+
+    override func urls(for directory: FileManager.SearchPathDirectory, in domainMask: FileManager.SearchPathDomainMask) -> [URL] {
+        if directory == .applicationSupportDirectory, domainMask.contains(.userDomainMask) {
+            return [applicationSupportURL]
+        }
+        return super.urls(for: directory, in: domainMask)
     }
 }

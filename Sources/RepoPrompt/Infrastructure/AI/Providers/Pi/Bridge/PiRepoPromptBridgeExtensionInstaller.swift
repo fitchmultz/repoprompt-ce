@@ -42,6 +42,8 @@ enum PiRepoPromptBridgeExtensionInstaller {
     static let managedBridgeExecutionClientName = "pi-schema"
     private static let managedMarker = "// RepoPrompt CE managed pi bridge extension"
     private static let globalExtensionFileName = "repoprompt-bridge.ts"
+    private static let managedExtensionFilePrefix = "repoprompt-bridge-window-"
+    private static let managedExtensionFileExtension = "ts"
 
     static func install(
         windowID: Int,
@@ -59,7 +61,7 @@ enum PiRepoPromptBridgeExtensionInstaller {
             .appendingPathComponent("RepoPrompt CE", isDirectory: true)
             .appendingPathComponent("PiBridge", isDirectory: true)
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-        let extensionURL = directory.appendingPathComponent("repoprompt-bridge.ts", isDirectory: false)
+        let extensionURL = managedExtensionURL(directory: directory, windowID: windowID)
         let source = extensionSource(windowID: windowID, cliPath: cliPath)
         if let existing = try? String(contentsOf: extensionURL, encoding: .utf8), existing == source {
             return extensionURL
@@ -74,6 +76,13 @@ enum PiRepoPromptBridgeExtensionInstaller {
             .appendingPathComponent("agent", isDirectory: true)
             .appendingPathComponent("extensions", isDirectory: true)
             .appendingPathComponent(globalExtensionFileName, isDirectory: false)
+    }
+
+    static func managedExtensionURL(directory: URL, windowID: Int) -> URL {
+        directory.appendingPathComponent(
+            "\(managedExtensionFilePrefix)\(windowID).\(managedExtensionFileExtension)",
+            isDirectory: false
+        )
     }
 
     static func globalInstallStatus(
