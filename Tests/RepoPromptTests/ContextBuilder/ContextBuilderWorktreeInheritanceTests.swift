@@ -479,9 +479,11 @@ import XCTest
         func makeProvider(
             agent: AgentProviderKind,
             modelString: String?,
-            workspacePath: String?
+            workspacePath: String?,
+            windowID: Int
         ) -> HeadlessAgentProvider {
             _ = modelString
+            _ = windowID
             state.recordProviderCreation()
             guard let configuration else {
                 preconditionFailure("Context Builder probe provider used before configuration")

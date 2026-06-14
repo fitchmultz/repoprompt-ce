@@ -60,7 +60,6 @@ struct CLIProvidersSettingsView: View {
     @State private var isOpenCodeExpanded: Bool = false
     @State private var isCursorExpanded: Bool = false
     @State private var isPiExpanded: Bool = false
-    @State private var hasSetInitialExpansion = false
 
     // Per-backend secret text entry buffers (GLM uses viewModel.zaiApiKey directly).
     // SEARCH-HELPER: Claude-Compatible Backends settings, Kimi API key entry, Custom backend key entry
@@ -146,19 +145,6 @@ struct CLIProvidersSettingsView: View {
             Task {
                 await viewModel.loadCompatibleBackendState()
                 await viewModel.refreshClaudeCodeBinaryStatus()
-                await MainActor.run {
-                    if !hasSetInitialExpansion {
-                        isClaudeCodeExpanded = !viewModel.isClaudeCodeConnected
-                        isClaudeCodeGLMExpanded = shouldExpandCompatibleBackendInitially(.glmZAI)
-                        isKimiCodeExpanded = shouldExpandCompatibleBackendInitially(.kimi)
-                        isCustomCompatibleExpanded = shouldExpandCompatibleBackendInitially(.custom)
-                        isCodexExpanded = !viewModel.isCodexConnected
-                        isOpenCodeExpanded = !viewModel.isOpenCodeConnected
-                        isCursorExpanded = !viewModel.isCursorConnected
-                        isPiExpanded = !viewModel.isPiConnected
-                        hasSetInitialExpansion = true
-                    }
-                }
             }
         }
         .alert(isPresented: $showAlert) {
