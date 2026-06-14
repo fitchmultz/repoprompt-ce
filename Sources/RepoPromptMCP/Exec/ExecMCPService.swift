@@ -221,23 +221,15 @@ actor ExecMCPService: Service {
                 lastError = error
 
                 if let sessionError = error as? InteractiveSessionError {
-                    switch sessionError {
-                    case .approvalDenied:
+                    if case .approvalDenied = sessionError {
                         throw error
-                    case .appNotRunning where Date() < deadline:
+                    }
+                    if sessionError.isTransientStartupFailure, Date() < deadline {
                         if options.verbose {
-                            fputs("Waiting for RepoPrompt app (attempt \(attempt))...\n", stderr)
+                            fputs("Retrying transient RepoPrompt bootstrap startup failure (attempt \(attempt)): \(sessionError.description)\n", stderr)
                         }
                         try await Task.sleep(for: .milliseconds(500))
                         continue
-                    case .bootstrapResponseTimeout where Date() < deadline:
-                        if options.verbose {
-                            fputs("Retrying stalled RepoPrompt bootstrap handshake (attempt \(attempt))...\n", stderr)
-                        }
-                        try await Task.sleep(for: .milliseconds(500))
-                        continue
-                    default:
-                        break
                     }
                 }
 

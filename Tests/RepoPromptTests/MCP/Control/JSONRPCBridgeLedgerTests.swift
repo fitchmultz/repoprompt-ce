@@ -356,6 +356,24 @@ final class JSONRPCBridgeLedgerTests: XCTestCase {
         XCTAssertFalse(terminalPreparedSnapshot.canReconnect)
     }
 
+    func testCompletedProtocolCycleStillTerminalizesReconnectUntilIdleSafeProofExists() async throws {
+        let ledger = try await makeLedger()
+        try await forward(request(id: "71", method: "ping"), .clientToServer, ledger)
+        try await forward(response(id: "71"), .serverToClient, ledger)
+
+        var snapshot = await ledger.snapshot()
+        XCTAssertEqual(snapshot.activeRequestCount, 0)
+        XCTAssertEqual(snapshot.pendingTransactionCount, 0)
+        XCTAssertTrue(snapshot.hasForwardedProtocolFrame)
+        XCTAssertFalse(snapshot.canReconnect)
+
+        let failureWasTerminal = await ledger.recordConnectionFailure("idle_socket_reset_after_complete_cycle")
+        XCTAssertTrue(failureWasTerminal)
+        snapshot = await ledger.snapshot()
+        XCTAssertEqual(snapshot.terminalReason, "idle_socket_reset_after_complete_cycle")
+        XCTAssertFalse(snapshot.canReconnect)
+    }
+
     func testTraceMetadataContainsHashAndNeverPayload() async throws {
         final class TraceBox: @unchecked Sendable {
             let lock = NSLock()

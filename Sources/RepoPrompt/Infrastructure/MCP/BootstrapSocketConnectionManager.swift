@@ -310,8 +310,10 @@ actor BootstrapSocketConnectionManager: MCPServerConnection {
         do {
             try await transport.send(data)
         } catch {
-            // Non-fatal - just log and continue
-            bootstrapLog.debug("Failed to send progress notification: \(error)")
+            guard !isClosing else { return }
+            bootstrapLog.error("Progress notification send failed; marking bootstrap connection terminal: \(error)")
+            updateState(.failed(error))
+            await parentManager.removeConnection(connectionID)
         }
     }
 }

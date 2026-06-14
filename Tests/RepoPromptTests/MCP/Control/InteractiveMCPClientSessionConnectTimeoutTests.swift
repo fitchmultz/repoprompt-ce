@@ -67,6 +67,27 @@ import XCTest
             XCTAssertTrue(didCancelOperation)
         }
 
+        func testBootstrapStartupRetryClassificationIsSharedForInteractiveAndExecModes() {
+            XCTAssertTrue(InteractiveSessionError.appNotRunning.isTransientStartupFailure)
+            XCTAssertTrue(InteractiveSessionError.bootstrapResponseTimeout.isTransientStartupFailure)
+            XCTAssertTrue(InteractiveSessionError.connectionReset.isTransientStartupFailure)
+            XCTAssertTrue(InteractiveSessionError.serverClosed.isTransientStartupFailure)
+            XCTAssertTrue(InteractiveSessionError.handshakeRejected(
+                errorCode: MCPBootstrapErrorCode.serverNotReady.rawValue,
+                reason: "warming up"
+            ).isTransientStartupFailure)
+            XCTAssertTrue(MCPBootstrapStartupRetryClassifier.isTransientRejection(
+                errorCode: MCPBootstrapErrorCode.capacityExceeded.rawValue
+            ))
+
+            XCTAssertFalse(InteractiveSessionError.approvalDenied.isTransientStartupFailure)
+            XCTAssertFalse(InteractiveSessionError.handshakeRejected(
+                errorCode: MCPBootstrapErrorCode.protocolVersionMismatch.rawValue,
+                reason: "old cli"
+            ).isTransientStartupFailure)
+            XCTAssertFalse(MCPBootstrapStartupRetryClassifier.isTransientRejection(errorCode: "approval_denied"))
+        }
+
         func testCallerCancellationCancelsConnectAndTimeoutTasks() async throws {
             let operationStarted = CLIConnectSignal()
             let operationCancelled = CLIConnectSignal()

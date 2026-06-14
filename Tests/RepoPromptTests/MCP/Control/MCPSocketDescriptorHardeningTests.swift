@@ -335,7 +335,7 @@ final class MCPSocketDescriptorHardeningTests: XCTestCase {
         #endif
     }
 
-    func testBootstrapSilentRawSocketBurstRecordsBoundedSerialQueueAttributionAndStopsCleanly() async throws {
+    func testBootstrapSilentRawSocketBurstRecordsBoundedConcurrentQueueAttributionAndStopsCleanly() async throws {
         #if DEBUG
             EditFlowPerf.resetDebugCaptureForTesting()
             defer { EditFlowPerf.resetDebugCaptureForTesting() }
@@ -371,7 +371,7 @@ final class MCPSocketDescriptorHardeningTests: XCTestCase {
                     return diagnostics.inFlightHandshakes == maxInFlight
                         && diagnostics.acceptSuspendedForBackpressure
                         && queuedCount == maxInFlight
-                        && beganCount == 1
+                        && beganCount == maxInFlight
                         && endedCount == 0
                 }
                 XCTAssertTrue(saturated)
@@ -410,6 +410,53 @@ final class MCPSocketDescriptorHardeningTests: XCTestCase {
             }
         #else
             throw XCTSkip("Bootstrap handshake attribution seam is DEBUG-only")
+        #endif
+    }
+
+    func testValidBootstrapClientBehindSilentBurstCompletesWithinSingleHandshakeWindow() async throws {
+        #if DEBUG
+            let fixture = try TemporarySocketFixture.make(prefix: "silent-valid")
+            defer { fixture.removeOwnedDirectory() }
+            let server = BootstrapSocketServer(socketURL: fixture.socketURL)
+            let admissionCount = AsyncCounter()
+            var silentFDs: [Int32] = []
+            defer { silentFDs.forEach(Self.closeIfOpen) }
+
+            try await server.start { _, _, _, _ in
+                await admissionCount.increment()
+                return .reject(MCPBootstrapResponse.rejected(reason: "test rejection", errorCode: "approval_denied"))
+            }
+            do {
+                let maxInFlight = await server.diagnostics().maxInFlightHandshakes
+                for _ in 0 ..< maxInFlight {
+                    try silentFDs.append(Self.connectRawUnixClient(to: fixture.socketURL))
+                }
+                let saturated = await Self.waitUntil {
+                    let diagnostics = await server.diagnostics()
+                    return diagnostics.inFlightHandshakes == maxInFlight && diagnostics.acceptSuspendedForBackpressure
+                }
+                XCTAssertTrue(saturated)
+
+                let validFD = try Self.connectRawUnixClient(to: fixture.socketURL)
+                defer { Self.closeIfOpen(validFD) }
+                try Self.writeBootstrapRequest(to: validFD, clientName: "valid-behind-silent")
+
+                let response = try Self.readBootstrapResponse(
+                    from: validFD,
+                    timeout: MCPBootstrapTiming.initialResponseTimeout * 2 + 2
+                )
+                XCTAssertEqual(response.type, "rejected")
+                XCTAssertEqual(response.errorCode, "approval_denied")
+                let observedAdmissionCount = await admissionCount.value
+                XCTAssertEqual(observedAdmissionCount, 1)
+
+                await server.stop()
+            } catch {
+                await server.stop()
+                throw error
+            }
+        #else
+            throw XCTSkip("Bootstrap handshake starvation seam is DEBUG-only")
         #endif
     }
 
@@ -492,6 +539,23 @@ final class MCPSocketDescriptorHardeningTests: XCTestCase {
         #else
             throw XCTSkip("Bootstrap handshake I/O lease seam is DEBUG-only")
         #endif
+    }
+
+    func testBootstrapResponseWritesUseServerOwnedIOLease() throws {
+        let root = try RepoRoot.url()
+        let bootstrap = try Self.sourceText(
+            "Sources/RepoPrompt/Infrastructure/MCP/BootstrapSocketServer.swift",
+            relativeTo: root
+        )
+        let sendResponseStart = try XCTUnwrap(bootstrap.range(of: "private func sendResponseAsync"))
+        let sendResponseEnd = try XCTUnwrap(
+            bootstrap.range(of: "\n    }\n}\n\n// MARK: - Errors", range: sendResponseStart.lowerBound ..< bootstrap.endIndex)
+        )
+        let sendResponse = bootstrap[sendResponseStart.lowerBound ..< sendResponseEnd.lowerBound]
+        XCTAssertTrue(sendResponse.contains("handshakeSocket.withServerOwnedIOLease"))
+        XCTAssertTrue(sendResponse.contains("Darwin.write(leasedFD"))
+        XCTAssertFalse(sendResponse.contains("let fd = handshakeSocket.fd"))
+        XCTAssertFalse(sendResponse.contains("Darwin.write(fd"))
     }
 
     func testBootstrapServerStopBeforeStartTombstonesListenerAndNeverBinds() async throws {

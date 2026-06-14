@@ -28,6 +28,18 @@ enum PiRepoPromptBridgeExtensionInstaller {
         case installedByOther
     }
 
+    enum ManagedWindowInstallationStatus: Equatable {
+        case installed
+        case installedButStale
+        case installedByOther
+    }
+
+    struct ManagedWindowInstallStatus: Equatable {
+        let extensionURL: URL
+        let windowID: Int?
+        let status: ManagedWindowInstallationStatus
+    }
+
     struct GlobalInstallResult: Equatable {
         let statusBeforeInstall: GlobalInstallationStatus
         let extensionURL: URL
@@ -37,7 +49,7 @@ enum PiRepoPromptBridgeExtensionInstaller {
         }
     }
 
-    static let extensionVersion = "6"
+    static let extensionVersion = "7"
     static let personalBridgeClientName = "repoprompt-pi-bridge"
     static let managedBridgeExecutionClientName = "pi-schema"
     private static let managedMarker = "// RepoPrompt CE managed pi bridge extension"
@@ -61,6 +73,7 @@ enum PiRepoPromptBridgeExtensionInstaller {
             .appendingPathComponent("RepoPrompt CE", isDirectory: true)
             .appendingPathComponent("PiBridge", isDirectory: true)
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        try repairStaleManagedWindowExtensions(directory: directory, fileManager: fileManager, cliPath: cliPath)
         let extensionURL = managedExtensionURL(directory: directory, windowID: windowID)
         let source = extensionSource(windowID: windowID, cliPath: cliPath)
         if let existing = try? String(contentsOf: extensionURL, encoding: .utf8), existing == source {
@@ -76,6 +89,63 @@ enum PiRepoPromptBridgeExtensionInstaller {
             .appendingPathComponent("agent", isDirectory: true)
             .appendingPathComponent("extensions", isDirectory: true)
             .appendingPathComponent(globalExtensionFileName, isDirectory: false)
+    }
+
+    static func managedWindowInstallStatuses(
+        directory: URL,
+        fileManager: FileManager = .default,
+        cliPath: String
+    ) -> [ManagedWindowInstallStatus] {
+        let urls = (try? fileManager.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )) ?? []
+
+        return urls
+            .filter { isManagedWindowExtensionFileName($0.lastPathComponent) }
+            .sorted { $0.path < $1.path }
+            .map { url in
+                let windowID = managedWindowID(fromFileName: url.lastPathComponent)
+                guard let existing = try? String(contentsOf: url, encoding: .utf8),
+                      existing.contains(managedMarker)
+                else {
+                    return ManagedWindowInstallStatus(extensionURL: url, windowID: windowID, status: .installedByOther)
+                }
+                guard let windowID else {
+                    return ManagedWindowInstallStatus(extensionURL: url, windowID: nil, status: .installedButStale)
+                }
+                let expected = extensionSource(windowID: windowID, cliPath: cliPath)
+                let status: ManagedWindowInstallationStatus = existing == expected ? .installed : .installedButStale
+                return ManagedWindowInstallStatus(extensionURL: url, windowID: windowID, status: status)
+            }
+    }
+
+    static func staleManagedWindowExtensionURLs(
+        directory: URL,
+        fileManager: FileManager = .default,
+        cliPath: String
+    ) -> [URL] {
+        managedWindowInstallStatuses(directory: directory, fileManager: fileManager, cliPath: cliPath)
+            .filter { $0.status == .installedButStale }
+            .map(\.extensionURL)
+    }
+
+    static func repairStaleManagedWindowExtensions(
+        directory: URL,
+        fileManager: FileManager = .default,
+        cliPath: String
+    ) throws {
+        for status in managedWindowInstallStatuses(directory: directory, fileManager: fileManager, cliPath: cliPath)
+            where status.status == .installedButStale
+        {
+            if let windowID = status.windowID {
+                try extensionSource(windowID: windowID, cliPath: cliPath)
+                    .write(to: status.extensionURL, atomically: true, encoding: .utf8)
+            } else {
+                try fileManager.removeItem(at: status.extensionURL)
+            }
+        }
     }
 
     static func managedExtensionURL(directory: URL, windowID: Int) -> URL {
@@ -244,6 +314,19 @@ enum PiRepoPromptBridgeExtensionInstaller {
         let standardized = url.standardizedFileURL
         guard !candidates.contains(standardized) else { return }
         candidates.append(standardized)
+    }
+
+    private static func isManagedWindowExtensionFileName(_ name: String) -> Bool {
+        name.hasPrefix(managedExtensionFilePrefix) && name.hasSuffix(".\(managedExtensionFileExtension)")
+    }
+
+    private static func managedWindowID(fromFileName name: String) -> Int? {
+        guard isManagedWindowExtensionFileName(name) else { return nil }
+        let suffixLength = managedExtensionFileExtension.count + 1
+        let raw = name
+            .dropFirst(managedExtensionFilePrefix.count)
+            .dropLast(suffixLength)
+        return Int(raw)
     }
 
     private static func jsonStringArray(_ strings: [String]) -> String {

@@ -204,6 +204,70 @@ final class UnixSocketMCPTerminalCleanupTests: XCTestCase {
         #endif
     }
 
+    func testBackpressuredSendYieldsSoLocalDisconnectDoesNotWaitForStallDeadline() async throws {
+        let descriptors = try Self.makeSocketPair()
+        defer { Self.closeIfOpen(descriptors[1]) }
+        try Self.setSocketBufferSize(descriptors[0], option: SO_SNDBUF, bytes: 4096)
+        try Self.setSocketBufferSize(descriptors[1], option: SO_RCVBUF, bytes: 4096)
+
+        let transport = try UnixSocketMCPTransport(
+            connectedFD: descriptors[0],
+            writeStallTimeout: 5,
+            writePollIntervalMilliseconds: 10
+        )
+        try await transport.connect()
+
+        let payload = Data(repeating: UInt8(ascii: "x"), count: 8 * 1024 * 1024)
+        let sendTask = Task {
+            try await transport.send(payload)
+        }
+        try await Task.sleep(for: .milliseconds(100))
+
+        let started = Date()
+        await transport.disconnect()
+        let elapsed = Date().timeIntervalSince(started)
+        XCTAssertLessThan(elapsed, 1.0)
+
+        do {
+            try await sendTask.value
+            XCTFail("Expected backpressured send to fail after local disconnect")
+        } catch {
+            // Expected.
+        }
+    }
+
+    func testBackpressuredSendYieldsSoPeerCloseDoesNotWaitForStallDeadline() async throws {
+        let descriptors = try Self.makeSocketPair()
+        try Self.setSocketBufferSize(descriptors[0], option: SO_SNDBUF, bytes: 4096)
+        try Self.setSocketBufferSize(descriptors[1], option: SO_RCVBUF, bytes: 4096)
+
+        let transport = try UnixSocketMCPTransport(
+            connectedFD: descriptors[0],
+            writeStallTimeout: 5,
+            writePollIntervalMilliseconds: 10
+        )
+        try await transport.connect()
+
+        let payload = Data(repeating: UInt8(ascii: "x"), count: 8 * 1024 * 1024)
+        let sendTask = Task {
+            try await transport.send(payload)
+        }
+        try await Task.sleep(for: .milliseconds(100))
+
+        let started = Date()
+        Self.closeIfOpen(descriptors[1])
+        do {
+            try await sendTask.value
+            XCTFail("Expected backpressured send to fail after peer close")
+        } catch {
+            // Expected.
+        }
+        let elapsed = Date().timeIntervalSince(started)
+        XCTAssertLessThan(elapsed, 1.0)
+
+        await transport.disconnect()
+    }
+
     func testHeldOldTerminalCallbackCannotCloseReplacementConnection() async throws {
         #if DEBUG
             let suffix = UUID().uuidString.prefix(8)
@@ -424,6 +488,14 @@ final class UnixSocketMCPTerminalCleanupTests: XCTestCase {
             throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
         return descriptors
+    }
+
+    private static func setSocketBufferSize(_ fd: Int32, option: Int32, bytes: Int32) throws {
+        var value = bytes
+        let result = Darwin.setsockopt(fd, SOL_SOCKET, option, &value, socklen_t(MemoryLayout<Int32>.size))
+        guard result == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
     }
 
     private static func makeUnixListener(at socketURL: URL) throws -> Int32 {

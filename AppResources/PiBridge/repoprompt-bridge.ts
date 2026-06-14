@@ -11,20 +11,6 @@ const REPOPROMPT_TOOL_ARGS_PREFIX = JSON.parse("__REPOPROMPT_TOOL_ARGS_PREFIX_JS
 const SCHEMA_LOAD_TIMEOUT_MS = 60_000;
 const TOOL_EXEC_TIMEOUT_MS = 600_000;
 const MAX_RESULT_CHARS = 50 * 1024;
-const MANAGED_BRIDGE_DYNAMIC_TOOL_ALLOWLIST = new Set([
-  "workspace_context",
-  "get_file_tree",
-  "get_code_structure",
-  "read_file",
-  "file_search",
-  "agent_manage",
-  "ask_oracle",
-  "oracle_chat_log",
-  "ask_user",
-  "set_status",
-  "app_settings",
-]);
-
 type JSONRecord = Record<string, unknown>;
 
 type RepoPromptToolEntry = {
@@ -37,12 +23,36 @@ type RepoPromptToolsEnvelope = {
   tools?: RepoPromptToolEntry[];
 };
 
+type RepoPromptBridgeFailureClass =
+  | "app_unavailable"
+  | "connection_closed"
+  | "schema_parse_failure"
+  | "routing_rejection"
+  | "timeout"
+  | "cli_failure"
+  | "unknown";
+
+type RepoPromptSchemaLoadDiagnostics = {
+  status: "loaded" | "failed";
+  toolCount: number;
+  failureClass?: RepoPromptBridgeFailureClass;
+  error?: string;
+};
+
 type RepoPromptBridgeDetails = {
   bridgeVersion: string;
   tool: string;
   windowID: string | undefined;
   exitCode: number;
   truncated: boolean;
+  cliPath: string;
+  schemaArgs: string[];
+  toolArgsPrefix: string[];
+  isManagedWindowBridge: boolean;
+  schemaLoadStatus?: RepoPromptSchemaLoadDiagnostics["status"];
+  schemaToolCount?: number;
+  failureClass?: RepoPromptBridgeFailureClass;
+  error?: string;
 };
 
 function isRecord(value: unknown): value is JSONRecord {
@@ -71,15 +81,39 @@ function truncate(text: string): { text: string; truncated: boolean } {
   };
 }
 
+function classifyBridgeFailure(message: string, exitCode?: number): RepoPromptBridgeFailureClass {
+  const lower = message.toLowerCase();
+  for (const failureClass of ["app_unavailable", "connection_closed", "schema_parse_failure", "routing_rejection", "timeout", "cli_failure"] as const) {
+    if (lower.includes(`[${failureClass}]`)) return failureClass;
+  }
+  if (lower.includes("timed out") || lower.includes("timeout")) return "timeout";
+  if (lower.includes("connection closed") || lower.includes("server closed") || lower.includes("connection reset")) {
+    return "connection_closed";
+  }
+  if (lower.includes("schema") && (lower.includes("json") || lower.includes("tools array"))) {
+    return "schema_parse_failure";
+  }
+  if (lower.includes("bind_context") && lower.includes("mutating")) return "routing_rejection";
+  if (lower.includes("handshake rejected") || lower.includes("approval denied") || lower.includes("connection approval was denied") || lower.includes("protocol_version_mismatch") || lower.includes("protocol version mismatch")) {
+    return "routing_rejection";
+  }
+  if (lower.includes("app is not running") || lower.includes("mcp is disabled") || lower.includes("socket not found")) {
+    return "app_unavailable";
+  }
+  if (exitCode !== undefined && exitCode !== 0) return "cli_failure";
+  return "unknown";
+}
+
 function parseToolsSchema(stdout: string): RepoPromptToolEntry[] {
   let parsed: RepoPromptToolsEnvelope;
   try {
     parsed = JSON.parse(stdout) as RepoPromptToolsEnvelope;
   } catch (error) {
-    throw new Error(`RepoPrompt MCP tool schema was not valid JSON: ${String(error)}`);
+    const message = `RepoPrompt MCP tool schema was not valid JSON: ${String(error)}`;
+    throw new Error(`[schema_parse_failure] ${message}`);
   }
   if (!Array.isArray(parsed.tools)) {
-    throw new Error("RepoPrompt MCP tool schema did not include a tools array.");
+    throw new Error("[schema_parse_failure] RepoPrompt MCP tool schema did not include a tools array.");
   }
   return parsed.tools.map((tool) => ({
     ...tool,
@@ -100,7 +134,9 @@ async function loadRepoPromptTools(pi: ExtensionAPI): Promise<RepoPromptToolEntr
   const stdout = result.stdout.trim();
   const stderr = result.stderr.trim();
   if (result.code !== 0) {
-    throw new Error(stderr || stdout || `RepoPrompt MCP tool schema export failed with exit code ${result.code}`);
+    const message = stderr || stdout || `RepoPrompt MCP tool schema export failed with exit code ${result.code}`;
+    const failureClass = classifyBridgeFailure(message, result.code);
+    throw new Error(`[${failureClass}] ${message}`);
   }
   return parseToolsSchema(stdout);
 }
@@ -136,7 +172,9 @@ async function callRepoPromptTool(
   const stdout = result.stdout.trim();
   const stderr = result.stderr.trim();
   if (result.code !== 0) {
-    throw new Error(stderr || stdout || `RepoPrompt tool ${toolName} failed with exit code ${result.code}`);
+    const message = stderr || stdout || `RepoPrompt tool ${toolName} failed with exit code ${result.code}`;
+    const failureClass = classifyBridgeFailure(message, result.code);
+    throw new Error(`RepoPrompt tool ${toolName} failed (class=${failureClass}, exitCode=${result.code}): ${message}`);
   }
   const merged = stdout || stderr || `RepoPrompt tool ${toolName} completed.`;
   const truncated = truncate(merged);
@@ -148,6 +186,10 @@ async function callRepoPromptTool(
       windowID: REPOPROMPT_WINDOW_ID,
       exitCode: result.code,
       truncated: truncated.truncated,
+      cliPath: REPOPROMPT_CLI,
+      schemaArgs: repoPromptSchemaArgs(),
+      toolArgsPrefix: [...REPOPROMPT_TOOL_ARGS_PREFIX],
+      isManagedWindowBridge: REPOPROMPT_IS_MANAGED_WINDOW_BRIDGE,
     },
   };
 }
@@ -178,7 +220,7 @@ function registerRepoPromptBindContextTool(pi: ExtensionAPI) {
   });
 }
 
-function registerRepoPromptBridgeStatusTool(pi: ExtensionAPI, schemaLoadError: string | undefined) {
+function registerRepoPromptBridgeStatusTool(pi: ExtensionAPI, schemaDiagnostics: RepoPromptSchemaLoadDiagnostics) {
   pi.registerTool({
     name: "repoprompt_bridge_status",
     label: "RepoPrompt bridge status",
@@ -194,17 +236,25 @@ function registerRepoPromptBridgeStatusTool(pi: ExtensionAPI, schemaLoadError: s
       additionalProperties: false,
     },
     async execute() {
-      const status = schemaLoadError === undefined
-        ? `RepoPrompt bridge ${BRIDGE_VERSION} loaded dynamic tool schemas.`
-        : `RepoPrompt bridge ${BRIDGE_VERSION} could not load dynamic tool schemas: ${schemaLoadError}`;
+      const status = schemaDiagnostics.status === "loaded"
+        ? `RepoPrompt bridge ${BRIDGE_VERSION} loaded ${schemaDiagnostics.toolCount} dynamic tool schema(s).`
+        : `RepoPrompt bridge ${BRIDGE_VERSION} could not load dynamic tool schemas (class=${schemaDiagnostics.failureClass ?? "unknown"}): ${schemaDiagnostics.error ?? "unknown error"}`;
       return {
         content: [{ type: "text" as const, text: status }],
         details: {
           bridgeVersion: BRIDGE_VERSION,
           tool: "repoprompt_bridge_status",
           windowID: REPOPROMPT_WINDOW_ID,
-          exitCode: schemaLoadError === undefined ? 0 : 1,
+          exitCode: schemaDiagnostics.status === "loaded" ? 0 : 1,
           truncated: false,
+          cliPath: REPOPROMPT_CLI,
+          schemaArgs: repoPromptSchemaArgs(),
+          toolArgsPrefix: [...REPOPROMPT_TOOL_ARGS_PREFIX],
+          isManagedWindowBridge: REPOPROMPT_IS_MANAGED_WINDOW_BRIDGE,
+          schemaLoadStatus: schemaDiagnostics.status,
+          schemaToolCount: schemaDiagnostics.toolCount,
+          failureClass: schemaDiagnostics.failureClass,
+          error: schemaDiagnostics.error,
         },
       };
     },
@@ -241,16 +291,23 @@ export default async function repoPromptBridge(pi: ExtensionAPI) {
   registerRepoPromptWindowStatusTool(pi);
 
   let tools: RepoPromptToolEntry[] = [];
-  let schemaLoadError: string | undefined;
+  let schemaDiagnostics: RepoPromptSchemaLoadDiagnostics = { status: "loaded", toolCount: 0 };
   try {
     tools = await loadRepoPromptTools(pi);
+    schemaDiagnostics = { status: "loaded", toolCount: tools.length };
   } catch (error) {
-    schemaLoadError = String(error instanceof Error ? error.message : error);
+    const errorMessage = String(error instanceof Error ? error.message : error);
+    schemaDiagnostics = {
+      status: "failed",
+      toolCount: 0,
+      failureClass: classifyBridgeFailure(errorMessage),
+      error: errorMessage,
+    };
   }
-  registerRepoPromptBridgeStatusTool(pi, schemaLoadError);
+  registerRepoPromptBridgeStatusTool(pi, schemaDiagnostics);
   for (const tool of tools) {
     const toolName = requireToolName(tool.name);
-    if (REPOPROMPT_IS_MANAGED_WINDOW_BRIDGE && !MANAGED_BRIDGE_DYNAMIC_TOOL_ALLOWLIST.has(toolName)) {
+    if (REPOPROMPT_IS_MANAGED_WINDOW_BRIDGE && toolName === "bind_context") {
       continue;
     }
     const description = tool.description?.trim() || `Call RepoPrompt MCP tool ${toolName} through the current RepoPrompt CE window.`;

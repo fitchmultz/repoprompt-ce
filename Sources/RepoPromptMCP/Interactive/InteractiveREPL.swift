@@ -73,31 +73,31 @@ actor InteractiveREPL {
         // the same routed tool surface as an interactive session. Keep this
         // silent so JSON/schema stdout remains machine-readable.
         if options.listToolsOnly {
-            try await applyInitialWindowSelection(announce: false)
+            try await applyInitialWindowSelection(announce: false, useLocalRouting: true)
             try await printToolListSingleShot(mode: options.listToolsMode)
             return
         }
 
         if options.toolsSchemaOnly {
-            try await applyInitialWindowSelection(announce: false)
+            try await applyInitialWindowSelection(announce: false, useLocalRouting: true)
             try await toolsSchemaSingleShot(mode: options.toolsSchemaMode)
             return
         }
 
         if let toolName = options.describeTool {
-            try await applyInitialWindowSelection(announce: false)
+            try await applyInitialWindowSelection(announce: false, useLocalRouting: true)
             try await describeToolSingleShot(toolName)
             return
         }
 
         if let toolName = options.callTool {
-            try await applyInitialWindowSelection(announce: false)
+            try await applyInitialWindowSelection(announce: false, useLocalRouting: true)
             try await callToolSingleShot(name: toolName, argsJSON: options.callArgs)
             return
         }
 
         if let snapshotPath = options.snapshotPath {
-            try await applyInitialWindowSelection(announce: false)
+            try await applyInitialWindowSelection(announce: false, useLocalRouting: true)
             try await snapshotToolsSingleShot(to: snapshotPath)
             return
         }
@@ -108,8 +108,18 @@ actor InteractiveREPL {
 
     // MARK: - REPL Loop
 
-    private func applyInitialWindowSelection(announce: Bool) async throws {
+    private func applyInitialWindowSelection(announce: Bool, useLocalRouting: Bool = false) async throws {
         guard let windowID = options.initialWindowID else { return }
+        if useLocalRouting {
+            await session.setLocalWindowSelection(windowID: windowID)
+            if announce {
+                print("Selected window \(windowID) locally; subsequent tool calls will include _windowID=\(windowID).")
+            }
+            _ = try await session.refreshTools()
+            workspaceCacheDirty = true
+            return
+        }
+
         if announce {
             print("Selecting window \(windowID)...")
         }

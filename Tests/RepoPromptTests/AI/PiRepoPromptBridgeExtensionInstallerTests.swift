@@ -53,6 +53,52 @@ final class PiRepoPromptBridgeExtensionInstallerTests: XCTestCase {
         XCTAssertTrue(try String(contentsOf: second, encoding: .utf8).contains(#"const REPOPROMPT_WINDOW_ID: string | undefined = "5""#))
     }
 
+    func testManagedWindowInstallStatusDetectsStaleGeneratedBridgeFiles() throws {
+        let home = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let appSupport = home.appendingPathComponent("Application Support", isDirectory: true)
+        let directory = appSupport
+            .appendingPathComponent("RepoPrompt CE", isDirectory: true)
+            .appendingPathComponent("PiBridge", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let cliPath = #"/tmp/RepoPrompt Debug/repoprompt-mcp"#
+        let staleURL = PiRepoPromptBridgeExtensionInstaller.managedExtensionURL(directory: directory, windowID: 4)
+        let currentURL = PiRepoPromptBridgeExtensionInstaller.managedExtensionURL(directory: directory, windowID: 5)
+        let unmanagedURL = directory.appendingPathComponent("repoprompt-bridge-window-6.ts")
+
+        try PiRepoPromptBridgeExtensionInstaller.extensionSource(windowID: 4, cliPath: "/old/repoprompt-mcp")
+            .write(to: staleURL, atomically: true, encoding: .utf8)
+        try PiRepoPromptBridgeExtensionInstaller.extensionSource(windowID: 5, cliPath: cliPath)
+            .write(to: currentURL, atomically: true, encoding: .utf8)
+        try "export default function other() {}".write(to: unmanagedURL, atomically: true, encoding: .utf8)
+
+        let statuses = PiRepoPromptBridgeExtensionInstaller.managedWindowInstallStatuses(directory: directory, cliPath: cliPath)
+
+        func status(for url: URL) -> PiRepoPromptBridgeExtensionInstaller.ManagedWindowInstallStatus? {
+            statuses.first { $0.extensionURL.lastPathComponent == url.lastPathComponent }
+        }
+
+        XCTAssertEqual(statuses.count, 3)
+        XCTAssertEqual(status(for: staleURL)?.status, .installedButStale)
+        XCTAssertEqual(status(for: staleURL)?.windowID, 4)
+        XCTAssertEqual(status(for: currentURL)?.status, .installed)
+        XCTAssertEqual(status(for: unmanagedURL)?.status, .installedByOther)
+        XCTAssertEqual(
+            PiRepoPromptBridgeExtensionInstaller.staleManagedWindowExtensionURLs(directory: directory, cliPath: cliPath)
+                .map(\.lastPathComponent),
+            [staleURL.lastPathComponent]
+        )
+
+        _ = try PiRepoPromptBridgeExtensionInstaller.install(windowID: 5, fileManager: StubApplicationSupportFileManager(applicationSupportURL: appSupport), cliPath: cliPath)
+        let repairedStaleSource = try String(contentsOf: staleURL, encoding: .utf8)
+        XCTAssertEqual(repairedStaleSource, PiRepoPromptBridgeExtensionInstaller.extensionSource(windowID: 4, cliPath: cliPath))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: unmanagedURL.path))
+        XCTAssertEqual(
+            PiRepoPromptBridgeExtensionInstaller.staleManagedWindowExtensionURLs(directory: directory, cliPath: cliPath),
+            []
+        )
+    }
+
     func testManagedBridgeIdentityBelongsToPiAgentFamilyButPersonalBridgeDoesNot() {
         XCTAssertEqual(MCPClientIdentity.managedPiFamilyClientNames, Set([
             AgentProviderKind.piMCPClientID,
@@ -116,31 +162,89 @@ final class PiRepoPromptBridgeExtensionInstallerTests: XCTestCase {
         XCTAssertTrue(source.contains("export default async function repoPromptBridge"))
         XCTAssertTrue(source.contains("loadRepoPromptTools"))
         XCTAssertTrue(source.contains("try {"))
-        XCTAssertTrue(source.contains("schemaLoadError = String(error instanceof Error ? error.message : error)"))
-        XCTAssertTrue(source.contains("registerRepoPromptBridgeStatusTool(pi, schemaLoadError)"))
+        XCTAssertTrue(source.contains("schemaDiagnostics = {"))
+        XCTAssertTrue(source.contains("failureClass: classifyBridgeFailure(errorMessage)"))
+        XCTAssertTrue(source.contains("registerRepoPromptBridgeStatusTool(pi, schemaDiagnostics)"))
         XCTAssertTrue(source.contains("name: \"repoprompt_bridge_status\""))
+        XCTAssertTrue(source.contains("schemaLoadStatus: schemaDiagnostics.status"))
+        XCTAssertTrue(source.contains("schemaToolCount: schemaDiagnostics.toolCount"))
+        XCTAssertTrue(source.contains("cliPath: REPOPROMPT_CLI"))
+        XCTAssertTrue(source.contains("classifyBridgeFailure"))
+        XCTAssertTrue(source.contains("lower.includes(`[${failureClass}]`)"))
+        XCTAssertTrue(source.contains("lower.includes(\"handshake rejected\")"))
+        XCTAssertTrue(source.contains("lower.includes(\"protocol_version_mismatch\")"))
+        XCTAssertFalse(source.contains("exitCode === 73"))
         XCTAssertTrue(source.contains("pi.registerTool"))
         XCTAssertTrue(source.contains("name: toolName"))
         XCTAssertTrue(source.contains("parameters: asParameterSchema(tool.inputSchema)"))
         XCTAssertTrue(source.contains("repoPromptSchemaArgs()"))
-        XCTAssertTrue(source.contains("const REPOPROMPT_SCHEMA_ARGS = JSON.parse(\"[\\\"--client-name\\\",\\\"pi-schema\\\",\\\"--tools-schema\\\",\\\"--compact\\\",\\\"-w\\\",\\\"42\\\"]\") as string[]"))
+        XCTAssertTrue(source.contains(
+            "const REPOPROMPT_SCHEMA_ARGS = JSON.parse(\"[\\\"--client-name\\\",\\\"pi-schema\\\",\\\"--tools-schema\\\",\\\"--compact\\\",\\\"-w\\\",\\\"42\\\"]\") as string[]"
+        ))
         XCTAssertTrue(source.contains("repoPromptToolArgs(toolName, params)"))
         XCTAssertTrue(source.contains("name: \"bind_context\""))
         XCTAssertTrue(source.contains("enum: [\"list\", \"status\"]"))
         XCTAssertTrue(source.contains("sanitizedBindContextParams"))
-        XCTAssertTrue(source.contains("MANAGED_BRIDGE_DYNAMIC_TOOL_ALLOWLIST"))
-        XCTAssertTrue(source.contains("\"workspace_context\""))
-        XCTAssertTrue(source.contains("!MANAGED_BRIDGE_DYNAMIC_TOOL_ALLOWLIST.has(toolName)"))
+        XCTAssertFalse(source.contains("MANAGED_BRIDGE_DYNAMIC_TOOL_ALLOWLIST"))
+        XCTAssertFalse(source.contains("!MANAGED_BRIDGE_DYNAMIC_TOOL_ALLOWLIST.has(toolName)"))
+        XCTAssertTrue(source.contains(
+            "RepoPrompt bridge tools are routed to the current RepoPrompt CE window and governed by RepoPrompt Agent Mode permissions."
+        ))
         XCTAssertTrue(source.contains("name: \"repoprompt_window_status\""))
         XCTAssertTrue(source.contains("callRepoPromptTool(pi, \"bind_context\", { op: \"list\" }, signal)"))
         XCTAssertTrue(source.contains("Use repoprompt_window_status instead of shelling out to repoprompt-mcp"))
-        XCTAssertTrue(source.contains("const REPOPROMPT_TOOL_ARGS_PREFIX = JSON.parse(\"[\\\"--client-name\\\",\\\"pi-schema\\\",\\\"--raw-json\\\",\\\"-w\\\",\\\"42\\\"]\") as string[]"))
+        XCTAssertTrue(source.contains(
+            "const REPOPROMPT_TOOL_ARGS_PREFIX = JSON.parse(\"[\\\"--client-name\\\",\\\"pi-schema\\\",\\\"--raw-json\\\",\\\"-w\\\",\\\"42\\\"]\") as string[]"
+        ))
         XCTAssertTrue(source.contains("const REPOPROMPT_WINDOW_ID: string | undefined = \"42\""))
         XCTAssertTrue(source.contains("const REPOPROMPT_IS_MANAGED_WINDOW_BRIDGE = REPOPROMPT_WINDOW_ID !== undefined"))
         XCTAssertTrue(source.contains("process.env[REPOPROMPT_MANAGED_RUN_ENV] === \"1\""))
         XCTAssertTrue(source.contains("\\\"Debug\\\""))
         XCTAssertTrue(source.contains("repoprompt-mcp"))
         XCTAssertFalse(source.contains("name: \"repoprompt_tool\""))
+    }
+
+    func testManagedBridgeDoesNotStaleFilterPolicyAdvertisedFirstClassProviderTools() {
+        let firstClassRequiredTools = [
+            "agent_run",
+            "agent_manage",
+            "context_builder",
+            "workspace_context",
+            "read_file",
+            "file_search",
+            "get_file_tree",
+            "get_code_structure",
+            "manage_selection",
+            "prompt",
+            "apply_edits",
+            "file_actions",
+            "git"
+        ]
+        let source = PiRepoPromptBridgeExtensionInstaller.extensionSource(
+            windowID: 42,
+            cliPath: #"/tmp/RepoPrompt Debug/repoprompt-mcp"#
+        )
+
+        XCTAssertEqual(
+            PiRepoPromptBridgeExtensionInstaller.schemaArgs(windowID: 42),
+            [
+                "--client-name",
+                PiRepoPromptBridgeExtensionInstaller.managedBridgeExecutionClientName,
+                "--tools-schema",
+                "--compact",
+                "-w",
+                "42"
+            ]
+        )
+        XCTAssertTrue(source.contains("for (const tool of tools)"))
+        XCTAssertTrue(source.contains("pi.registerTool"))
+        XCTAssertTrue(source.contains("parameters: asParameterSchema(tool.inputSchema)"))
+        XCTAssertFalse(source.contains("MANAGED_BRIDGE_DYNAMIC_TOOL_ALLOWLIST"))
+        XCTAssertFalse(source.contains("!MANAGED_BRIDGE_DYNAMIC_TOOL_ALLOWLIST.has(toolName)"))
+        XCTAssertTrue(
+            firstClassRequiredTools.allSatisfy { !AgentModeMCPToolPolicy.restrictedTools.contains($0) },
+            "First-class pi bridge tools must be governed by RepoPrompt Agent Mode policy, not restricted before schema export."
+        )
     }
 
     func testBridgeTemplateIsFirstClassArtifactAndRenderingRemovesPlaceholders() throws {

@@ -49,9 +49,10 @@ actor InteractiveMCPService: Service {
             await session.setProgressEnabled(true)
         }
 
-        // Connect to the app
+        // Connect to the app. Retry only narrowly-classified startup failures;
+        // once MCP protocol traffic begins, the session remains terminal.
         do {
-            try await session.connect()
+            try await connectWithStartupRetry(session: session)
         } catch {
             handleConnectionError(error)
             throw error
@@ -80,6 +81,34 @@ actor InteractiveMCPService: Service {
     private static func timeoutPolicy(from seconds: Double?) -> ToolCallTimeoutPolicy {
         guard let seconds else { return .default }
         return seconds == 0 ? .none : .seconds(seconds)
+    }
+
+    private func connectWithStartupRetry(session: InteractiveMCPClientSession) async throws {
+        let deadline = Date().addingTimeInterval(MCPBootstrapTiming.initialResponseTimeout)
+        var lastError: (any Error)?
+        var attempt = 0
+
+        repeat {
+            attempt += 1
+            do {
+                try await session.connect()
+                return
+            } catch let error as InteractiveSessionError {
+                lastError = error
+                guard error.isTransientStartupFailure, Date() < deadline else { throw error }
+                if options.verbose {
+                    fputs("Retrying transient RepoPrompt bootstrap startup failure (attempt \(attempt)): \(error.description)\n", stderr)
+                }
+                try await Task.sleep(for: .milliseconds(500))
+            } catch {
+                lastError = error
+                throw error
+            }
+        } while Date() < deadline
+
+        if let lastError {
+            throw lastError
+        }
     }
 
     private func handleConnectionError(_ error: Error) {

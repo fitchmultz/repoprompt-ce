@@ -258,6 +258,8 @@ public actor UnixSocketMCPTransport: Transport {
     private var fdGeneration: UInt64 = 0
 
     private var lastActivityTime: Date?
+    private var writeInProgress = false
+    private var writeWaiters: [CheckedContinuation<Void, Never>] = []
 
     /// Connection timeout when waiting for socket to appear and accept connections
     private let connectionTimeout: TimeInterval = 30.0
@@ -480,6 +482,9 @@ public actor UnixSocketMCPTransport: Transport {
                 connectionGeneration: fdGeneration
             )
         #endif
+
+        await enterWriteSection()
+        defer { leaveWriteSection() }
 
         do {
             try await writeAll(framed)
@@ -840,6 +845,26 @@ public actor UnixSocketMCPTransport: Transport {
     /// Uses non-blocking writes plus bounded POLLOUT waits for backpressure.
     /// The stall deadline resets whenever any bytes are successfully written.
     /// Guards against FD reuse races by checking fdGeneration after each sleep.
+    private func enterWriteSection() async {
+        guard writeInProgress else {
+            writeInProgress = true
+            return
+        }
+        await withCheckedContinuation { continuation in
+            writeWaiters.append(continuation)
+        }
+    }
+
+    private func leaveWriteSection() {
+        guard writeInProgress else { return }
+        if !writeWaiters.isEmpty {
+            let next = writeWaiters.removeFirst()
+            next.resume()
+        } else {
+            writeInProgress = false
+        }
+    }
+
     private func writeAll(_ data: Data) async throws {
         // Fast-fail if we're obviously disconnected
         guard isConnected, socketFD >= 0 else {
@@ -884,7 +909,7 @@ public actor UnixSocketMCPTransport: Transport {
                 if err == EINTR {
                     continue // Interrupted, retry
                 } else if err == EAGAIN || err == EWOULDBLOCK {
-                    try waitForSocketWritable(
+                    try await waitForSocketWritable(
                         fd: fd,
                         generation: gen,
                         lastProgressAt: lastProgressAt,
@@ -917,7 +942,7 @@ public actor UnixSocketMCPTransport: Transport {
         lastProgressAt: Date,
         totalBytes: Int,
         bytesRemaining: Int
-    ) throws {
+    ) async throws {
         while true {
             guard isConnected, fdGeneration == generation else {
                 throw MCPError.connectionClosed
@@ -947,6 +972,7 @@ public actor UnixSocketMCPTransport: Transport {
             }
 
             if result == 0 {
+                await Task.yield()
                 continue
             }
 

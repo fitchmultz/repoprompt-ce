@@ -169,6 +169,7 @@ protocol InteractiveMCPClientSessioning: AnyObject, Sendable {
     func callTool(name: String, arguments: [String: Value]?, timeout: ToolCallTimeoutPolicy) async throws -> CallTool.Result
     func listWindows() async throws -> CallTool.Result
     func selectWindow(windowID: Int) async throws -> CallTool.Result
+    func setLocalWindowSelection(windowID: Int?) async
     func clearWindowSelection() async throws -> CallTool.Result
     func bindingStatus() async throws -> BindContextBinding
     func isMultiWindowModeAvailable() async -> Bool
@@ -748,6 +749,11 @@ actor InteractiveMCPClientSession: InteractiveMCPClientSessioning {
         selectedWindowID = windowID
     }
 
+    func setLocalWindowSelection(windowID: Int?) async {
+        selectedWindowID = windowID
+        selectedContextID = nil
+    }
+
     // MARK: - Window Management
 
     /// Checks if a tool is available in the cached tools list.
@@ -1046,7 +1052,10 @@ actor InteractiveMCPClientSession: InteractiveMCPClientSessioning {
             if response.errorCode == MCPBootstrapErrorCode.approvalDenied.rawValue {
                 throw InteractiveSessionError.approvalDenied
             }
-            throw InteractiveSessionError.handshakeFailed(reason: response.reason ?? "Rejected by server")
+            if response.errorCode == MCPBootstrapErrorCode.protocolVersionMismatch.rawValue {
+                throw InteractiveSessionError.handshakeRejected(errorCode: response.errorCode, reason: response.reason)
+            }
+            throw InteractiveSessionError.handshakeRejected(errorCode: response.errorCode, reason: response.reason)
 
         default:
             throw InteractiveSessionError.handshakeFailed(reason: "Unknown response: \(response.type)")
@@ -1145,6 +1154,7 @@ enum InteractiveSessionError: Swift.Error, CustomStringConvertible {
     case appNotRunning
     case approvalDenied
     case handshakeFailed(reason: String)
+    case handshakeRejected(errorCode: String?, reason: String?)
     case bootstrapResponseTimeout
     case toolCallTimeout(toolName: String, seconds: TimeInterval)
     case connectionReset
@@ -1152,6 +1162,31 @@ enum InteractiveSessionError: Swift.Error, CustomStringConvertible {
     case writeFailed(errno: Int32)
     case pollFailed(errno: Int32)
     case cancelled
+
+    var isTransientStartupFailure: Bool {
+        switch self {
+        case .appNotRunning,
+             .bootstrapResponseTimeout,
+             .connectionReset,
+             .serverClosed:
+            true
+        case let .connectFailed(errno):
+            errno == ECONNREFUSED || errno == ENOENT || errno == ETIMEDOUT || errno == EAGAIN
+        case let .handshakeRejected(errorCode, _):
+            MCPBootstrapStartupRetryClassifier.isTransientRejection(errorCode: errorCode)
+        case .approvalDenied,
+             .cancelled,
+             .descriptorConfigurationFailed,
+             .handshakeFailed,
+             .notConnected,
+             .pathTooLong,
+             .pollFailed,
+             .socketCreationFailed,
+             .toolCallTimeout,
+             .writeFailed:
+            false
+        }
+    }
 
     var description: String {
         switch self {
@@ -1178,6 +1213,10 @@ enum InteractiveSessionError: Swift.Error, CustomStringConvertible {
             return "Connection approval was denied"
         case let .handshakeFailed(reason):
             return "Handshake failed: \(reason)"
+        case let .handshakeRejected(errorCode, reason):
+            let code = errorCode ?? "unknown"
+            let message = reason ?? "Rejected by server"
+            return "Handshake rejected (\(code)): \(message)"
         case .bootstrapResponseTimeout:
             return "Timed out waiting for RepoPrompt bootstrap response"
         case let .toolCallTimeout(toolName, seconds):

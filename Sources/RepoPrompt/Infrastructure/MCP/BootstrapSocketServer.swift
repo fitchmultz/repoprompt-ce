@@ -162,7 +162,8 @@ actor BootstrapSocketServer {
     private let logger: Logger
     private let handshakeIOQueue = DispatchQueue(
         label: "com.repoprompt.mcp.bootstrap.handshake-io",
-        qos: .userInitiated
+        qos: .userInitiated,
+        attributes: .concurrent
     )
 
     private var listenFD: Int32 = -1
@@ -977,8 +978,6 @@ actor BootstrapSocketServer {
     /// Uses SO_SNDTIMEO for bounded writes - if the client isn't reading, we fail fast.
     @discardableResult
     private func sendResponseAsync(_ response: MCPBootstrapResponse, to handshakeSocket: BootstrapHandshakeSocket) async -> Bool {
-        let fd = handshakeSocket.fd
-        guard handshakeSocket.isServerOwnedOpen() else { return false }
         guard let jsonData = try? JSONEncoder().encode(response) else {
             logger.error("BootstrapSocketServer: failed to encode response")
             return false
@@ -986,42 +985,46 @@ actor BootstrapSocketServer {
 
         var payload = jsonData
         payload.append(UInt8(ascii: "\n"))
-
-        // Set 5 second send timeout (socket is already in blocking mode)
-        // This ensures we don't block forever if client stops reading
-        var timeout = timeval(tv_sec: 5, tv_usec: 0)
-        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-
         let bytes = [UInt8](payload)
-        var totalWritten = 0
 
-        while totalWritten < bytes.count {
-            if Task.isCancelled || !handshakeSocket.isServerOwnedOpen() {
-                POSIXDescriptorSupport.shutdownSocketReadWrite(fd)
+        let wroteAll = handshakeSocket.withServerOwnedIOLease { leasedFD in
+            // Set 5 second send timeout (socket is already in blocking mode).
+            // This ensures we don't block forever if client stops reading, while
+            // the lease prevents stop() from closing/recycling leasedFD mid-write.
+            var timeout = timeval(tv_sec: 5, tv_usec: 0)
+            setsockopt(leasedFD, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+
+            var totalWritten = 0
+            while totalWritten < bytes.count {
+                if Task.isCancelled {
+                    return false
+                }
+
+                let written = bytes.withUnsafeBytes { buf in
+                    let ptr = buf.baseAddress!.advanced(by: totalWritten)
+                    return Darwin.write(leasedFD, ptr, bytes.count - totalWritten)
+                }
+
+                if written > 0 {
+                    totalWritten += written
+                    continue
+                }
+
+                let err = errno
+                if err == EINTR { continue }
+
+                // Timeout (EAGAIN with SO_SNDTIMEO) or error.
+                logger.error("BootstrapSocketServer: write failed (errno=\(err))")
                 return false
             }
 
-            let written = bytes.withUnsafeBytes { buf in
-                let ptr = buf.baseAddress!.advanced(by: totalWritten)
-                return Darwin.write(fd, ptr, bytes.count - totalWritten)
-            }
+            return true
+        } ?? false
 
-            if written > 0 {
-                totalWritten += written
-                continue
-            }
-
-            let err = errno
-            if err == EINTR { continue }
-
-            // Timeout (EAGAIN with SO_SNDTIMEO) or error
-            // shutdown() wakes any blocked I/O and signals the other end
-            logger.error("BootstrapSocketServer: write failed (errno=\(err))")
-            POSIXDescriptorSupport.shutdownSocketReadWrite(fd)
-            return false
+        if !wroteAll {
+            handshakeSocket.shutdownAndCloseIfServerOwned()
         }
-
-        return true
+        return wroteAll
     }
 }
 

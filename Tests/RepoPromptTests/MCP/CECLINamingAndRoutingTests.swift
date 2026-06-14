@@ -83,7 +83,7 @@ final class CECLINamingAndRoutingTests: XCTestCase {
         }
     }
 
-    func testInteractiveSingleShotCommandsSelectWindowAndRefreshToolsBeforeExecuting() async throws {
+    func testInteractiveSingleShotCommandsUseLocalWindowRoutingAndRefreshToolsBeforeExecuting() async throws {
         let temp = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: temp) }
         let rows: [(label: String, configure: (inout InteractiveOptions) -> Void, expectedTail: [String])] = [
@@ -109,11 +109,26 @@ final class CECLINamingAndRoutingTests: XCTestCase {
 
             let calls = await session.recordedCalls()
             XCTAssertGreaterThanOrEqual(calls.count, 2, row.label)
-            XCTAssertEqual(Array(calls.prefix(2)), ["select:7", "refresh"], row.label)
+            XCTAssertEqual(Array(calls.prefix(2)), ["localSelect:7", "refresh"], row.label)
             if !row.expectedTail.isEmpty {
                 XCTAssertEqual(Array(calls.suffix(row.expectedTail.count)), row.expectedTail, row.label)
             }
         }
+    }
+
+    func testInteractiveSingleShotWindowSelectionUsesExplicitLocalRoutingWithoutBindMutation() async throws {
+        var options = InteractiveOptions(initialWindowID: 7)
+        options.callTool = "workspace_context"
+        options.callArgs = "{}"
+        let session = FakeInteractiveMCPClientSession()
+        let repl = InteractiveREPL(session: session, options: options)
+
+        try await repl.run()
+
+        let calls = await session.recordedCalls()
+        XCTAssertEqual(calls, ["localSelect:7", "refresh", "call:workspace_context"])
+        let selectedWindowID = await session.selectedWindowID
+        XCTAssertEqual(selectedWindowID, 7)
     }
 
     func testManageWorktreeIsExposedInCECLISurfaces() throws {
@@ -220,6 +235,11 @@ private actor FakeInteractiveMCPClientSession: InteractiveMCPClientSessioning {
         calls.append("select:\(windowID)")
         selectedWindowID = windowID
         return CallTool.Result(content: [.text("ok")], isError: false)
+    }
+
+    func setLocalWindowSelection(windowID: Int?) async {
+        calls.append("localSelect:\(windowID.map(String.init) ?? "nil")")
+        selectedWindowID = windowID
     }
 
     func clearWindowSelection() async throws -> CallTool.Result {

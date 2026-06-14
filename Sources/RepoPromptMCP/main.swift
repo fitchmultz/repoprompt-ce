@@ -1489,7 +1489,7 @@ actor MCPService: Service {
                 return false
 
             case let .handshakeRejected(errorCode, _):
-                return isTransientBootstrapRejection(errorCode)
+                return MCPBootstrapStartupRetryClassifier.isTransientRejection(errorCode: errorCode)
 
             // Transient socket errors - retry with backoff
             case .connectionRefused,
@@ -1568,20 +1568,6 @@ actor MCPService: Service {
         #else
             return nil
         #endif
-    }
-
-    private func isTransientBootstrapRejection(_ code: String?) -> Bool {
-        guard let code else { return false }
-        switch code {
-        case MCPBootstrapErrorCode.serverNotReady.rawValue,
-             MCPBootstrapErrorCode.serverUnavailable.rawValue,
-             MCPBootstrapErrorCode.connectionLimitReached.rawValue,
-             MCPBootstrapErrorCode.capacityExceeded.rawValue,
-             MCPBootstrapErrorCode.clientCooldown.rawValue:
-            return true
-        default:
-            return false
-        }
     }
 
     /// Runs the MCP transport with reconnection on transient failures.

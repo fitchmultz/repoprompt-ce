@@ -1,6 +1,6 @@
 # pi Integration Architecture
 
-Current as of 2026-06-10. This document is contributor-facing: use it when editing RepoPrompt CE's pi provider, managed pi RPC runs, model discovery, Agent Mode runner, or RepoPrompt MCP bridge extension.
+Current as of 2026-06-14. This document is contributor-facing: use it when editing RepoPrompt CE's pi provider, managed pi RPC runs, model discovery, Agent Mode runner, or RepoPrompt MCP bridge extension.
 
 ## Scope and goals
 
@@ -167,13 +167,13 @@ Bridge constants:
 | `TOOL_EXEC_TIMEOUT_MS` | Timeout for individual RepoPrompt MCP tool invocations. |
 | `MAX_RESULT_CHARS` | Maximum returned text payload before bridge-side truncation. |
 
-Bridge tool results include `details.bridgeVersion`, `details.tool`, `details.windowID`, `details.exitCode`, and `details.truncated` for downstream rendering and diagnostics.
+Bridge tool results include `details.bridgeVersion`, `details.tool`, `details.windowID`, `details.exitCode`, `details.truncated`, `details.cliPath`, `details.schemaArgs`, `details.toolArgsPrefix`, and `details.isManagedWindowBridge` for downstream rendering and diagnostics. The `repoprompt_bridge_status` tool also reports structured schema-load diagnostics: `schemaLoadStatus`, `schemaToolCount`, `failureClass`, and `error`.
 
 The bridge also registers a fixed read-only `repoprompt_window_status` tool. It calls RepoPrompt MCP `bind_context` with `op=list` and exists as a stable pi-facing routing discovery tool when provider/tool adapters fail to expose or select the raw `bind_context` name. Agents should use `repoprompt_window_status` instead of shelling out to `repoprompt-mcp` when they need the current RepoPrompt window, tab, workspace, or binding status.
 
 Agent Mode connections must allow `bind_context` execution for read-only `op=list` and `op=status` so pi can inspect its own tab/window binding. Mutating `bind_context` operations and workspace-level routing mutation through `manage_workspaces` remain restricted during Agent Mode runs.
 
-The managed pi bridge registers an explicit read-only `bind_context` wrapper plus the `repoprompt_window_status` alias. Window-scoped managed bridge schema discovery and tool calls use `--client-name pi-schema`; `MCPClientIdentity` canonicalizes only the exact client names `pi` and `pi-schema` into the managed `pi` Agent Mode identity family so the existing pi lease, expected-PID, routing, and tool-policy gates govern every managed bridge MCP call. Separator-less or suffixed near-matches such as `pischema`, `pi-schema-evil`, and `pifoo` are not managed pi identities. The global/personal bridge uses the separate `repoprompt-pi-bridge` client name and does not belong to the managed `pi` identity family. The managed bridge still exposes only an explicit dynamic allowlist of read-only/context/control tools (`workspace_context`, tree/code/read/search, `agent_manage`, oracle chat/log, user/status, app settings). Mutable file/workspace/routing tools such as `apply_edits`, `file_actions`, `manage_selection`, `prompt`, `manage_workspaces`, and raw dynamic `bind_context` stay hidden; the wrapper preserves the read-only routing boundary for `bind_context`.
+The managed pi bridge registers an explicit read-only `bind_context` wrapper plus the `repoprompt_window_status` alias. Window-scoped managed bridge schema discovery and tool calls use `--client-name pi-schema`; `MCPClientIdentity` canonicalizes only the exact client names `pi` and `pi-schema` into the managed `pi` Agent Mode identity family so the existing pi lease, expected-PID, routing, and tool-policy gates govern every managed bridge MCP call. Separator-less or suffixed near-matches such as `pischema`, `pi-schema-evil`, and `pifoo` are not managed pi identities. The global/personal bridge uses the separate `repoprompt-pi-bridge` client name and does not belong to the managed `pi` identity family. The managed bridge does not maintain a bridge-local dynamic tool allowlist. It registers every dynamic RepoPrompt tool exported by `repoprompt-mcp --tools-schema --compact -w <windowID>` except raw dynamic `bind_context`, because the bridge provides its own read-only wrapper for `op=list` and `op=status`. Tool advertisement, mutation boundaries, and execution permissions stay centralized in RepoPrompt Agent Mode policy, giving pi the same first-class supported RepoPrompt tool surface as Claude Code and Codex before RepoPrompt policy applies.
 
 ### MCP routing and permissions
 

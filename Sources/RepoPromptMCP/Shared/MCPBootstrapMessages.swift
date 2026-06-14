@@ -111,3 +111,21 @@ public enum MCPBootstrapErrorCode: String {
     case sessionBlocked = "session_blocked"
     case clientCooldown = "client_cooldown"
 }
+
+/// Shared startup retry classification for bootstrap-socket clients.
+/// Keep this as the source of truth for proxy, exec, and interactive mode parity.
+public enum MCPBootstrapStartupRetryClassifier {
+    public static func isTransientRejection(errorCode: String?) -> Bool {
+        guard let errorCode else { return false }
+        switch errorCode {
+        case MCPBootstrapErrorCode.serverNotReady.rawValue,
+             MCPBootstrapErrorCode.serverUnavailable.rawValue,
+             MCPBootstrapErrorCode.connectionLimitReached.rawValue,
+             MCPBootstrapErrorCode.capacityExceeded.rawValue,
+             MCPBootstrapErrorCode.clientCooldown.rawValue:
+            return true
+        default:
+            return false
+        }
+    }
+}
