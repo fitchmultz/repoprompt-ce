@@ -60,7 +60,6 @@ final class AutoRecommendationEngine {
         }
 
         return vm.recommendationProviderStatusSnapshot
-
     }
 
     /// Get provider flags from APISettingsViewModel.
@@ -413,6 +412,8 @@ final class AutoRecommendationEngine {
             claudeCodeCLI: availability.claudeCodeAvailable ? .ready : .notConfigured,
             codexCLI: availability.codexAvailable ? .ready : .notConfigured,
             cursorCLI: availability.cursorAvailable ? .ready : .notConfigured,
+            piCLI: availability.piAvailable ? .ready : .notConfigured,
+            openCodeCLI: availability.openCodeAvailable ? .ready : .notConfigured,
             openAI: .notConfigured
         ).filtered(to: enabledRecommendationProviders)
         if let recommendation = contextBuilderRecommendation(status: status) {
@@ -431,7 +432,11 @@ final class AutoRecommendationEngine {
                 enabledRecommendationProviders.contains(.codex)
             case .cursor:
                 enabledRecommendationProviders.contains(.cursor)
-            case .openCode, .claudeCodeGLM, .kimiCode, .customClaudeCompatible:
+            case .pi:
+                enabledRecommendationProviders.contains(.pi)
+            case .openCode:
+                enabledRecommendationProviders.contains(.openCode)
+            case .claudeCodeGLM, .kimiCode, .customClaudeCompatible:
                 true
             }
         }) else {

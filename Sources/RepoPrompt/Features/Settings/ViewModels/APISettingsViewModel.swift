@@ -402,6 +402,7 @@ public class APISettingsViewModel: ObservableObject {
             codexAvailable: isVerifiedContextBuilderProvider(.codexExec) && isCodexConnected,
             openCodeAvailable: isVerifiedContextBuilderProvider(.openCode) && isOpenCodeConnected,
             cursorAvailable: isVerifiedContextBuilderProvider(.cursor) && isCursorConnected,
+            piAvailable: isVerifiedContextBuilderProvider(.pi) && isPiConnected,
             zaiConfigured: compatibleBackendIsActive(.glmZAI),
             kimiConfigured: compatibleBackendIsActive(.kimi),
             customClaudeCompatibleConfigured: compatibleBackendIsActive(.custom)
@@ -413,6 +414,8 @@ public class APISettingsViewModel: ObservableObject {
             claudeCodeCLI: recommendationAvailability(isConnected: isClaudeCodeConnected, provider: .claudeCode),
             codexCLI: recommendationAvailability(isConnected: isCodexConnected, provider: .codexExec),
             cursorCLI: recommendationAvailability(isConnected: isCursorConnected, provider: .cursor),
+            piCLI: recommendationAvailability(isConnected: isPiConnected, provider: .pi),
+            openCodeCLI: recommendationAvailability(isConnected: isOpenCodeConnected, provider: .openCode),
             openAI: isOpenAIKeyValid ? .ready : (!openAIApiKey.isEmpty ? .configured : .notConfigured)
         )
     }
@@ -454,6 +457,8 @@ public class APISettingsViewModel: ObservableObject {
             isOpenCodeConnected
         case .cursor:
             isCursorConnected
+        case .pi:
+            isPiConnected
         case .claudeCodeGLM, .kimiCode, .customClaudeCompatible:
             false
         }
@@ -1972,16 +1977,13 @@ public class APISettingsViewModel: ObservableObject {
             notifyClaudeCompatibleBackendRuntimeAvailabilityIfNeeded(previousStatus: previousStatus)
         }
 
-
         func test_startPiAvailabilityPreflightIfNeeded(workspacePath: String? = nil) {
             startPiAvailabilityPreflightIfNeeded(workspacePath: workspacePath)
         }
 
-
         func test_reloadCLIConnectionFlagsFromDefaults() {
             reloadCLIConnectionFlagsFromDefaults()
         }
-
 
         var test_piModelsSubscribedWorkspacePath: String? {
             piModelsSubscribedWorkspacePath
