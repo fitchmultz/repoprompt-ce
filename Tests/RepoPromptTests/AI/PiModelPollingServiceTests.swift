@@ -61,6 +61,31 @@ final class PiModelPollingServiceTests: XCTestCase {
         await collector.value
     }
 
+    func testConcurrentDiscoverOnceCallsShareSingleInFlightPiProcessPerWorkspace() async throws {
+        let models = Self.models(rawValue: "zai/glm-5.1", displayName: "GLM 5.1")
+        let client = DelayedCountingPiModelDiscoveryClient(models: models, delayNanoseconds: 150_000_000)
+        let service = PiModelPollingService(
+            client: client,
+            intervalNanos: 3_600_000_000_000,
+            startsPollingOnSubscribe: false
+        )
+        defer { Task { await service.shutdown() } }
+
+        try await withThrowingTaskGroup(of: PiModelPollingService.Snapshot?.self) { group in
+            for _ in 0 ..< 20 {
+                group.addTask {
+                    try await service.discoverOnce(workspacePath: nil)
+                }
+            }
+            for try await snapshot in group {
+                XCTAssertEqual(snapshot?.models, models)
+            }
+        }
+
+        let callCount = await client.callCount()
+        XCTAssertEqual(callCount, 1)
+    }
+
     func testWorkspaceScopedPollingDoesNotCrossContaminateSubscribersOrRegistry() async throws {
         let workspaceA = "/tmp/pi-model-polling-a"
         let workspaceB = "/tmp/pi-model-polling-b"
@@ -177,6 +202,28 @@ private actor PiPollingEventRecorder {
     func removeFirst() -> PiModelPollingService.Event? {
         guard !events.isEmpty else { return nil }
         return events.removeFirst()
+    }
+}
+
+private actor DelayedCountingPiModelDiscoveryClient: PiModelDiscoveryClient {
+    private let models: PiDiscoveredModels
+    private let delayNanoseconds: UInt64
+    private var calls = 0
+
+    init(models: PiDiscoveredModels, delayNanoseconds: UInt64) {
+        self.models = models
+        self.delayNanoseconds = delayNanoseconds
+    }
+
+    func discoverModels(workspacePath: String?) async throws -> PiDiscoveredModels? {
+        _ = workspacePath
+        calls += 1
+        try await Task.sleep(nanoseconds: delayNanoseconds)
+        return models
+    }
+
+    func callCount() -> Int {
+        calls
     }
 }
 

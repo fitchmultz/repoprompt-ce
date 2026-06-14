@@ -434,9 +434,7 @@ final class AutoRecommendationEngine {
                 enabledRecommendationProviders.contains(.cursor)
             case .pi:
                 enabledRecommendationProviders.contains(.pi)
-            case .openCode:
-                enabledRecommendationProviders.contains(.openCode)
-            case .claudeCodeGLM, .kimiCode, .customClaudeCompatible:
+            case .openCode, .claudeCodeGLM, .kimiCode, .customClaudeCompatible:
                 true
             }
         }) else {
