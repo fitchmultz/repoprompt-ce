@@ -932,6 +932,7 @@ final class ContextBuilderAgentViewModel: ObservableObject {
                 apiSettingsViewModel.$isOpenCodeConnected.dropFirst().map { _ in () }.eraseToAnyPublisher(),
                 apiSettingsViewModel.$isCursorConnected.dropFirst().map { _ in () }.eraseToAnyPublisher(),
                 apiSettingsViewModel.$isPiConnected.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+                apiSettingsViewModel.$availablePiModelOptions.dropFirst().map { _ in () }.eraseToAnyPublisher(),
                 apiSettingsViewModel.$isContextBuilderProviderValidationComplete.dropFirst().map { _ in () }.eraseToAnyPublisher(),
                 apiSettingsViewModel.$contextBuilderVerifiedCLIProviders.dropFirst().map { _ in () }.eraseToAnyPublisher()
             ])

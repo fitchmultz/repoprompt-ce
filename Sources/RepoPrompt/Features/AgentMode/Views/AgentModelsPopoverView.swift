@@ -97,6 +97,9 @@ struct AgentModelsPopoverView: View {
         }
         .frame(width: popoverWidth)
         .frame(maxHeight: popoverMaxHeight)
+        .onAppear {
+            apiSettingsVM.refreshPiModelCatalogIfConnected()
+        }
         .onReceive(
             NotificationCenter.default
                 .publisher(for: .recommendationsShouldRefresh)

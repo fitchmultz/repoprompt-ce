@@ -60,6 +60,28 @@ final class PiModelCatalogTests: XCTestCase {
         XCTAssertFalse(AgentModelCatalog.isValid(rawModel: "missing/gpt-5.5:low", for: .pi, availability: availability))
     }
 
+    func testCurrentAvailabilitySurfacesConnectedPiRuntimeModelsForMCPOptions() throws {
+        UserDefaults.standard.set(true, forKey: "PiCLIConnected")
+        defer { UserDefaults.standard.removeObject(forKey: "PiCLIConnected") }
+        let snapshot = Self.snapshot(
+            rawValue: "openai-codex/gpt-5.5",
+            displayName: "GPT 5.5",
+            thinkingLevels: [.low, .medium, .high]
+        )
+        XCTAssertTrue(AgentPiModelRegistry.shared.updateDiscoveredModels(snapshot))
+
+        let piAgent = try XCTUnwrap(
+            AgentModelCatalog.discoveryAgents(availability: .current)
+                .first { $0.agent == .pi }
+        )
+
+        XCTAssertTrue(piAgent.available)
+        XCTAssertEqual(
+            piAgent.models.flatMap(\.startTargets).map(\.modelRaw),
+            ["default", "openai-codex/gpt-5.5"]
+        )
+    }
+
     func testPiModelSpecifierUsesStrictCanonicalThinkingSuffixesAndKnownModelPrecedence() throws {
         let rawModel = "custom/provider-model:high"
         let snapshot = AgentPiModelRegistry.discoveredModels(

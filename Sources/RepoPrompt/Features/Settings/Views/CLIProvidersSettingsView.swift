@@ -1953,6 +1953,9 @@ struct CLIProvidersSettingsView: View {
                     }
                 }
             }
+            .onAppear {
+                viewModel.refreshPiModelCatalogIfConnected()
+            }
         }
     }
 

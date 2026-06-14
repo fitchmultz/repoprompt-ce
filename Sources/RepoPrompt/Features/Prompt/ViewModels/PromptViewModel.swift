@@ -3632,10 +3632,12 @@ class PromptViewModel: ObservableObject {
             apiSettingsViewModel.$isCodexConnected.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             apiSettingsViewModel.$isOpenCodeConnected.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             apiSettingsViewModel.$isCursorConnected.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            apiSettingsViewModel.$isPiConnected.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             apiSettingsViewModel.$isContextBuilderProviderValidationComplete.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             apiSettingsViewModel.$contextBuilderVerifiedCLIProviders.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             apiSettingsViewModel.$availableOpenCodeModelOptions.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            apiSettingsViewModel.$availableCursorModelOptions.dropFirst().map { _ in () }.eraseToAnyPublisher()
+            apiSettingsViewModel.$availableCursorModelOptions.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            apiSettingsViewModel.$availablePiModelOptions.dropFirst().map { _ in () }.eraseToAnyPublisher()
         ])
         .receive(on: DispatchQueue.main)
         .sink { [weak self] _ in

@@ -115,6 +115,63 @@ final class WorkspaceSwitchRecoveryTests: XCTestCase {
         await store.setWatcherSinkWillApplyHandler(nil)
     }
 
+    func testStaleHydratingSwitchForActiveTargetIsAbandonedForNewRequest() async throws {
+        let root = try makeTemporaryDirectory(named: "StaleHydratingSwitch")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try "stale".write(to: root.appendingPathComponent("Stale.swift"), atomically: true, encoding: .utf8)
+
+        let clock = WorkspaceSwitchTestClock(now: Date(timeIntervalSince1970: 1500))
+        let store = WorkspaceFileContextStore()
+        let composition = makeComposition(
+            store: store,
+            timingPolicy: WorkspaceSwitchTimingPolicy(
+                staleThreshold: 30,
+                chatBusySettleTimeoutNanoseconds: 20,
+                chatBusyPollIntervalNanoseconds: 20,
+                now: { clock.now() },
+                sleep: { _ in }
+            )
+        )
+        let manager = composition.workspaceManager
+        await manager.awaitInitialized()
+
+        let rootLoadGate = WorkspaceSwitchRecoveryGate()
+        await store.setRootLoadWillStartHandler { path in
+            guard path == root.path else { return }
+            await rootLoadGate.arriveAndWait()
+        }
+
+        let slowTarget = manager.createWorkspace(
+            name: "Stale Hydrating Target \(UUID().uuidString.prefix(8))",
+            repoPaths: [root.path],
+            ephemeral: true
+        )
+        let nextTarget = manager.createWorkspace(
+            name: "After Stale Hydrating \(UUID().uuidString.prefix(8))",
+            repoPaths: [],
+            ephemeral: true
+        )
+        let firstRequest = Task { @MainActor in
+            await manager.requestWorkspaceSwitch(to: slowTarget, saveState: false, reason: "staleHydrating")
+        }
+        await rootLoadGate.waitUntilArrived()
+        try await waitUntil { manager.activeWorkspaceSwitch?.phase == .hydratingRoots }
+        XCTAssertEqual(manager.activeWorkspaceID, slowTarget.id)
+        clock.advance(by: 31)
+
+        let secondResult = await manager.requestWorkspaceSwitch(to: nextTarget, saveState: false, reason: "afterStaleHydrating")
+
+        XCTAssertTrue(secondResult.didSwitch)
+        XCTAssertEqual(manager.activeWorkspaceID, nextTarget.id)
+        XCTAssertNil(manager.activeWorkspaceSwitch)
+        await rootLoadGate.release()
+        let firstResult = await firstRequest.value
+        guard case .cancelled = firstResult else {
+            return XCTFail("Expected abandoned hydrating request to report cancellation")
+        }
+        await store.setRootLoadWillStartHandler(nil)
+    }
+
     func testBusyStateThatPersistsAfterSessionCancellationReturnsExplicitBlockageWithoutStartingSwitch() async throws {
         let clock = WorkspaceSwitchTestClock(now: Date(timeIntervalSince1970: 2000))
         let settleSleeper = WorkspaceSwitchManualSleeper()

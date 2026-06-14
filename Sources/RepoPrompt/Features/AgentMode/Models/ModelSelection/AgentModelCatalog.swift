@@ -45,7 +45,7 @@ enum AgentModelCatalog {
                 codexAvailable: true,
                 openCodeAvailable: true,
                 cursorAvailable: false,
-                piAvailable: false,
+                piAvailable: UserDefaults.standard.bool(forKey: "PiCLIConnected"),
                 piWorkspacePath: nil,
                 zaiConfigured: backendIsAvailable(.glmZAI, store: store),
                 kimiConfigured: backendIsAvailable(.kimi, store: store),

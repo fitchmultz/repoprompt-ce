@@ -2217,8 +2217,28 @@ class WorkspaceManagerViewModel: ObservableObject {
             requestedWorkspace: requestedWorkspace,
             activeSwitch: activeSwitch
         )
+        if abandonStaleHydratingWorkspaceSwitchIfSafe(activeSwitch, report: report) {
+            return nil
+        }
         publishWorkspaceSwitchBlockage(report)
         return .blocked(report.message)
+    }
+
+    private func abandonStaleHydratingWorkspaceSwitchIfSafe(
+        _ activeSwitch: WorkspaceSwitchActivity,
+        report: WorkspaceSwitchBlockageReport
+    ) -> Bool {
+        guard report.isStale,
+              activeSwitch.phase == .hydratingRoots,
+              activeWorkspaceID == activeSwitch.targetWorkspaceID,
+              committedWorkspaceSwitchOperationID != activeSwitch.operationID,
+              recoveringWorkspaceSwitchOperationID != activeSwitch.operationID
+        else { return false }
+
+        Self.logger.error("Abandoning stale hydrating workspace switch so a newer request can proceed: \(report.message, privacy: .public)")
+        hideWorkspaceSwitchOverlay(reason: "abandon stale hydrating switch")
+        finishWorkspaceSwitchOperation(activeSwitch.operationID)
+        return true
     }
 
     private func cancellationResult(

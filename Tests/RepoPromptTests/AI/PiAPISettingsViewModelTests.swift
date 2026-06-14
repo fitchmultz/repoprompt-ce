@@ -142,6 +142,25 @@ final class PiAPISettingsViewModelTests: XCTestCase {
         XCTAssertEqual(discoveryCount, 1)
     }
 
+    func testContextBuilderStartupValidationVerifiesPersistedPiConnectionAndStartsPolling() async {
+        UserDefaults.standard.set(true, forKey: "PiCLIConnected")
+        let polling = FakePiModelPolling(snapshot: Self.piSnapshot())
+        let viewModel = makeViewModel(polling: polling)
+
+        XCTAssertTrue(viewModel.isPiConnected)
+        XCTAssertFalse(viewModel.contextBuilderRestorationAvailabilityContext.piAvailable)
+
+        await viewModel.validateCachedContextBuilderProvidersIfNeeded()
+
+        XCTAssertTrue(viewModel.contextBuilderRestorationAvailabilityContext.piAvailable)
+        XCTAssertEqual(viewModel.recommendationProviderStatusSnapshot.piCLI, .ready)
+        XCTAssertEqual(viewModel.availablePiModelOptions.map(\.rawValue), ["default", "zai/glm-5.1"])
+        let discoveryCount = await polling.discoveryCount()
+        let subscriptionCount = await polling.subscriptionCount()
+        XCTAssertEqual(discoveryCount, 1)
+        XCTAssertEqual(subscriptionCount, 1)
+    }
+
     func testPiAvailabilityPreflightStartsSubscriptionAfterSuccessfulDiscovery() async {
         let polling = FakePiModelPolling(snapshot: Self.piSnapshot())
         let viewModel = makeViewModel(polling: polling)

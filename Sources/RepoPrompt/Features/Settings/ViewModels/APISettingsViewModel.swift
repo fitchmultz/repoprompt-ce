@@ -1111,6 +1111,7 @@ public class APISettingsViewModel: ObservableObject {
         let shouldValidateCodex = isCodexConnected
         let shouldValidateOpenCode = isOpenCodeConnected
         let shouldValidateCursor = isCursorConnected
+        let shouldValidatePi = isPiConnected
 
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -1122,20 +1123,34 @@ public class APISettingsViewModel: ObservableObject {
             async let codexReady = probeCachedCodexConnection(ifNeeded: shouldValidateCodex)
             async let openCodeReady = probeCachedOpenCodeConnection(ifNeeded: shouldValidateOpenCode)
             async let cursorReady = probeCachedCursorConnection(ifNeeded: shouldValidateCursor)
-            let readiness = await (claudeReady, codexReady, openCodeReady, cursorReady)
+            async let piReady = probeCachedPiConnection(ifNeeded: shouldValidatePi)
+            let readiness = await (claudeReady, codexReady, openCodeReady, cursorReady, piReady)
 
             applyContextBuilderProviderValidationResult(readiness.0, provider: .claudeCode)
             applyContextBuilderProviderValidationResult(readiness.1, provider: .codexExec)
             applyContextBuilderProviderValidationResult(readiness.2, provider: .openCode)
             applyContextBuilderProviderValidationResult(readiness.3, provider: .cursor)
+            applyContextBuilderProviderValidationResult(readiness.4, provider: .pi)
             if isCodexConnected, isVerifiedContextBuilderProvider(.codexExec) {
                 startCodexModelsSubscriptionIfNeeded()
+            }
+            if isPiConnected, isVerifiedContextBuilderProvider(.pi) {
+                startPiModelsSubscriptionIfNeeded(workspacePath: nil)
             }
             isContextBuilderProviderValidationComplete = true
             contextBuilderProviderValidationTask = nil
         }
         contextBuilderProviderValidationTask = task
         await task.value
+    }
+
+    private func probeCachedPiConnection(ifNeeded: Bool) async -> Bool {
+        guard ifNeeded else { return false }
+        do {
+            return try await refreshPiAvailabilityFromModelDiscovery(workspacePath: nil, collector: nil)
+        } catch {
+            return false
+        }
     }
 
     private func probeCachedClaudeCodeConnection(
@@ -3425,6 +3440,30 @@ public class APISettingsViewModel: ObservableObject {
             applyPiDisconnected(errorMessage: finalMessage)
             collector.append("User guidance: \(finalMessage)")
             throw error
+        }
+    }
+
+    func refreshPiModelCatalogIfConnected(workspacePath: String? = nil) {
+        guard isPiConnected || UserDefaults.standard.bool(forKey: "PiCLIConnected") else { return }
+        guard piPreflightTask == nil else { return }
+        piPreflightTask = Task { [weak self, workspacePath] in
+            guard let self else { return }
+            do {
+                let didConnect = try await refreshPiAvailabilityFromModelDiscovery(
+                    workspacePath: workspacePath,
+                    collector: nil
+                )
+                if didConnect {
+                    await startPiModelsSubscriptionIfNeeded(workspacePath: workspacePath)
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    stopPiModelsSubscription(clearModels: true)
+                    applyPiDisconnected(errorMessage: friendlyPiMessage(for: error))
+                }
+            }
+            await MainActor.run { [weak self] in self?.piPreflightTask = nil }
         }
     }
 
