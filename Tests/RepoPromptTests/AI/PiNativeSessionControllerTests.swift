@@ -43,7 +43,7 @@ final class PiNativeSessionControllerTests: XCTestCase {
         XCTAssertEqual(commands.dropFirst().first?.level, "high")
     }
 
-    func testStartPreservesColonsInModelIDWithoutThinkingSuffix() async throws {
+    func testStartSendsSupportedModelWithoutThinkingSuffix() async throws {
         let directory = try makeTemporaryDirectory()
         let recordURL = directory.appendingPathComponent("commands.jsonl")
         let scriptURL = try makeFakePiControllerScript(recordURL: recordURL)
@@ -56,7 +56,7 @@ final class PiNativeSessionControllerTests: XCTestCase {
         ))
         let controller = PiNativeSessionController(
             client: client,
-            options: .init(modelRaw: "amazon-bedrock/amazon.nova-2-lite-v1:0", requestTimeout: 2)
+            options: .init(modelRaw: "deepseek/deepseek-v4-flash", requestTimeout: 2)
         )
         addTeardownBlock { await controller.shutdown() }
 
@@ -64,12 +64,12 @@ final class PiNativeSessionControllerTests: XCTestCase {
 
         let commands = recordedCommands(at: recordURL)
         XCTAssertEqual(commands.prefix(2).map(\.type), ["set_model", "get_state"])
-        XCTAssertEqual(commands.first?.provider, "amazon-bedrock")
-        XCTAssertEqual(commands.first?.modelID, "amazon.nova-2-lite-v1:0")
+        XCTAssertEqual(commands.first?.provider, "deepseek")
+        XCTAssertEqual(commands.first?.modelID, "deepseek-v4-flash")
         XCTAssertFalse(commands.contains { $0.type == "set_thinking_level" })
     }
 
-    func testStartPreservesColonsInModelIDWithExplicitThinkingSuffix() async throws {
+    func testStartSendsSupportedModelWithExplicitThinkingSuffix() async throws {
         let directory = try makeTemporaryDirectory()
         let recordURL = directory.appendingPathComponent("commands.jsonl")
         let scriptURL = try makeFakePiControllerScript(recordURL: recordURL)
@@ -82,7 +82,7 @@ final class PiNativeSessionControllerTests: XCTestCase {
         ))
         let controller = PiNativeSessionController(
             client: client,
-            options: .init(modelRaw: "amazon-bedrock/amazon.nova-2-lite-v1:0:high", requestTimeout: 2)
+            options: .init(modelRaw: "deepseek/deepseek-v4-flash:high", requestTimeout: 2)
         )
         addTeardownBlock { await controller.shutdown() }
 
@@ -90,22 +90,21 @@ final class PiNativeSessionControllerTests: XCTestCase {
 
         let commands = recordedCommands(at: recordURL)
         XCTAssertEqual(commands.prefix(3).map(\.type), ["set_model", "set_thinking_level", "get_state"])
-        XCTAssertEqual(commands.first?.provider, "amazon-bedrock")
-        XCTAssertEqual(commands.first?.modelID, "amazon.nova-2-lite-v1:0")
+        XCTAssertEqual(commands.first?.provider, "deepseek")
+        XCTAssertEqual(commands.first?.modelID, "deepseek-v4-flash")
         XCTAssertEqual(commands.dropFirst().first?.level, "high")
     }
 
-    func testStartPreservesKnownModelIDEndingInCanonicalThinkingToken() async throws {
+    func testStartPreservesSupportedKnownModelIDWithoutThinkingSuffix() async throws {
         let directory = try makeTemporaryDirectory()
         let recordURL = directory.appendingPathComponent("commands.jsonl")
         let scriptURL = try makeFakePiControllerScript(recordURL: recordURL)
-        let rawModel = "custom/provider-model:high"
+        let rawModel = "deepseek/deepseek-v4-flash"
         XCTAssertTrue(AgentPiModelRegistry.shared.updateDiscoveredModels(PiDiscoveredModels(
             options: [
-                AgentModelOption(rawValue: "default", displayName: "Default", description: nil, isDefault: true),
                 AgentModelOption(
                     rawValue: rawModel,
-                    displayName: "Provider Model High",
+                    displayName: "DeepSeek V4 Flash",
                     description: nil,
                     isDefault: false
                 )
@@ -129,8 +128,8 @@ final class PiNativeSessionControllerTests: XCTestCase {
 
         let commands = recordedCommands(at: recordURL)
         XCTAssertEqual(commands.prefix(2).map(\.type), ["set_model", "get_state"])
-        XCTAssertEqual(commands.first?.provider, "custom")
-        XCTAssertEqual(commands.first?.modelID, "provider-model:high")
+        XCTAssertEqual(commands.first?.provider, "deepseek")
+        XCTAssertEqual(commands.first?.modelID, "deepseek-v4-flash")
         XCTAssertFalse(commands.contains { $0.type == "set_thinking_level" })
     }
 
@@ -140,13 +139,12 @@ final class PiNativeSessionControllerTests: XCTestCase {
         try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
         let recordURL = directory.appendingPathComponent("commands.jsonl")
         let scriptURL = try makeFakePiControllerScript(recordURL: recordURL)
-        let rawModel = "custom/provider-model:high"
+        let rawModel = "deepseek/deepseek-v4-flash"
         XCTAssertTrue(AgentPiModelRegistry.shared.updateDiscoveredModels(PiDiscoveredModels(
             options: [
-                AgentModelOption(rawValue: "default", displayName: "Default", description: nil, isDefault: true),
                 AgentModelOption(
                     rawValue: rawModel,
-                    displayName: "Provider Model High",
+                    displayName: "DeepSeek V4 Flash",
                     description: nil,
                     isDefault: false,
                     supportedPiThinkingLevels: [.low, .high]
@@ -174,8 +172,8 @@ final class PiNativeSessionControllerTests: XCTestCase {
 
         let commands = recordedCommands(at: recordURL)
         XCTAssertEqual(commands.prefix(3).map(\.type), ["set_model", "set_thinking_level", "get_state"])
-        XCTAssertEqual(commands.first?.provider, "custom")
-        XCTAssertEqual(commands.first?.modelID, "provider-model:high")
+        XCTAssertEqual(commands.first?.provider, "deepseek")
+        XCTAssertEqual(commands.first?.modelID, "deepseek-v4-flash")
         XCTAssertEqual(commands.dropFirst().first?.level, "low")
     }
 
@@ -203,7 +201,7 @@ final class PiNativeSessionControllerTests: XCTestCase {
 
         XCTAssertNil(AgentPiModelRegistry.shared.resolvedSnapshot())
         let workspaceSnapshot = try XCTUnwrap(AgentPiModelRegistry.shared.resolvedSnapshot(workspacePath: workspaceURL.path))
-        XCTAssertEqual(workspaceSnapshot.options.map(\.rawValue), ["default", "anthropic/claude-sonnet-4", "zai/glm-5.1"])
+        XCTAssertEqual(workspaceSnapshot.options.map(\.rawValue), ["deepseek/deepseek-v4-flash", "zai/glm-5.1"])
         XCTAssertEqual(workspaceSnapshot.currentModelRaw, "zai/glm-5.1")
     }
 
@@ -2116,32 +2114,28 @@ final class PiNativeSessionControllerTests: XCTestCase {
             "openai-codex/gpt-5.5"
         )
         XCTAssertEqual(
-            PiModelSpecifier(raw: "amazon-bedrock/amazon.nova-2-lite-v1:0", knownModelIDs: []),
-            PiModelSpecifier(provider: "amazon-bedrock", modelID: "amazon.nova-2-lite-v1:0", thinkingLevel: nil)
+            PiModelSpecifier(raw: "deepseek/deepseek-v4-flash", knownModelIDs: []),
+            PiModelSpecifier(provider: "deepseek", modelID: "deepseek-v4-flash", thinkingLevel: nil)
         )
         XCTAssertEqual(
-            PiModelSpecifier(raw: "provider/model:none", knownModelIDs: []),
-            PiModelSpecifier(provider: "provider", modelID: "model:none", thinkingLevel: nil)
+            PiModelSpecifier(raw: "deepseek/deepseek-v4-flash:none", knownModelIDs: []),
+            PiModelSpecifier(provider: "deepseek", modelID: "deepseek-v4-flash:none", thinkingLevel: nil)
         )
         XCTAssertEqual(
-            PiModelSpecifier(raw: "provider/model:x-high", knownModelIDs: []),
-            PiModelSpecifier(provider: "provider", modelID: "model:x-high", thinkingLevel: nil)
+            PiModelSpecifier(raw: "deepseek/deepseek-v4-flash:x-high", knownModelIDs: []),
+            PiModelSpecifier(provider: "deepseek", modelID: "deepseek-v4-flash:x-high", thinkingLevel: nil)
         )
         XCTAssertEqual(
-            PiModelSpecifier(raw: "provider/model:high", knownModelIDs: []),
-            PiModelSpecifier(provider: "provider", modelID: "model", thinkingLevel: "high")
+            PiModelSpecifier(raw: "deepseek/deepseek-v4-flash:high", knownModelIDs: []),
+            PiModelSpecifier(provider: "deepseek", modelID: "deepseek-v4-flash", thinkingLevel: "high")
         )
         XCTAssertEqual(
-            PiModelSpecifier(raw: "custom/provider-model:high", knownModelIDs: ["custom/provider-model:high"]),
-            PiModelSpecifier(provider: "custom", modelID: "provider-model:high", thinkingLevel: nil)
+            PiModelSpecifier(raw: "deepseek/deepseek-v4-flash", knownModelIDs: ["deepseek/deepseek-v4-flash"]),
+            PiModelSpecifier(provider: "deepseek", modelID: "deepseek-v4-flash", thinkingLevel: nil)
         )
         XCTAssertEqual(
-            PiModelSpecifier(raw: "amazon-bedrock/amazon.nova-2-lite-v1:0:high", knownModelIDs: []),
-            PiModelSpecifier(provider: "amazon-bedrock", modelID: "amazon.nova-2-lite-v1:0", thinkingLevel: "high")
-        )
-        XCTAssertEqual(
-            PiModelSpecifier(raw: "cursor/composer-2-5", knownModelIDs: []),
-            PiModelSpecifier(provider: "cursor", modelID: "composer-2-5", thinkingLevel: nil)
+            PiModelSpecifier(raw: "openai-codex/gpt-5.4-mini", knownModelIDs: []),
+            PiModelSpecifier(provider: "openai-codex", modelID: "gpt-5.4-mini", thinkingLevel: nil)
         )
         XCTAssertEqual(
             PiModelSpecifier(raw: "glm-5.1", knownModelIDs: []),
@@ -2313,7 +2307,8 @@ final class PiNativeSessionControllerTests: XCTestCase {
                     "success": True,
                     "data": {"models": [
                         {"provider": "zai", "id": "glm-5.1", "displayName": "GLM 5.1", "description": "Strong GLM", "reasoning": True},
-                        {"provider": "anthropic", "id": "claude-sonnet-4", "displayName": "Claude Sonnet 4"}
+                        {"provider": "anthropic", "id": "claude-opus-4-6", "displayName": "Claude Opus 4.6"},
+                        {"provider": "deepseek", "id": "deepseek-v4-flash", "displayName": "DeepSeek V4 Flash", "reasoning": True}
                     ]}
                 })
             elif command == "prompt":

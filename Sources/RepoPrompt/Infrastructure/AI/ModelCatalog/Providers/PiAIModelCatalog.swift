@@ -43,6 +43,17 @@ struct PiDiscoveredModels: Equatable {
         supportedThinkingLevels(for: rawModel).contains(level)
     }
 
+    func filteringToRepoPromptSupportedProviders() -> PiDiscoveredModels? {
+        let supportedOptions = options.filter { option in
+            !option.isPlaceholderDefault && PiIntegrationConfiguration.isSupportedModelRaw(option.rawValue)
+        }
+        guard !supportedOptions.isEmpty else { return nil }
+        let current = Self.normalizedRawModel(currentModelRaw).flatMap { normalized in
+            supportedOptions.first { $0.rawValue.lowercased() == normalized }?.rawValue
+        }
+        return PiDiscoveredModels(options: supportedOptions, currentModelRaw: current ?? supportedOptions.first(where: \.isProviderDefault)?.rawValue)
+    }
+
     static func normalizedRawModel(_ raw: String?) -> String? {
         guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
             return nil
@@ -398,10 +409,11 @@ final class AgentPiModelRegistry {
     @discardableResult
     func updateDiscoveredModels(_ snapshot: PiDiscoveredModels, workspacePath: String? = nil) -> Bool {
         let scope = PiModelWorkspaceScope(workspacePath: workspacePath)
-        guard let record = PiDynamicModelStore.snapshotRecord(from: snapshot),
+        guard let supportedSnapshot = snapshot.filteringToRepoPromptSupportedProviders(),
+              let record = PiDynamicModelStore.snapshotRecord(from: supportedSnapshot),
               let normalizedSnapshot = PiDynamicModelStore.snapshot(from: record)
         else {
-            return false
+            return clearDiscoveredModels(workspacePath: scope.workspacePath)
         }
 
         lock.lock()
@@ -415,6 +427,21 @@ final class AgentPiModelRegistry {
         lock.unlock()
 
         return didChange
+    }
+
+    @discardableResult
+    func clearDiscoveredModels(workspacePath: String? = nil) -> Bool {
+        let scope = PiModelWorkspaceScope(workspacePath: workspacePath)
+        lock.lock()
+        let removedLiveSnapshot = liveSnapshots.removeValue(forKey: scope) != nil
+        let removedPersistedSnapshot = persistedSnapshots.removeValue(forKey: scope) != nil
+        let removedSignature = liveSignatures.removeValue(forKey: scope) != nil
+        let hadSnapshot = removedLiveSnapshot || removedPersistedSnapshot || removedSignature
+        warmedStandardStoreScopes.remove(scope)
+        standardStoreWarmTasks.removeValue(forKey: scope)?.cancel()
+        lock.unlock()
+        PiDynamicModelStore.remove(workspacePath: scope.workspacePath)
+        return hadSnapshot
     }
 
     func currentSnapshot(workspacePath: String? = nil) -> PiDiscoveredModels? {
@@ -478,18 +505,15 @@ final class AgentPiModelRegistry {
     }
 
     static func discoveredModels(from remoteModels: [PiRPCClient.RemoteModel], currentModel: PiRPCClient.RemoteModel?) -> PiDiscoveredModels? {
-        var options: [AgentModelOption] = [
-            AgentModelOption(
-                rawValue: AgentModel.defaultModel.rawValue,
-                displayName: AgentModel.defaultModel.displayName,
-                description: "Use pi's configured default model.",
-                isDefault: true
-            )
-        ]
-        let currentRaw = currentModel.flatMap(rawModel)
-        var seen = Set(options.map { $0.rawValue.lowercased() })
+        var options: [AgentModelOption] = []
+        let currentRaw = currentModel.flatMap(rawModel).flatMap { raw in
+            PiIntegrationConfiguration.isSupportedModelRaw(raw) ? raw : nil
+        }
+        var seen = Set<String>()
         for model in remoteModels {
-            guard let raw = rawModel(model) else { continue }
+            guard let raw = rawModel(model),
+                  PiIntegrationConfiguration.isSupportedModelRaw(raw)
+            else { continue }
             let key = raw.lowercased()
             guard !seen.contains(key) else { continue }
             seen.insert(key)
@@ -506,7 +530,7 @@ final class AgentPiModelRegistry {
                 supportedPiThinkingLevels: supportedThinkingLevels(for: model)
             ))
         }
-        guard options.count > 1 else { return nil }
+        guard !options.isEmpty else { return nil }
         return PiDiscoveredModels(options: options, currentModelRaw: currentRaw)
     }
 
@@ -554,7 +578,7 @@ final class AgentPiModelRegistry {
     private func snapshotFromMemory(scope: PiModelWorkspaceScope) -> PiDiscoveredModels? {
         lock.lock()
         defer { lock.unlock() }
-        return liveSnapshots[scope] ?? persistedSnapshots[scope]
+        return (liveSnapshots[scope] ?? persistedSnapshots[scope])?.filteringToRepoPromptSupportedProviders()
     }
 
     private static func normalizedOptionalString(_ value: String?) -> String? {

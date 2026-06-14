@@ -89,8 +89,8 @@ final class PiModelPollingServiceTests: XCTestCase {
     func testWorkspaceScopedPollingDoesNotCrossContaminateSubscribersOrRegistry() async throws {
         let workspaceA = "/tmp/pi-model-polling-a"
         let workspaceB = "/tmp/pi-model-polling-b"
-        let modelsA = Self.models(rawValue: "workspace-a/model", displayName: "Workspace A Model")
-        let modelsB = Self.models(rawValue: "workspace-b/model", displayName: "Workspace B Model")
+        let modelsA = Self.models(rawValue: "openai-codex/gpt-5.4", displayName: "GPT 5.4")
+        let modelsB = Self.models(rawValue: "deepseek/deepseek-v4-flash", displayName: "DeepSeek V4 Flash")
         let client = WorkspaceSequencedPiModelDiscoveryClient(resultsByWorkspacePath: [
             workspaceA: [.success(modelsA)],
             workspaceB: [.success(modelsB)]
@@ -160,12 +160,6 @@ final class PiModelPollingServiceTests: XCTestCase {
     private static func models(rawValue: String, displayName: String) -> PiDiscoveredModels {
         PiDiscoveredModels(
             options: [
-                AgentModelOption(
-                    rawValue: AgentModel.defaultModel.rawValue,
-                    displayName: "Default",
-                    description: "Use pi's configured default model.",
-                    isDefault: true
-                ),
                 AgentModelOption(
                     rawValue: rawValue,
                     displayName: displayName,

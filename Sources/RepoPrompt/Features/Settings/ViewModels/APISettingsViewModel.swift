@@ -3531,7 +3531,7 @@ public class APISettingsViewModel: ObservableObject {
     ) async throws -> Bool {
         let snapshot = try await piModelPollingService.discoverOnce(workspacePath: workspacePath)
         guard let snapshot else {
-            applyPiDisconnected(errorMessage: "pi RPC did not return model metadata.")
+            applyPiDisconnected(errorMessage: "pi did not return any supported openai-codex, Z.Ai, or DeepSeek models.")
             return false
         }
         collector?.append("Discovered \(snapshot.models.options.count) pi model option(s)")

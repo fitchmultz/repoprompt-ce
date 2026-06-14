@@ -47,6 +47,9 @@ final class PiAgentProviderKindTests: XCTestCase {
     }
 
     func testPiParticipatesInRecommendationProviderFilteringAndRoleDefaults() {
+        AgentPiModelRegistry.shared.test_reset()
+        defer { AgentPiModelRegistry.shared.test_reset() }
+        XCTAssertTrue(AgentPiModelRegistry.shared.updateDiscoveredModels(Self.piSnapshot()))
         let availability = AgentModelCatalog.AvailabilityContext(
             claudeCodeAvailable: false,
             codexAvailable: false,
@@ -61,7 +64,7 @@ final class PiAgentProviderKindTests: XCTestCase {
 
         let explore = AgentModelCatalog.resolveTaskLabelKind(.explore, availability: filtered)
         XCTAssertEqual(explore?.agent, .pi)
-        XCTAssertEqual(explore?.modelRaw, AgentModel.defaultModel.rawValue)
+        XCTAssertEqual(explore?.modelRaw, "openai-codex/gpt-5.5")
     }
 
     func testOpenCodeParticipatesInRecommendationProviderFilteringAndRoleDefaults() {
@@ -103,7 +106,7 @@ final class PiAgentProviderKindTests: XCTestCase {
     func testProviderFactoryCreatesPiHeadlessProviderWhenWindowRoutingIsAvailable() {
         let provider = AgentRuntimeProviderService.shared.makeProvider(
             for: .pi,
-            modelString: AgentModel.defaultModel.rawValue,
+            modelString: "openai-codex/gpt-5.5",
             workspacePath: "/tmp/repoprompt-ce",
             windowID: 7
         )
@@ -113,26 +116,43 @@ final class PiAgentProviderKindTests: XCTestCase {
     func testProviderFactoryRejectsPiHeadlessProviderWithoutWindowRouting() {
         let provider = AgentRuntimeProviderService.shared.makeProvider(
             for: .pi,
-            modelString: AgentModel.defaultModel.rawValue,
+            modelString: "openai-codex/gpt-5.5",
             workspacePath: "/tmp/repoprompt-ce"
         )
         XCTAssertTrue(provider is UnsupportedHeadlessAgentProvider)
     }
 
     func testPiModelsAreSelectableWhenRuntimeAvailabilityIsProven() {
+        AgentPiModelRegistry.shared.test_reset()
+        defer { AgentPiModelRegistry.shared.test_reset() }
+        XCTAssertTrue(AgentPiModelRegistry.shared.updateDiscoveredModels(Self.piSnapshot()))
         let availability = AgentModelCatalog.AvailabilityContext(piAvailable: true)
 
         XCTAssertTrue(AgentModelCatalog.isAgentAvailable(.pi, availability: availability))
         XCTAssertEqual(AgentModel.modelsForAgent(.pi), [.defaultModel])
         XCTAssertEqual(
             AgentModelCatalog.defaultModelRaw(for: .pi, availability: availability),
-            AgentModel.defaultModel.rawValue
+            "openai-codex/gpt-5.5"
         )
         XCTAssertEqual(
             AgentModelCatalog.options(for: .pi, availability: availability).map(\.rawValue),
-            [AgentModel.defaultModel.rawValue]
+            ["openai-codex/gpt-5.5"]
         )
         XCTAssertTrue(AgentModelCatalog.selectableAgents(availability: availability).contains(.pi))
         XCTAssertEqual(AgentProviderKind.pi.providerBindingID, .pi)
+    }
+
+    private static func piSnapshot() -> PiDiscoveredModels {
+        PiDiscoveredModels(
+            options: [
+                AgentModelOption(
+                    rawValue: "openai-codex/gpt-5.5",
+                    displayName: "GPT 5.5",
+                    description: nil,
+                    isDefault: true
+                )
+            ],
+            currentModelRaw: "openai-codex/gpt-5.5"
+        )
     }
 }

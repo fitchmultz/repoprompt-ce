@@ -236,14 +236,13 @@ final class AgentRunMCPToolServiceStartDefaultTests: XCTestCase {
         XCTAssertEqual(resolved.reasoningEffortRaw, "low")
     }
 
-    func testExplicitPiModelIDPreservesKnownModelEndingInCanonicalThinkingToken() throws {
-        let rawModel = "custom/provider-model:high"
+    func testExplicitPiModelIDPreservesSupportedRealModelRaw() throws {
+        let rawModel = "deepseek/deepseek-v4-flash"
         let snapshot = PiDiscoveredModels(
             options: [
-                AgentModelOption(rawValue: "default", displayName: "Default", description: nil, isDefault: true),
                 AgentModelOption(
                     rawValue: rawModel,
-                    displayName: "Provider Model High",
+                    displayName: "DeepSeek V4 Flash",
                     description: nil,
                     isDefault: false
                 )
@@ -308,7 +307,6 @@ final class AgentRunMCPToolServiceStartDefaultTests: XCTestCase {
     private func installPiSnapshot() {
         let snapshot = PiDiscoveredModels(
             options: [
-                AgentModelOption(rawValue: "default", displayName: "Default", description: nil, isDefault: true),
                 AgentModelOption(
                     rawValue: "openai-codex/gpt-5.5",
                     displayName: "GPT 5.5",

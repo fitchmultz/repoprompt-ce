@@ -45,8 +45,8 @@ struct PiRPCModelDiscoveryClient: PiModelDiscoveryClient {
 /// Centralized polling service for pi RPC dynamic model options.
 ///
 /// pi owns provider/model configuration. RepoPrompt only asks pi for its current model list,
-/// caches the result for picker/settings surfaces, and keeps the plain `default` option so a
-/// managed run can preserve pi's configured default model without sending `set_model`.
+/// caches the supported real-model subset for picker/settings surfaces, and leaves provider
+/// defaults to pi unless the user selects an explicit supported pi model.
 actor PiModelPollingService: PiModelPolling {
     static let shared = PiModelPollingService(client: PiRPCModelDiscoveryClient())
 
@@ -243,7 +243,7 @@ actor PiModelPollingService: PiModelPolling {
         let task = Task<Result<Void, Error>, Never> { [weak self, scope, workspacePath] in
             guard let self else { return .success(()) }
             do {
-                guard let discovered = try await client.discoverModels(workspacePath: workspacePath) else { return .success(()) }
+                let discovered = try await client.discoverModels(workspacePath: workspacePath)
                 guard !Task.isCancelled else { return .success(()) }
                 await applyRefreshResult(discovered, scope: scope)
                 return .success(())
@@ -263,10 +263,17 @@ actor PiModelPollingService: PiModelPolling {
         contexts[scope]?.inFlightRefresh = nil
     }
 
-    private func applyRefreshResult(_ discovered: PiDiscoveredModels, scope: PiModelWorkspaceScope) {
+    private func applyRefreshResult(_ discovered: PiDiscoveredModels?, scope: PiModelWorkspaceScope) {
         guard !isShutdown else { return }
+        guard let discovered else {
+            applyMissingSupportedModels(scope: scope)
+            return
+        }
         _ = AgentPiModelRegistry.shared.updateDiscoveredModels(discovered, workspacePath: scope.workspacePath)
-        guard let normalized = AgentPiModelRegistry.shared.resolvedSnapshot(workspacePath: scope.workspacePath) else { return }
+        guard let normalized = AgentPiModelRegistry.shared.resolvedSnapshot(workspacePath: scope.workspacePath) else {
+            applyMissingSupportedModels(scope: scope)
+            return
+        }
         let snapshot = Snapshot(models: normalized, fetchedAt: Date())
         var context = contexts[scope] ?? WorkspacePollingContext()
         guard context.shouldPublishNextSuccessfulRefresh || context.latest?.models != snapshot.models else {
@@ -279,6 +286,22 @@ actor PiModelPollingService: PiModelPolling {
         contexts[scope] = context
         for continuation in continuations {
             continuation.yield(.snapshot(snapshot))
+        }
+        #if DEBUG
+            contexts[scope]?.publishedEventCount += continuations.count
+        #endif
+    }
+
+    private func applyMissingSupportedModels(scope: PiModelWorkspaceScope) {
+        _ = AgentPiModelRegistry.shared.clearDiscoveredModels(workspacePath: scope.workspacePath)
+        var context = contexts[scope] ?? WorkspacePollingContext()
+        context.latest = nil
+        context.shouldPublishNextSuccessfulRefresh = true
+        let continuations = context.continuations.values
+        contexts[scope] = context
+        let failure = Failure(message: "pi did not return any supported openai-codex, Z.Ai, or DeepSeek models.")
+        for continuation in continuations {
+            continuation.yield(.failure(failure))
         }
         #if DEBUG
             contexts[scope]?.publishedEventCount += continuations.count

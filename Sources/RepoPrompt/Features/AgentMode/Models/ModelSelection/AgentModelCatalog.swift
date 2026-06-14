@@ -304,10 +304,15 @@ enum AgentModelCatalog {
         if agentKind == .cursor {
             return AgentModel.cursorAuto.rawValue
         }
-        if isAgentAvailable(agentKind, availability: availability),
-           let preferredModelRaw = resolvedACPDiscoveredModels(for: agentKind)?.preferredModelRaw
-        {
-            return preferredModelRaw
+        if isAgentAvailable(agentKind, availability: availability) {
+            if agentKind == .pi,
+               let preferredModelRaw = resolvedPiDiscoveredModels(workspacePath: availability.piWorkspacePath)?.preferredModelRaw
+            {
+                return preferredModelRaw
+            }
+            if let preferredModelRaw = resolvedACPDiscoveredModels(for: agentKind)?.preferredModelRaw {
+                return preferredModelRaw
+            }
         }
         switch agentKind {
         case .cursor:
@@ -405,11 +410,8 @@ enum AgentModelCatalog {
             }
             return fallbacks
         }
-        if agentKind == .pi,
-           let discoveredOptions = resolvedPiDiscoveredModels(workspacePath: availability.piWorkspacePath)?.options,
-           !discoveredOptions.isEmpty
-        {
-            return discoveredOptions
+        if agentKind == .pi {
+            return resolvedPiDiscoveredModels(workspacePath: availability.piWorkspacePath)?.options ?? []
         }
         if let discoveredOptions = resolvedACPDiscoveredModels(for: agentKind)?.options,
            !discoveredOptions.isEmpty
@@ -466,13 +468,11 @@ enum AgentModelCatalog {
                 }
                 return discoveredModels.contains(rawModel: normalized)
             }
-            if normalized.caseInsensitiveCompare(AgentModel.defaultModel.rawValue) == .orderedSame {
-                return true
-            }
             guard let specifier = PiModelSpecifier(
                 raw: normalized,
                 knownModelIDs: piKnownModelIDs(workspacePath: availability.piWorkspacePath)
             ) else { return false }
+            guard PiIntegrationConfiguration.isSupportedModelRaw(specifier.providerQualifiedModelRaw) else { return false }
             if let rawThinking = specifier.thinkingLevel {
                 return PiThinkingLevel.parse(rawThinking) != nil
             }
@@ -1568,6 +1568,7 @@ enum AgentModelCatalog {
         case "openai": return "OpenAI"
         case "openai codex": return "OpenAI Codex"
         case "anthropic": return "Anthropic"
+        case "deepseek": return "DeepSeek"
         case "google": return "Google"
         case "cursor": return "Cursor"
         default: return normalized.capitalized
@@ -1588,6 +1589,7 @@ enum AgentModelCatalog {
                 if lower == "gpt" { return "GPT" }
                 if lower == "glm" { return "GLM" }
                 if lower == "claude" { return "Claude" }
+                if lower == "deepseek" { return "DeepSeek" }
                 if lower.range(of: "^[0-9]+(\\.[0-9]+)*$", options: .regularExpression) != nil {
                     return String(token)
                 }
@@ -2412,8 +2414,14 @@ enum AgentModelCatalog {
         availability: AvailabilityContext
     ) -> Bool {
         guard isAgentAvailable(candidate.agent, availability: availability) else { return false }
-        if candidate.modelRaw == AgentModel.defaultModel.rawValue, candidate.agent == .openCode {
-            return true
+        if candidate.modelRaw == AgentModel.defaultModel.rawValue {
+            if candidate.agent == .openCode {
+                return true
+            }
+            if candidate.agent == .pi {
+                let discoveredDefault = defaultModelRaw(for: .pi, availability: availability)
+                return modelOption(matching: discoveredDefault, for: .pi, availability: availability) != nil
+            }
         }
         // For non-Codex agents, validate the model is known and available
         if candidate.agent != .codexExec {

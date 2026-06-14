@@ -428,11 +428,11 @@ final class AgentModePiSteeringQueueTests: XCTestCase {
         try FileManager.default.createDirectory(at: logicalRoot, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: worktreeRoot, withIntermediateDirectories: true)
         _ = AgentPiModelRegistry.shared.updateDiscoveredModels(
-            Self.piModels(rawValue: "logical/model", displayName: "Logical Model", thinkingLevels: [.low]),
+            Self.piModels(rawValue: "openai-codex/gpt-5.4", displayName: "GPT 5.4", thinkingLevels: [.low]),
             workspacePath: logicalRoot.path
         )
         _ = AgentPiModelRegistry.shared.updateDiscoveredModels(
-            Self.piModels(rawValue: "worktree/model", displayName: "Worktree Model", thinkingLevels: [.high]),
+            Self.piModels(rawValue: "deepseek/deepseek-v4-flash", displayName: "DeepSeek V4 Flash", thinkingLevels: [.high]),
             workspacePath: worktreeRoot.path
         )
         let viewModel = makeViewModel(testWorkspacePath: logicalRoot.path)
@@ -442,13 +442,13 @@ final class AgentModePiSteeringQueueTests: XCTestCase {
         let session = try XCTUnwrap(viewModel.sessions[tabID])
         session.worktreeBindings = [makeBinding(logicalRoot: logicalRoot, worktreeRoot: worktreeRoot)]
         session.selectedAgent = .pi
-        session.selectedModelRaw = "worktree/model"
+        session.selectedModelRaw = "deepseek/deepseek-v4-flash"
         viewModel.selectedAgent = .pi
-        viewModel.selectedModelRaw = "worktree/model"
+        viewModel.selectedModelRaw = "deepseek/deepseek-v4-flash"
 
         let options = viewModel.modelOptions(for: .pi).map(\.rawValue)
-        XCTAssertTrue(options.contains("worktree/model"))
-        XCTAssertFalse(options.contains("logical/model"))
+        XCTAssertTrue(options.contains("deepseek/deepseek-v4-flash"))
+        XCTAssertFalse(options.contains("openai-codex/gpt-5.4"))
         XCTAssertEqual(viewModel.piModelCatalogWorkspacePath(), worktreeRoot.standardizedFileURL.path)
         XCTAssertEqual(viewModel.piThinkingLevelOptionsForCurrentSelection(), [.high])
     }
@@ -548,12 +548,6 @@ final class AgentModePiSteeringQueueTests: XCTestCase {
     ) -> PiDiscoveredModels {
         PiDiscoveredModels(
             options: [
-                AgentModelOption(
-                    rawValue: AgentModel.defaultModel.rawValue,
-                    displayName: AgentModel.defaultModel.displayName,
-                    description: nil,
-                    isDefault: true
-                ),
                 AgentModelOption(
                     rawValue: rawValue,
                     displayName: displayName,

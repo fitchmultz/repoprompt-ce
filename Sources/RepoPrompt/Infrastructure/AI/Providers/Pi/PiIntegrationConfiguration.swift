@@ -69,6 +69,32 @@ enum PiIntegrationConfiguration {
     static let managedRunEnvironmentKey = "REPOPROMPT_PI_MANAGED_RUN"
     static let managedRunEnvironmentValue = "1"
 
+    /// RepoPrompt intentionally exposes only real pi models from providers that are
+    /// useful for this integration path. Other providers can still exist in pi, but
+    /// they should not appear in RepoPrompt model pickers or MCP setting options.
+    private static let supportedModelProviderIDs: Set<String> = [
+        "deepseek",
+        "openai-codex",
+        "z-ai",
+        "z.ai",
+        "zai"
+    ]
+
+    static func isSupportedModelProviderID(_ rawProvider: String?) -> Bool {
+        guard let rawProvider else { return false }
+        let normalized = rawProvider
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "_", with: "-")
+        return supportedModelProviderIDs.contains(normalized)
+    }
+
+    static func isSupportedModelRaw(_ rawModel: String) -> Bool {
+        let trimmed = rawModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let separator = trimmed.firstIndex(of: "/") else { return false }
+        return isSupportedModelProviderID(String(trimmed[..<separator]))
+    }
+
     /// RepoPrompt-managed pi RPC runs are explicit user actions for the selected workspace.
     /// pi 0.79+ otherwise ignores project-local AGENTS.md/.pi inputs in non-interactive RPC mode.
     static func managedRPCLaunchArguments(bridgeExtensionPath: String? = nil) -> [String] {
