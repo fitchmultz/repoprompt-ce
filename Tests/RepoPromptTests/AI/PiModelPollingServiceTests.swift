@@ -8,7 +8,7 @@ final class PiModelPollingServiceTests: XCTestCase {
     }
 
     func testSuccessfulRefreshAfterFailurePublishesSameModelSnapshot() async throws {
-        let models = Self.models(rawValue: "zai/glm-5.1", displayName: "GLM 5.1")
+        let models = Self.models(rawValue: "zai/glm-5.2", displayName: "GLM 5.2")
         let client = SequencedPiModelDiscoveryClient(results: [
             .success(models),
             .failure(PollingError(message: "pi RPC temporarily failed")),
@@ -62,7 +62,7 @@ final class PiModelPollingServiceTests: XCTestCase {
     }
 
     func testConcurrentDiscoverOnceCallsShareSingleInFlightPiProcessPerWorkspace() async throws {
-        let models = Self.models(rawValue: "zai/glm-5.1", displayName: "GLM 5.1")
+        let models = Self.models(rawValue: "zai/glm-5.2", displayName: "GLM 5.2")
         let client = DelayedCountingPiModelDiscoveryClient(models: models, delayNanoseconds: 150_000_000)
         let service = PiModelPollingService(
             client: client,

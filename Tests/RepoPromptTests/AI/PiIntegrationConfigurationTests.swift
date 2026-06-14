@@ -41,14 +41,16 @@ final class PiIntegrationConfigurationTests: XCTestCase {
         )
     }
 
-    func testSupportedPiModelProvidersAreLimitedToRepoPromptSupportedSet() {
-        XCTAssertTrue(PiIntegrationConfiguration.isSupportedModelRaw("openai-codex/gpt-5.5"))
-        XCTAssertTrue(PiIntegrationConfiguration.isSupportedModelRaw("zai/glm-5.1"))
-        XCTAssertTrue(PiIntegrationConfiguration.isSupportedModelRaw("z-ai/glm-5.1"))
-        XCTAssertTrue(PiIntegrationConfiguration.isSupportedModelRaw("deepseek/deepseek-v4-flash"))
-        XCTAssertFalse(PiIntegrationConfiguration.isSupportedModelRaw("anthropic/claude-opus-4-6"))
-        XCTAssertFalse(PiIntegrationConfiguration.isSupportedModelRaw("openrouter/z-ai/glm-5.1"))
-        XCTAssertFalse(PiIntegrationConfiguration.isSupportedModelRaw("default"))
+    func testPiModelEligibilityAcceptsEveryNonEmptyPiReportedModelRaw() {
+        XCTAssertTrue(PiIntegrationConfiguration.isExposableModelRaw("openai-codex/gpt-5.5"))
+        XCTAssertTrue(PiIntegrationConfiguration.isExposableModelRaw("zai/glm-5.2"))
+        XCTAssertTrue(PiIntegrationConfiguration.isExposableModelRaw("z-ai/glm-5.2"))
+        XCTAssertTrue(PiIntegrationConfiguration.isExposableModelRaw("deepseek/deepseek-v4-flash"))
+        XCTAssertTrue(PiIntegrationConfiguration.isExposableModelRaw("anthropic/claude-opus-4-6"))
+        XCTAssertTrue(PiIntegrationConfiguration.isExposableModelRaw("openrouter/z-ai/glm-5.2"))
+        XCTAssertTrue(PiIntegrationConfiguration.isExposableModelRaw("cursor/default"))
+        XCTAssertFalse(PiIntegrationConfiguration.isExposableModelRaw(""))
+        XCTAssertFalse(PiIntegrationConfiguration.isExposableModelProviderID(nil))
     }
 
     func testPromptOnlyLaunchArgumentsAreEphemeralAndToolless() {

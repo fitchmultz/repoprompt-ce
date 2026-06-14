@@ -13,6 +13,11 @@ protocol SettingsManaging {
     func updateChatSettings(_ settings: ChatGlobalSettings, commit: Bool?)
     func globalContextBuilderAgentSelection() -> (agentRaw: String?, modelRaw: String?)
     func persistedGlobalContextBuilderAgentSelection() -> (agentRaw: String?, modelRaw: String?)
+    func promoteLegacyWorkspaceContextBuilderSelectionIfNeeded(
+        workspaceID: UUID,
+        availability: AgentModelCatalog.AvailabilityContext,
+        enabledRecommendationProviders: Set<RecommendationProviderKind>
+    ) -> (agentRaw: String?, modelRaw: String?)?
     func setGlobalContextBuilderAgentSelection(agentRaw: String, modelRaw: String, markUserDefined: Bool)
     func globalRecommendationProviderFilter() -> Set<RecommendationProviderKind>
     func promptSectionsOrderRaw() -> String
@@ -115,6 +120,18 @@ final class WindowSettingsManager: ObservableObject, SettingsManaging {
 
     func persistedGlobalContextBuilderAgentSelection() -> (agentRaw: String?, modelRaw: String?) {
         store.persistedGlobalContextBuilderAgentSelection()
+    }
+
+    func promoteLegacyWorkspaceContextBuilderSelectionIfNeeded(
+        workspaceID: UUID,
+        availability: AgentModelCatalog.AvailabilityContext,
+        enabledRecommendationProviders: Set<RecommendationProviderKind>
+    ) -> (agentRaw: String?, modelRaw: String?)? {
+        store.promoteLegacyWorkspaceContextBuilderSelectionIfNeeded(
+            workspaceID: workspaceID,
+            availability: availability,
+            enabledRecommendationProviders: enabledRecommendationProviders
+        )
     }
 
     func setGlobalContextBuilderAgentSelection(agentRaw: String, modelRaw: String, markUserDefined: Bool = true) {

@@ -305,10 +305,23 @@ enum AgentModelCatalog {
             return AgentModel.cursorAuto.rawValue
         }
         if isAgentAvailable(agentKind, availability: availability) {
-            if agentKind == .pi,
-               let preferredModelRaw = resolvedPiDiscoveredModels(workspacePath: availability.piWorkspacePath)?.preferredModelRaw
-            {
-                return preferredModelRaw
+            if agentKind == .pi {
+                let snapshot = resolvedPiDiscoveredModels(workspacePath: availability.piWorkspacePath)
+                // DEBUG_PROBE_H4_3 — remove in cleanup
+                DebugModeProbe.log(
+                    hypothesisId: "H4",
+                    location: "AgentModelCatalog.defaultModelRaw",
+                    message: "resolving pi default model",
+                    data: [
+                        "workspace": DebugModeProbe.workspaceLabel(availability.piWorkspacePath),
+                        "piAvailable": availability.piAvailable,
+                        "snapshot": DebugModeProbe.optionSummary(snapshot?.options ?? []),
+                        "preferredModelRaw": snapshot?.preferredModelRaw as Any
+                    ]
+                )
+                if let preferredModelRaw = snapshot?.preferredModelRaw {
+                    return preferredModelRaw
+                }
             }
             if let preferredModelRaw = resolvedACPDiscoveredModels(for: agentKind)?.preferredModelRaw {
                 return preferredModelRaw
@@ -411,7 +424,19 @@ enum AgentModelCatalog {
             return fallbacks
         }
         if agentKind == .pi {
-            return resolvedPiDiscoveredModels(workspacePath: availability.piWorkspacePath)?.options ?? []
+            let options = resolvedPiDiscoveredModels(workspacePath: availability.piWorkspacePath)?.options ?? []
+            // DEBUG_PROBE_H4_4 — remove in cleanup
+            DebugModeProbe.log(
+                hypothesisId: "H4",
+                location: "AgentModelCatalog.options",
+                message: "returning pi model options",
+                data: [
+                    "workspace": DebugModeProbe.workspaceLabel(availability.piWorkspacePath),
+                    "piAvailable": availability.piAvailable,
+                    "options": DebugModeProbe.optionSummary(options)
+                ]
+            )
+            return options
         }
         if let discoveredOptions = resolvedACPDiscoveredModels(for: agentKind)?.options,
            !discoveredOptions.isEmpty
@@ -459,24 +484,53 @@ enum AgentModelCatalog {
             return true
         }
         if agentKind == .pi {
-            if let discoveredModels = resolvedPiDiscoveredModels(workspacePath: availability.piWorkspacePath) {
+            let snapshot = resolvedPiDiscoveredModels(workspacePath: availability.piWorkspacePath)
+            let result: Bool
+            let reason: String
+            if let discoveredModels = snapshot {
                 if let specifier = PiModelSpecifier(raw: normalized, knownModelIDs: discoveredModels.knownModelIDs),
                    let rawThinking = specifier.thinkingLevel
                 {
-                    guard let level = PiThinkingLevel.parse(rawThinking) else { return false }
-                    return discoveredModels.supportsThinkingLevel(level, for: specifier.providerQualifiedModelRaw)
+                    if let level = PiThinkingLevel.parse(rawThinking) {
+                        result = discoveredModels.supportsThinkingLevel(level, for: specifier.providerQualifiedModelRaw)
+                        reason = "discovered-thinking"
+                    } else {
+                        result = false
+                        reason = "invalid-thinking"
+                    }
+                } else {
+                    result = discoveredModels.contains(rawModel: normalized)
+                    reason = "discovered-contains"
                 }
-                return discoveredModels.contains(rawModel: normalized)
-            }
-            guard let specifier = PiModelSpecifier(
+            } else if let specifier = PiModelSpecifier(
                 raw: normalized,
                 knownModelIDs: piKnownModelIDs(workspacePath: availability.piWorkspacePath)
-            ) else { return false }
-            guard PiIntegrationConfiguration.isSupportedModelRaw(specifier.providerQualifiedModelRaw) else { return false }
-            if let rawThinking = specifier.thinkingLevel {
-                return PiThinkingLevel.parse(rawThinking) != nil
+            ), PiIntegrationConfiguration.isExposableModelRaw(specifier.providerQualifiedModelRaw) {
+                if let rawThinking = specifier.thinkingLevel {
+                    result = PiThinkingLevel.parse(rawThinking) != nil
+                    reason = "fallback-thinking"
+                } else {
+                    result = true
+                    reason = "fallback-pi-model-raw"
+                }
+            } else {
+                result = false
+                reason = "empty-or-default"
             }
-            return true
+            // DEBUG_PROBE_H4_5 — remove in cleanup
+            DebugModeProbe.log(
+                hypothesisId: "H4",
+                location: "AgentModelCatalog.isValid",
+                message: "validated pi model raw",
+                data: [
+                    "workspace": DebugModeProbe.workspaceLabel(availability.piWorkspacePath),
+                    "rawModel": normalized,
+                    "result": result,
+                    "reason": reason,
+                    "snapshot": DebugModeProbe.optionSummary(snapshot?.options ?? [])
+                ]
+            )
+            return result
         }
         if let discoveredModels = resolvedACPDiscoveredModels(for: agentKind) {
             if agentKind == .cursor {

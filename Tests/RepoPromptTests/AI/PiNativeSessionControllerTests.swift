@@ -26,7 +26,7 @@ final class PiNativeSessionControllerTests: XCTestCase {
         ))
         let controller = PiNativeSessionController(
             client: client,
-            options: .init(modelRaw: "zai/glm-5.1:high", requestTimeout: 2)
+            options: .init(modelRaw: "zai/glm-5.2:high", requestTimeout: 2)
         )
         addTeardownBlock { await controller.shutdown() }
 
@@ -34,12 +34,12 @@ final class PiNativeSessionControllerTests: XCTestCase {
 
         XCTAssertEqual(ref.sessionID, "pi-session-id")
         XCTAssertEqual(ref.sessionFile, "/tmp/pi-session.jsonl")
-        XCTAssertEqual(ref.model, "zai/glm-5.1")
+        XCTAssertEqual(ref.model, "zai/glm-5.2")
         XCTAssertEqual(ref.thinkingLevel, "high")
         let commands = recordedCommands(at: recordURL)
         XCTAssertEqual(commands.prefix(3).map(\.type), ["set_model", "set_thinking_level", "get_state"])
         XCTAssertEqual(commands.first?.provider, "zai")
-        XCTAssertEqual(commands.first?.modelID, "glm-5.1")
+        XCTAssertEqual(commands.first?.modelID, "glm-5.2")
         XCTAssertEqual(commands.dropFirst().first?.level, "high")
     }
 
@@ -201,8 +201,8 @@ final class PiNativeSessionControllerTests: XCTestCase {
 
         XCTAssertNil(AgentPiModelRegistry.shared.resolvedSnapshot())
         let workspaceSnapshot = try XCTUnwrap(AgentPiModelRegistry.shared.resolvedSnapshot(workspacePath: workspaceURL.path))
-        XCTAssertEqual(workspaceSnapshot.options.map(\.rawValue), ["deepseek/deepseek-v4-flash", "zai/glm-5.1"])
-        XCTAssertEqual(workspaceSnapshot.currentModelRaw, "zai/glm-5.1")
+        XCTAssertEqual(workspaceSnapshot.options.map(\.rawValue), ["anthropic/claude-opus-4-6", "deepseek/deepseek-v4-flash", "zai/glm-5.2"])
+        XCTAssertEqual(workspaceSnapshot.currentModelRaw, "zai/glm-5.2")
     }
 
     func testCancelledSessionSwitchFailsWithoutOverwritingState() async throws {
@@ -2102,8 +2102,8 @@ final class PiNativeSessionControllerTests: XCTestCase {
 
     func testModelSpecifierParsesProviderModelAndThinking() {
         XCTAssertEqual(
-            PiModelSpecifier(raw: "zai/glm-5.1:high", knownModelIDs: []),
-            PiModelSpecifier(provider: "zai", modelID: "glm-5.1", thinkingLevel: "high")
+            PiModelSpecifier(raw: "zai/glm-5.2:high", knownModelIDs: []),
+            PiModelSpecifier(provider: "zai", modelID: "glm-5.2", thinkingLevel: "high")
         )
         XCTAssertEqual(
             PiModelSpecifier(raw: "openai-codex/gpt-5.5:low", knownModelIDs: []),
@@ -2138,8 +2138,8 @@ final class PiNativeSessionControllerTests: XCTestCase {
             PiModelSpecifier(provider: "openai-codex", modelID: "gpt-5.4-mini", thinkingLevel: nil)
         )
         XCTAssertEqual(
-            PiModelSpecifier(raw: "glm-5.1", knownModelIDs: []),
-            PiModelSpecifier(provider: nil, modelID: "glm-5.1", thinkingLevel: nil)
+            PiModelSpecifier(raw: "glm-5.2", knownModelIDs: []),
+            PiModelSpecifier(provider: nil, modelID: "glm-5.2", thinkingLevel: nil)
         )
         XCTAssertNil(PiModelSpecifier(raw: "default", knownModelIDs: []))
     }
@@ -2279,7 +2279,7 @@ final class PiNativeSessionControllerTests: XCTestCase {
                     "isCompacting": COMPACTION_ACTIVE,
                     "messageCount": 1,
                     "pendingMessageCount": pending_count,
-                    "model": {"provider": "zai", "id": "glm-5.1", "displayName": "GLM 5.1"}
+                    "model": {"provider": "zai", "id": "glm-5.2", "displayName": "GLM 5.2"}
                 }
             })
             if EMIT_EXTENSION_CONTINUATION_AFTER_IDLE_STATE and pending_count == 0 and not is_streaming and not COMPACTION_ACTIVE:
@@ -2306,7 +2306,7 @@ final class PiNativeSessionControllerTests: XCTestCase {
                     "command": "get_available_models",
                     "success": True,
                     "data": {"models": [
-                        {"provider": "zai", "id": "glm-5.1", "displayName": "GLM 5.1", "description": "Strong GLM", "reasoning": True},
+                        {"provider": "zai", "id": "glm-5.2", "displayName": "GLM 5.2", "description": "Strong GLM", "reasoning": True},
                         {"provider": "anthropic", "id": "claude-opus-4-6", "displayName": "Claude Opus 4.6"},
                         {"provider": "deepseek", "id": "deepseek-v4-flash", "displayName": "DeepSeek V4 Flash", "reasoning": True}
                     ]}

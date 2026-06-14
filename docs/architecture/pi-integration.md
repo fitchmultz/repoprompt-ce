@@ -102,6 +102,8 @@ After `get_state` or `agent_end`, RepoPrompt applies pi session state back to th
 
 ### Model and thinking format
 
+RepoPrompt must expose the user's pi model catalog without its own provider or model allowlist. If `pi` reports a model in `get_available_models` / `pi --list-models`, RepoPrompt and MitchPrompt should show that model in pi pickers and MCP settings. Provider/model names used in tests, docs, or smoke commands are examples for cost control, not a product allowlist.
+
 Persisted model selection uses provider-qualified raw values when possible:
 
 ```text
@@ -109,9 +111,14 @@ Persisted model selection uses provider-qualified raw values when possible:
 <provider>/<modelID>:<thinkingLevel>
 ```
 
-`PiModelSpecifier` parses user/persisted raw values. Selecting a concrete pi model requires a provider prefix; pi default/no-model selections should use RepoPrompt's default-model sentinel and let pi choose from its own settings.
+`PiModelSpecifier` parses user/persisted raw values. Selecting a concrete pi model normally uses a provider prefix; pi default/no-model selections should use RepoPrompt's default-model sentinel and let pi choose from its own settings.
 
-Thinking levels are translated through `PiThinkingLevel` and then sent to pi via `set_thinking_level`. Do not persist pi-specific thinking values outside the existing `selectedReasoningEffortRaw` path.
+Thinking levels are translated through `PiThinkingLevel` and then sent to pi via `set_thinking_level`. Do not persist pi-specific thinking values outside the existing `selectedReasoningEffortRaw` path. pi supports both forms for every pi model:
+
+```text
+pi --model <provider>/<modelID> --thinking high
+pi --model <provider>/<modelID>:high
+```
 
 ### Image payloads
 
@@ -215,6 +222,13 @@ make dev-smoke
 ```
 
 For pi-specific runtime changes, also exercise an Agent Mode pi run only when provider credentials/model access are available and visible app launch/relaunch is safe under `AGENTS.md`.
+
+Cost-sensitive live pi call guidance:
+
+- Use `zai/glm-5.2`, `deepseek/deepseek-v4-pro`, and `deepseek/deepseek-v4-flash` freely for real pi calls; they are cheap test models.
+- Prefer colon or flag thinking syntax with those models, for example `zai/glm-5.2:high` or `--model zai/glm-5.2 --thinking high`.
+- If the cheaper models are unreliable, use real `openai-codex/gpt-5.5` calls sparingly relative to the cheap models; low and medium thinking levels are acceptable for practical validation.
+- This list is only cost-control guidance for real provider calls. It must never be copied into discovery, picker, settings, validation, or persistence logic as an allowlist.
 
 ## Upstream PR expectations
 

@@ -33,7 +33,7 @@ final class PiCLIProviderTests: XCTestCase {
 
         let stream = try await provider.streamMessage(
             AIMessage(systemPrompt: "Reply briefly.", userMessage: "Hello"),
-            model: .piCustom(name: "zai/glm-5.1")
+            model: .piCustom(name: "zai/glm-5.2")
         )
 
         var results: [AIStreamResult] = []
@@ -87,7 +87,7 @@ final class PiCLIProviderTests: XCTestCase {
                     "isCompacting": False,
                     "messageCount": 1,
                     "pendingMessageCount": 0,
-                    "model": {"provider": "zai", "id": "glm-5.1", "displayName": "GLM 5.1"}
+                    "model": {"provider": "zai", "id": "glm-5.2", "displayName": "GLM 5.2"}
                 }
             })
 
@@ -102,7 +102,7 @@ final class PiCLIProviderTests: XCTestCase {
             if command == "set_model":
                 emit({"type": "response", "id": request_id, "command": "set_model", "success": True, "data": {"provider": request.get("provider"), "id": request.get("modelId")}})
             elif command == "get_available_models":
-                emit({"type": "response", "id": request_id, "command": "get_available_models", "success": True, "data": {"models": [{"provider": "zai", "id": "glm-5.1", "displayName": "GLM 5.1"}]}})
+                emit({"type": "response", "id": request_id, "command": "get_available_models", "success": True, "data": {"models": [{"provider": "zai", "id": "glm-5.2", "displayName": "GLM 5.2"}]}})
             elif command == "get_state":
                 state(request_id)
             elif command == "prompt":

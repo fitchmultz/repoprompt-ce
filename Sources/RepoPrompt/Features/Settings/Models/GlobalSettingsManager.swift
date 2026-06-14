@@ -243,6 +243,8 @@ struct GlobalDefaults: Codable {
     var mcpAgentRoleOverrides: [String: String]?
     /// One-time migration version for legacy workspace-scoped MCP role overrides.
     var mcpAgentRoleOverridesMigrationVersion: Int?
+    /// One-time promotion version for legacy workspace-scoped Context Builder agent/model defaults.
+    var contextBuilderLegacyWorkspacePromotionVersion: Int?
     /// Global provider filter used by recommendation generation. nil means all providers.
     var recommendationProviderFilterRaw: [String]?
     /// Cross-workspace override that disables Code Maps without mutating per-workspace modes.
@@ -304,6 +306,7 @@ class GlobalSettingsStore: ObservableObject {
     private static let defaultSelectedFilesSortMethodRaw = "nameAscending"
     private static let defaultFileEditFormatRaw = "Diff"
     private static let defaultComplexEditStrategyRaw = "Sequential split"
+    private static let contextBuilderLegacyWorkspacePromotionVersion = 1
     private static let settingsWriteDiagnosticsLimit = 80
 
     private var settingsWriteDiagnostics: [GlobalSettingsWriteDiagnostic] = []
@@ -1323,11 +1326,94 @@ class GlobalSettingsStore: ObservableObject {
         guard let agentRaw = globalDefaults.discoverAgentRaw?.trimmingCharacters(in: .whitespacesAndNewlines),
               !agentRaw.isEmpty
         else {
+            // DEBUG_PROBE_H1_7 — remove in cleanup
+            DebugModeProbe.log(
+                hypothesisId: "H1",
+                location: "GlobalSettingsStore.persistedGlobalContextBuilderAgentSelection",
+                message: "read persisted global context builder selection empty",
+                data: ["rawAgent": globalDefaults.discoverAgentRaw as Any]
+            )
             return (nil, nil)
         }
         let modelRaw = globalDefaults.discoverModelsByAgent?[agentRaw]?
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return (agentRaw, modelRaw?.isEmpty == false ? modelRaw : nil)
+        let result = (agentRaw, modelRaw?.isEmpty == false ? modelRaw : nil)
+        // DEBUG_PROBE_H1_8 — remove in cleanup
+        DebugModeProbe.log(
+            hypothesisId: "H1",
+            location: "GlobalSettingsStore.persistedGlobalContextBuilderAgentSelection",
+            message: "read persisted global context builder selection",
+            data: ["agent": result.0, "model": result.1 as Any]
+        )
+        return result
+    }
+
+    /// Promotes a pre-global workspace Context Builder selection into the global
+    /// Context Builder source of truth once for existing installs. This covers
+    /// users who picked a workspace-scoped Context Builder agent before the
+    /// single global Context Builder selection existed.
+    @discardableResult
+    func promoteLegacyWorkspaceContextBuilderSelectionIfNeeded(
+        workspaceID: UUID,
+        availability: AgentModelCatalog.AvailabilityContext,
+        enabledRecommendationProviders: Set<RecommendationProviderKind>
+    ) -> (agentRaw: String?, modelRaw: String?)? {
+        guard (globalDefaults.contextBuilderLegacyWorkspacePromotionVersion ?? 0) < Self.contextBuilderLegacyWorkspacePromotionVersion else {
+            return nil
+        }
+
+        let workspaceSettings = chatSettings(for: workspaceID)
+        guard workspaceSettings.didUserSetContextBuilderDefaults == true,
+              let workspaceAgentRaw = normalizedNonEmptyRaw(workspaceSettings.contextBuilderAgentRaw),
+              let workspaceModelRaw = normalizedNonEmptyRaw(workspaceSettings.contextBuilderAgentModelRaw)
+        else {
+            return nil
+        }
+
+        let persisted = persistedGlobalContextBuilderAgentSelection()
+        guard isLegacyContextBuilderGlobalDefault(agentRaw: persisted.agentRaw, modelRaw: persisted.modelRaw) else {
+            return nil
+        }
+        guard persisted.agentRaw?.caseInsensitiveCompare(workspaceAgentRaw) != .orderedSame ||
+            (persisted.modelRaw ?? "").caseInsensitiveCompare(workspaceModelRaw) != .orderedSame
+        else {
+            globalDefaults.contextBuilderLegacyWorkspacePromotionVersion = Self.contextBuilderLegacyWorkspacePromotionVersion
+            save()
+            return nil
+        }
+
+        guard let resolved = AutoRecommendationEngine.resolveContextBuilderSelection(
+            persistedAgentRaw: workspaceAgentRaw,
+            persistedModelRaw: workspaceModelRaw,
+            availability: availability,
+            enabledRecommendationProviders: enabledRecommendationProviders
+        ), resolved.agent.rawValue.caseInsensitiveCompare(workspaceAgentRaw) == .orderedSame
+        else {
+            return nil
+        }
+
+        setGlobalContextBuilderAgentSelection(
+            agentRaw: resolved.agent.rawValue,
+            modelRaw: resolved.modelRaw,
+            markUserDefined: true,
+            reason: "context_builder_legacy_workspace_promotion"
+        )
+        globalDefaults.contextBuilderLegacyWorkspacePromotionVersion = Self.contextBuilderLegacyWorkspacePromotionVersion
+        save()
+        return (resolved.agent.rawValue, resolved.modelRaw)
+    }
+
+    private func normalizedNonEmptyRaw(_ raw: String?) -> String? {
+        let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func isLegacyContextBuilderGlobalDefault(agentRaw: String?, modelRaw: String?) -> Bool {
+        guard let agentRaw = normalizedNonEmptyRaw(agentRaw) else { return true }
+        guard agentRaw.caseInsensitiveCompare(AgentProviderKind.claudeCode.rawValue) == .orderedSame else { return false }
+        guard let modelRaw = normalizedNonEmptyRaw(modelRaw) else { return true }
+        return modelRaw.caseInsensitiveCompare(AgentModel.claudeOpus.rawValue) == .orderedSame ||
+            modelRaw.caseInsensitiveCompare(AgentModel.defaultModel.rawValue) == .orderedSame
     }
 
     /// Returns a normalized global Context Builder agent and model selection.
@@ -1338,6 +1424,18 @@ class GlobalSettingsStore: ObservableObject {
         let normalized = AgentModelCatalog.normalizePersistedSelection(
             agentRaw: persisted.agentRaw,
             modelRaw: persisted.modelRaw
+        )
+        // DEBUG_PROBE_H1_9 — remove in cleanup
+        DebugModeProbe.log(
+            hypothesisId: "H1",
+            location: "GlobalSettingsStore.globalContextBuilderAgentSelection",
+            message: "normalized global context builder selection",
+            data: [
+                "persistedAgent": persisted.agentRaw as Any,
+                "persistedModel": persisted.modelRaw as Any,
+                "normalizedAgent": normalized.agent.rawValue,
+                "normalizedModel": normalized.modelRaw
+            ]
         )
         return (normalized.agent.rawValue, normalized.modelRaw)
     }
@@ -1375,6 +1473,22 @@ class GlobalSettingsStore: ObservableObject {
     ) {
         let oldSelection = globalContextBuilderAgentSelection()
         let normalized = AgentModelCatalog.normalizePersistedSelection(agentRaw: agentRaw, modelRaw: modelRaw)
+        // DEBUG_PROBE_H1_10 — remove in cleanup
+        DebugModeProbe.log(
+            hypothesisId: "H1",
+            location: "GlobalSettingsStore.setGlobalContextBuilderAgentSelection.nonOptionalModel",
+            message: "writing global context builder selection",
+            data: [
+                "oldAgent": oldSelection.agentRaw as Any,
+                "oldModel": oldSelection.modelRaw as Any,
+                "inputAgent": agentRaw,
+                "inputModel": modelRaw,
+                "normalizedAgent": normalized.agent.rawValue,
+                "normalizedModel": normalized.modelRaw,
+                "markUserDefined": markUserDefined,
+                "reason": reason as Any
+            ]
+        )
         globalDefaults.discoverAgentRaw = normalized.agent.rawValue
         if globalDefaults.discoverModelsByAgent == nil {
             globalDefaults.discoverModelsByAgent = [:]
@@ -1438,6 +1552,22 @@ class GlobalSettingsStore: ObservableObject {
         if markUserDefined {
             globalDefaults.didUserSetDiscoverAgentDefaults = true
         }
+        // DEBUG_PROBE_H1_11 — remove in cleanup
+        DebugModeProbe.log(
+            hypothesisId: "H1",
+            location: "GlobalSettingsStore.setGlobalContextBuilderAgentSelection.optionalModel",
+            message: "writing global context builder selection",
+            data: [
+                "oldAgent": oldSelection.agentRaw as Any,
+                "oldModel": oldSelection.modelRaw as Any,
+                "inputAgent": agentRaw,
+                "inputModel": modelRaw as Any,
+                "storedAgent": agent.rawValue,
+                "storedModel": newModelRaw as Any,
+                "markUserDefined": markUserDefined,
+                "reason": reason as Any
+            ]
+        )
         recordSettingsWriteDiagnostic(
             key: "globalContextBuilderAgentSelection",
             oldValue: oldSelection.agentRaw.flatMap { oldAgentRaw in

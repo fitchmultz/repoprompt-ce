@@ -394,6 +394,25 @@ final class AutoRecommendationEngine {
         availability: AgentModelCatalog.AvailabilityContext,
         enabledRecommendationProviders: Set<RecommendationProviderKind> = Set(RecommendationProviderKind.allCases)
     ) -> AgentModelCatalog.NormalizedAgentSelection? {
+        // DEBUG_PROBE_H2_12 — remove in cleanup
+        DebugModeProbe.log(
+            hypothesisId: "H2",
+            location: "AutoRecommendationEngine.resolveContextBuilderSelection",
+            message: "resolving persisted context builder selection",
+            data: [
+                "persistedAgent": persistedAgentRaw as Any,
+                "persistedModel": persistedModelRaw as Any,
+                "availability": [
+                    "claude": availability.claudeCodeAvailable,
+                    "codex": availability.codexAvailable,
+                    "openCode": availability.openCodeAvailable,
+                    "cursor": availability.cursorAvailable,
+                    "pi": availability.piAvailable,
+                    "piWorkspace": DebugModeProbe.workspaceLabel(availability.piWorkspacePath)
+                ],
+                "piOptions": DebugModeProbe.optionSummary(AgentModelCatalog.options(for: .pi, availability: availability))
+            ]
+        )
         if let agentRaw = persistedAgentRaw?.trimmingCharacters(in: .whitespacesAndNewlines),
            let modelRaw = persistedModelRaw?.trimmingCharacters(in: .whitespacesAndNewlines),
            let agent = AgentProviderKind(rawValue: agentRaw),
@@ -401,11 +420,19 @@ final class AutoRecommendationEngine {
            AgentModelCatalog.isAgentAvailable(agent, availability: availability),
            isValidPersistedContextBuilderModel(modelRaw, for: agent, availability: availability)
         {
-            return AgentModelCatalog.normalizeSelection(
+            let resolved = AgentModelCatalog.normalizeSelection(
                 agentRaw: agent.rawValue,
                 modelRaw: modelRaw,
                 availability: availability
             )
+            // DEBUG_PROBE_H2_13 — remove in cleanup
+            DebugModeProbe.log(
+                hypothesisId: "H2",
+                location: "AutoRecommendationEngine.resolveContextBuilderSelection",
+                message: "using persisted context builder selection",
+                data: ["agent": resolved.agent.rawValue, "model": resolved.modelRaw]
+            )
+            return resolved
         }
 
         let status = ProviderStatusSnapshot(
@@ -417,11 +444,24 @@ final class AutoRecommendationEngine {
             openAI: .notConfigured
         ).filtered(to: enabledRecommendationProviders)
         if let recommendation = contextBuilderRecommendation(status: status) {
-            return AgentModelCatalog.normalizeSelection(
+            let resolved = AgentModelCatalog.normalizeSelection(
                 agentRaw: recommendation.recommendedAgent.rawValue,
                 modelRaw: recommendation.recommendedModel.rawValue,
                 availability: availability
             )
+            // DEBUG_PROBE_H2_14 — remove in cleanup
+            DebugModeProbe.log(
+                hypothesisId: "H2",
+                location: "AutoRecommendationEngine.resolveContextBuilderSelection",
+                message: "falling back to context builder recommendation",
+                data: [
+                    "recommendedAgent": recommendation.recommendedAgent.rawValue,
+                    "recommendedModel": recommendation.recommendedModel.rawValue,
+                    "resolvedAgent": resolved.agent.rawValue,
+                    "resolvedModel": resolved.modelRaw
+                ]
+            )
+            return resolved
         }
 
         guard let availableAgent = AgentModelCatalog.selectableAgents(availability: availability).first(where: {
@@ -440,11 +480,19 @@ final class AutoRecommendationEngine {
         }) else {
             return nil
         }
-        return AgentModelCatalog.normalizeSelection(
+        let resolved = AgentModelCatalog.normalizeSelection(
             agentRaw: availableAgent.rawValue,
             modelRaw: nil,
             availability: availability
         )
+        // DEBUG_PROBE_H2_15 — remove in cleanup
+        DebugModeProbe.log(
+            hypothesisId: "H2",
+            location: "AutoRecommendationEngine.resolveContextBuilderSelection",
+            message: "falling back to first selectable agent",
+            data: ["availableAgent": availableAgent.rawValue, "resolvedAgent": resolved.agent.rawValue, "resolvedModel": resolved.modelRaw]
+        )
+        return resolved
     }
 
     private static func isValidPersistedContextBuilderModel(

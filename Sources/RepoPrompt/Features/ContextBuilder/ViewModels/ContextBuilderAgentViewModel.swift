@@ -983,12 +983,21 @@ final class ContextBuilderAgentViewModel: ObservableObject {
         else {
             return nil
         }
-        let persisted = settingsManager.persistedGlobalContextBuilderAgentSelection()
+        let availability = apiSettingsViewModel.contextBuilderRestorationAvailabilityContext
+        let enabledProviders = settingsManager.globalRecommendationProviderFilter()
+        let promoted = currentWorkspaceID.flatMap { workspaceID in
+            settingsManager.promoteLegacyWorkspaceContextBuilderSelectionIfNeeded(
+                workspaceID: workspaceID,
+                availability: availability,
+                enabledRecommendationProviders: enabledProviders
+            )
+        }
+        let persisted = promoted ?? settingsManager.persistedGlobalContextBuilderAgentSelection()
         return AutoRecommendationEngine.resolveContextBuilderSelection(
             persistedAgentRaw: persisted.agentRaw,
             persistedModelRaw: persisted.modelRaw,
-            availability: apiSettingsViewModel.contextBuilderRestorationAvailabilityContext,
-            enabledRecommendationProviders: settingsManager.globalRecommendationProviderFilter()
+            availability: availability,
+            enabledRecommendationProviders: enabledProviders
         )
     }
 

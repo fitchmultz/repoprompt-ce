@@ -21,7 +21,7 @@ final class PiHeadlessAgentProviderTests: XCTestCase {
         try "export default function bridge() {}".write(to: bridgeURL, atomically: true, encoding: .utf8)
 
         let provider = PiHeadlessAgentProvider(
-            modelString: "zai/glm-5.1:high",
+            modelString: "zai/glm-5.2:high",
             workspacePath: directory.path,
             windowID: 7,
             bridgeInstaller: { windowID in
@@ -30,7 +30,7 @@ final class PiHeadlessAgentProviderTests: XCTestCase {
             },
             controllerFactory: { workspacePath, modelString, enableDebugLogging, installedBridgeURL in
                 XCTAssertEqual(workspacePath, directory.path)
-                XCTAssertEqual(modelString, "zai/glm-5.1:high")
+                XCTAssertEqual(modelString, "zai/glm-5.2:high")
                 XCTAssertFalse(enableDebugLogging)
                 XCTAssertEqual(installedBridgeURL, bridgeURL)
                 let client = PiRPCClient(config: .init(
@@ -69,7 +69,7 @@ final class PiHeadlessAgentProviderTests: XCTestCase {
         XCTAssertTrue(prompt.message?.contains("Use RepoPrompt context.") ?? false)
         XCTAssertTrue(prompt.message?.contains("<user_instructions>") ?? false)
         XCTAssertTrue(prompt.message?.contains("Build a context brief.") ?? false)
-        XCTAssertTrue(recordedCommands(at: recordURL).contains { $0.type == "set_model" && $0.provider == "zai" && $0.modelID == "glm-5.1" })
+        XCTAssertTrue(recordedCommands(at: recordURL).contains { $0.type == "set_model" && $0.provider == "zai" && $0.modelID == "glm-5.2" })
         XCTAssertTrue(recordedCommands(at: recordURL).contains { $0.type == "set_thinking_level" && $0.level == "high" })
     }
 
@@ -113,7 +113,7 @@ final class PiHeadlessAgentProviderTests: XCTestCase {
                     "isCompacting": False,
                     "messageCount": 1,
                     "pendingMessageCount": 0,
-                    "model": {"provider": "zai", "id": "glm-5.1", "displayName": "GLM 5.1"}
+                    "model": {"provider": "zai", "id": "glm-5.2", "displayName": "GLM 5.2"}
                 }
             })
 
@@ -130,7 +130,7 @@ final class PiHeadlessAgentProviderTests: XCTestCase {
             elif command == "set_thinking_level":
                 emit({"type": "response", "id": request_id, "command": "set_thinking_level", "success": True})
             elif command == "get_available_models":
-                emit({"type": "response", "id": request_id, "command": "get_available_models", "success": True, "data": {"models": [{"provider": "zai", "id": "glm-5.1", "displayName": "GLM 5.1"}]}})
+                emit({"type": "response", "id": request_id, "command": "get_available_models", "success": True, "data": {"models": [{"provider": "zai", "id": "glm-5.2", "displayName": "GLM 5.2"}]}})
             elif command == "get_state":
                 state(request_id)
             elif command == "prompt":

@@ -181,7 +181,7 @@ final class AIModelPreferenceRegressionTests: XCTestCase {
     }
 
     func testStrictOraclePlanningResolutionAcceptsPiModelRaw() {
-        let configuredModel = AIModel.piCustom(name: "zai/glm-5.1")
+        let configuredModel = AIModel.piCustom(name: "zai/glm-5.2")
         let resolved = PromptViewModel.mcpOraclePlanningModelResolution(
             rawValue: "  \(configuredModel.rawValue)  ",
             isModelAvailable: { model in model == configuredModel && model.providerType == .pi }
@@ -192,16 +192,16 @@ final class AIModelPreferenceRegressionTests: XCTestCase {
     func testPiOracleModelProviderSurfaceIsRegistered() throws {
         AgentPiModelRegistry.shared.test_reset()
         defer { AgentPiModelRegistry.shared.test_reset() }
-        XCTAssertEqual(AIModel.fromModelName("pi_custom_zai/glm-5.1"), .piCustom(name: "zai/glm-5.1"))
-        XCTAssertEqual(AIModel.piCustom(name: "zai/glm-5.1").providerType, .pi)
+        XCTAssertEqual(AIModel.fromModelName("pi_custom_zai/glm-5.2"), .piCustom(name: "zai/glm-5.2"))
+        XCTAssertEqual(AIModel.piCustom(name: "zai/glm-5.2").providerType, .pi)
         XCTAssertTrue(AIModel.modelsForProvider(.pi).isEmpty)
 
         let snapshot = PiDiscoveredModels(
-            options: [AgentModelOption(rawValue: "zai/glm-5.1", displayName: "GLM 5.1", description: nil, isDefault: true)],
-            currentModelRaw: "zai/glm-5.1"
+            options: [AgentModelOption(rawValue: "zai/glm-5.2", displayName: "GLM 5.2", description: nil, isDefault: true)],
+            currentModelRaw: "zai/glm-5.2"
         )
         XCTAssertTrue(AgentPiModelRegistry.shared.updateDiscoveredModels(snapshot))
-        XCTAssertEqual(AIModel.modelsForProvider(.pi), [.piCustom(name: "zai/glm-5.1")])
+        XCTAssertEqual(AIModel.modelsForProvider(.pi), [.piCustom(name: "zai/glm-5.2")])
 
         let repoRoot = try RepoRoot.url(filePath: #filePath)
         let sourcePath = "Sources/RepoPrompt/Infrastructure/MCP/AppSettingsMCPService.swift"

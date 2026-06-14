@@ -43,15 +43,15 @@ struct PiDiscoveredModels: Equatable {
         supportedThinkingLevels(for: rawModel).contains(level)
     }
 
-    func filteringToRepoPromptSupportedProviders() -> PiDiscoveredModels? {
-        let supportedOptions = options.filter { option in
-            !option.isPlaceholderDefault && PiIntegrationConfiguration.isSupportedModelRaw(option.rawValue)
+    func retainingPiReportedModelOptions() -> PiDiscoveredModels? {
+        let piModelOptions = options.filter { option in
+            !option.isPlaceholderDefault && PiIntegrationConfiguration.isExposableModelRaw(option.rawValue)
         }
-        guard !supportedOptions.isEmpty else { return nil }
+        guard !piModelOptions.isEmpty else { return nil }
         let current = Self.normalizedRawModel(currentModelRaw).flatMap { normalized in
-            supportedOptions.first { $0.rawValue.lowercased() == normalized }?.rawValue
+            piModelOptions.first { $0.rawValue.lowercased() == normalized }?.rawValue
         }
-        return PiDiscoveredModels(options: supportedOptions, currentModelRaw: current ?? supportedOptions.first(where: \.isProviderDefault)?.rawValue)
+        return PiDiscoveredModels(options: piModelOptions, currentModelRaw: current ?? piModelOptions.first(where: \.isProviderDefault)?.rawValue)
     }
 
     static func normalizedRawModel(_ raw: String?) -> String? {
@@ -409,8 +409,22 @@ final class AgentPiModelRegistry {
     @discardableResult
     func updateDiscoveredModels(_ snapshot: PiDiscoveredModels, workspacePath: String? = nil) -> Bool {
         let scope = PiModelWorkspaceScope(workspacePath: workspacePath)
-        guard let supportedSnapshot = snapshot.filteringToRepoPromptSupportedProviders(),
-              let record = PiDynamicModelStore.snapshotRecord(from: supportedSnapshot),
+        let piModelSnapshot = snapshot.retainingPiReportedModelOptions()
+        // DEBUG_PROBE_H3_4 — remove in cleanup
+        DebugModeProbe.log(
+            hypothesisId: "H3",
+            location: "AgentPiModelRegistry.updateDiscoveredModels",
+            message: "normalizing discovered pi snapshot",
+            data: [
+                "scope": DebugModeProbe.workspaceLabel(scope.workspacePath),
+                "incoming": DebugModeProbe.optionSummary(snapshot.options),
+                "retained": DebugModeProbe.optionSummary(piModelSnapshot?.options ?? []),
+                "incomingCurrentRaw": snapshot.currentModelRaw as Any,
+                "retainedCurrentRaw": piModelSnapshot?.currentModelRaw as Any
+            ]
+        )
+        guard let piModelSnapshot,
+              let record = PiDynamicModelStore.snapshotRecord(from: piModelSnapshot),
               let normalizedSnapshot = PiDynamicModelStore.snapshot(from: record)
         else {
             return clearDiscoveredModels(workspacePath: scope.workspacePath)
@@ -432,6 +446,13 @@ final class AgentPiModelRegistry {
     @discardableResult
     func clearDiscoveredModels(workspacePath: String? = nil) -> Bool {
         let scope = PiModelWorkspaceScope(workspacePath: workspacePath)
+        // DEBUG_PROBE_H5_9 — remove in cleanup
+        DebugModeProbe.log(
+            hypothesisId: "H5",
+            location: "AgentPiModelRegistry.clearDiscoveredModels",
+            message: "clearing registry snapshot",
+            data: ["scope": DebugModeProbe.workspaceLabel(scope.workspacePath)]
+        )
         lock.lock()
         let removedLiveSnapshot = liveSnapshots.removeValue(forKey: scope) != nil
         let removedPersistedSnapshot = persistedSnapshots.removeValue(forKey: scope) != nil
@@ -507,15 +528,21 @@ final class AgentPiModelRegistry {
     static func discoveredModels(from remoteModels: [PiRPCClient.RemoteModel], currentModel: PiRPCClient.RemoteModel?) -> PiDiscoveredModels? {
         var options: [AgentModelOption] = []
         let currentRaw = currentModel.flatMap(rawModel).flatMap { raw in
-            PiIntegrationConfiguration.isSupportedModelRaw(raw) ? raw : nil
+            PiIntegrationConfiguration.isExposableModelRaw(raw) ? raw : nil
         }
         var seen = Set<String>()
+        var malformedRemoteModels = 0
+        var duplicateRawModels: [String] = []
         for model in remoteModels {
-            guard let raw = rawModel(model),
-                  PiIntegrationConfiguration.isSupportedModelRaw(raw)
-            else { continue }
+            guard let raw = rawModel(model) else {
+                malformedRemoteModels += 1
+                continue
+            }
             let key = raw.lowercased()
-            guard !seen.contains(key) else { continue }
+            guard !seen.contains(key) else {
+                duplicateRawModels.append(raw)
+                continue
+            }
             seen.insert(key)
             let displayName = normalizedOptionalString(model.displayName) ?? raw
             options.append(AgentModelOption(
@@ -530,6 +557,20 @@ final class AgentPiModelRegistry {
                 supportedPiThinkingLevels: supportedThinkingLevels(for: model)
             ))
         }
+        // DEBUG_PROBE_H3_5 — remove in cleanup
+        DebugModeProbe.log(
+            hypothesisId: "H3",
+            location: "AgentPiModelRegistry.discoveredModels",
+            message: "normalized remote pi models",
+            data: [
+                "remoteCount": remoteModels.count,
+                "remoteProviders": DebugModeProbe.providerHistogram(remoteModels: remoteModels),
+                "accepted": DebugModeProbe.optionSummary(options),
+                "malformedRemoteModels": malformedRemoteModels,
+                "duplicateCount": duplicateRawModels.count,
+                "currentRaw": currentRaw as Any
+            ]
+        )
         guard !options.isEmpty else { return nil }
         return PiDiscoveredModels(options: options, currentModelRaw: currentRaw)
     }
@@ -578,7 +619,7 @@ final class AgentPiModelRegistry {
     private func snapshotFromMemory(scope: PiModelWorkspaceScope) -> PiDiscoveredModels? {
         lock.lock()
         defer { lock.unlock() }
-        return (liveSnapshots[scope] ?? persistedSnapshots[scope])?.filteringToRepoPromptSupportedProviders()
+        return (liveSnapshots[scope] ?? persistedSnapshots[scope])?.retainingPiReportedModelOptions()
     }
 
     private static func normalizedOptionalString(_ value: String?) -> String? {

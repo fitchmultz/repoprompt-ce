@@ -132,6 +132,18 @@ struct StableMenuItem {
         StableMenuItem(title: "", kind: .separator, isEnabled: false)
     }
 
+    #if DEBUG
+        var testSubmenuItems: [StableMenuItem]? {
+            if case let .submenu(items) = kind { return items }
+            return nil
+        }
+
+        var testIsAction: Bool {
+            if case .action = kind { return true }
+            return false
+        }
+    #endif
+
     fileprivate func makeMenuItem(fontPreset: FontScalePreset = .current) -> NSMenuItem {
         switch kind {
         case .separator:

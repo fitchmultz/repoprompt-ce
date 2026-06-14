@@ -27,13 +27,13 @@ final class PiAPISettingsViewModelTests: XCTestCase {
         XCTAssertTrue(viewModel.isPiConnected)
         XCTAssertTrue(viewModel.agentModeAvailabilityContext.piAvailable)
         XCTAssertNil(viewModel.piError)
-        XCTAssertEqual(viewModel.availablePiModelOptions.map(\.rawValue), ["zai/glm-5.1"])
+        XCTAssertEqual(viewModel.availablePiModelOptions.map(\.rawValue), ["zai/glm-5.2"])
         XCTAssertEqual(
             AgentModelCatalog.options(for: .pi, availability: viewModel.agentModeAvailabilityContext).map(\.rawValue),
-            ["zai/glm-5.1"]
+            ["zai/glm-5.2"]
         )
         let didPublishOracleModels = await eventually {
-            viewModel.availableModels.filter { $0.providerType == .pi }.map(\.rawValue) == ["pi_custom_zai/glm-5.1"]
+            viewModel.availableModels.filter { $0.providerType == .pi }.map(\.rawValue) == ["pi_custom_zai/glm-5.2"]
         }
         XCTAssertTrue(didPublishOracleModels)
         let discoveryCount = await polling.discoveryCount()
@@ -72,7 +72,7 @@ final class PiAPISettingsViewModelTests: XCTestCase {
 
         XCTAssertTrue(didConnect)
         XCTAssertTrue(viewModel.agentModeAvailabilityContext.piAvailable)
-        XCTAssertEqual(viewModel.availablePiModelOptions.map(\.rawValue), ["zai/glm-5.1"])
+        XCTAssertEqual(viewModel.availablePiModelOptions.map(\.rawValue), ["zai/glm-5.2"])
         let discoveryCount = await polling.discoveryCount()
         XCTAssertEqual(discoveryCount, 1)
     }
@@ -154,7 +154,7 @@ final class PiAPISettingsViewModelTests: XCTestCase {
 
         XCTAssertTrue(viewModel.contextBuilderRestorationAvailabilityContext.piAvailable)
         XCTAssertEqual(viewModel.recommendationProviderStatusSnapshot.piCLI, .ready)
-        XCTAssertEqual(viewModel.availablePiModelOptions.map(\.rawValue), ["zai/glm-5.1"])
+        XCTAssertEqual(viewModel.availablePiModelOptions.map(\.rawValue), ["zai/glm-5.2"])
         let discoveryCount = await polling.discoveryCount()
         let subscriptionCount = await polling.subscriptionCount()
         XCTAssertEqual(discoveryCount, 1)
@@ -171,7 +171,7 @@ final class PiAPISettingsViewModelTests: XCTestCase {
 
         XCTAssertTrue(didConnect)
         XCTAssertTrue(viewModel.agentModeAvailabilityContext.piAvailable)
-        XCTAssertEqual(viewModel.availablePiModelOptions.map(\.rawValue), ["zai/glm-5.1"])
+        XCTAssertEqual(viewModel.availablePiModelOptions.map(\.rawValue), ["zai/glm-5.2"])
         let discoveryCount = await polling.discoveryCount()
         let subscriptionCount = await polling.subscriptionCount()
         XCTAssertEqual(discoveryCount, 1)
@@ -229,7 +229,7 @@ final class PiAPISettingsViewModelTests: XCTestCase {
         let didRecover = await eventually { viewModel.isPiConnected }
         XCTAssertTrue(didRecover)
         XCTAssertTrue(viewModel.agentModeAvailabilityContext.piAvailable)
-        XCTAssertEqual(viewModel.availablePiModelOptions.map(\.rawValue), ["zai/glm-5.1"])
+        XCTAssertEqual(viewModel.availablePiModelOptions.map(\.rawValue), ["zai/glm-5.2"])
         XCTAssertNil(viewModel.piError)
     }
 
@@ -266,13 +266,13 @@ final class PiAPISettingsViewModelTests: XCTestCase {
             models: PiDiscoveredModels(
                 options: [
                     AgentModelOption(
-                        rawValue: "zai/glm-5.1",
-                        displayName: "GLM 5.1",
+                        rawValue: "zai/glm-5.2",
+                        displayName: "GLM 5.2",
                         description: "Strong GLM",
                         isDefault: true
                     )
                 ],
-                currentModelRaw: "zai/glm-5.1"
+                currentModelRaw: "zai/glm-5.2"
             ),
             fetchedAt: Date()
         )

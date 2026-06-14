@@ -957,6 +957,17 @@ struct AgentComposerView: View, Equatable {
         for agent in props.availableAgents {
             snapshot[agent] = actions.modelOptions(agent, !agent.usesClaudeTooling)
         }
+        // DEBUG_PROBE_H6_5 — remove in cleanup
+        DebugModeProbe.log(
+            hypothesisId: "H6",
+            location: "AgentInputBar.captureModelMenuSnapshot",
+            message: "captured agent provider model menu snapshot",
+            data: [
+                "availableAgents": props.availableAgents.map(\.rawValue),
+                "selectedAgent": props.selectedAgent.rawValue,
+                "piOptions": DebugModeProbe.optionSummary(snapshot[.pi] ?? [])
+            ]
+        )
         modelMenuSnapshotByAgent = snapshot
         modelMenuSnapshotReleaseTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 1_500_000_000)

@@ -29,12 +29,41 @@ struct PiRPCModelDiscoveryClient: PiModelDiscoveryClient {
     func discoverModels(workspacePath: String?) async throws -> PiDiscoveredModels? {
         let client = clientFactory(workspacePath)
         do {
+            // DEBUG_PROBE_H3_1 — remove in cleanup
+            DebugModeProbe.log(
+                hypothesisId: "H3",
+                location: "PiRPCModelDiscoveryClient.discoverModels",
+                message: "pi RPC model discovery starting",
+                data: ["workspace": DebugModeProbe.workspaceLabel(workspacePath)]
+            )
             try await client.startIfNeeded()
             let state = try? await client.getState()
             let remoteModels = try await client.getAvailableModels()
+            let discovered = AgentPiModelRegistry.discoveredModels(from: remoteModels, currentModel: state?.model)
+            // DEBUG_PROBE_H3_2 — remove in cleanup
+            DebugModeProbe.log(
+                hypothesisId: "H3",
+                location: "PiRPCModelDiscoveryClient.discoverModels",
+                message: "pi RPC model discovery completed",
+                data: [
+                    "workspace": DebugModeProbe.workspaceLabel(workspacePath),
+                    "remoteCount": remoteModels.count,
+                    "remoteProviders": DebugModeProbe.providerHistogram(remoteModels: remoteModels),
+                    "stateCurrentRaw": state?.model.flatMap(AgentPiModelRegistry.rawModel) as Any,
+                    "accepted": DebugModeProbe.optionSummary(discovered?.options ?? []),
+                    "acceptedCurrentRaw": discovered?.currentModelRaw as Any
+                ]
+            )
             await client.shutdown()
-            return AgentPiModelRegistry.discoveredModels(from: remoteModels, currentModel: state?.model)
+            return discovered
         } catch {
+            // DEBUG_PROBE_H3_3 — remove in cleanup
+            DebugModeProbe.log(
+                hypothesisId: "H3",
+                location: "PiRPCModelDiscoveryClient.discoverModels",
+                message: "pi RPC model discovery failed",
+                data: ["workspace": DebugModeProbe.workspaceLabel(workspacePath), "error": error.localizedDescription]
+            )
             await client.shutdown()
             throw error
         }
@@ -45,8 +74,8 @@ struct PiRPCModelDiscoveryClient: PiModelDiscoveryClient {
 /// Centralized polling service for pi RPC dynamic model options.
 ///
 /// pi owns provider/model configuration. RepoPrompt only asks pi for its current model list,
-/// caches the supported real-model subset for picker/settings surfaces, and leaves provider
-/// defaults to pi unless the user selects an explicit supported pi model.
+/// caches the pi-reported real models for picker/settings surfaces, and leaves provider
+/// defaults to pi unless the user selects an explicit pi model.
 actor PiModelPollingService: PiModelPolling {
     static let shared = PiModelPollingService(client: PiRPCModelDiscoveryClient())
 
@@ -111,6 +140,13 @@ actor PiModelPollingService: PiModelPolling {
     func discoverOnce(workspacePath: String?) async throws -> Snapshot? {
         guard !isShutdown else { return nil }
         let scope = PiModelWorkspaceScope(workspacePath: workspacePath)
+        // DEBUG_PROBE_H5_6 — remove in cleanup
+        DebugModeProbe.log(
+            hypothesisId: "H5",
+            location: "PiModelPollingService.discoverOnce",
+            message: "discoverOnce requested",
+            data: ["scope": DebugModeProbe.workspaceLabel(scope.workspacePath)]
+        )
         let refresh = startRefreshIfNeeded(scope: scope)
         let result = await refresh.task.value
         clearInFlightRefresh(refresh, scope: scope)
@@ -265,6 +301,17 @@ actor PiModelPollingService: PiModelPolling {
 
     private func applyRefreshResult(_ discovered: PiDiscoveredModels?, scope: PiModelWorkspaceScope) {
         guard !isShutdown else { return }
+        // DEBUG_PROBE_H5_7 — remove in cleanup
+        DebugModeProbe.log(
+            hypothesisId: "H5",
+            location: "PiModelPollingService.applyRefreshResult",
+            message: "applying refresh result",
+            data: [
+                "scope": DebugModeProbe.workspaceLabel(scope.workspacePath),
+                "discovered": DebugModeProbe.optionSummary(discovered?.options ?? []),
+                "discoveredCurrentRaw": discovered?.currentModelRaw as Any
+            ]
+        )
         guard let discovered else {
             applyMissingSupportedModels(scope: scope)
             return
@@ -293,6 +340,13 @@ actor PiModelPollingService: PiModelPolling {
     }
 
     private func applyMissingSupportedModels(scope: PiModelWorkspaceScope) {
+        // DEBUG_PROBE_H5_8 — remove in cleanup
+        DebugModeProbe.log(
+            hypothesisId: "H5",
+            location: "PiModelPollingService.applyMissingSupportedModels",
+            message: "clearing missing supported models",
+            data: ["scope": DebugModeProbe.workspaceLabel(scope.workspacePath)]
+        )
         _ = AgentPiModelRegistry.shared.clearDiscoveredModels(workspacePath: scope.workspacePath)
         var context = contexts[scope] ?? WorkspacePollingContext()
         context.latest = nil

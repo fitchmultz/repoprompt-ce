@@ -74,8 +74,8 @@ final class PiRunEventReducerTests: XCTestCase {
             thinkingLevel: "high",
             model: .init(
                 provider: "zai",
-                id: "glm-5.1",
-                displayName: "GLM 5.1",
+                id: "glm-5.2",
+                displayName: "GLM 5.2",
                 description: nil,
                 raw: [:]
             )
@@ -83,7 +83,7 @@ final class PiRunEventReducerTests: XCTestCase {
 
         XCTAssertEqual(session.providerSessionID, "pi-session-updated")
         XCTAssertEqual(session.piSessionFile, "/tmp/pi-session-updated.jsonl")
-        XCTAssertEqual(session.selectedModelRaw, "zai/glm-5.1")
+        XCTAssertEqual(session.selectedModelRaw, "zai/glm-5.2")
         XCTAssertEqual(session.selectedReasoningEffortRaw, "high")
         XCTAssertTrue(session.isDirty)
     }

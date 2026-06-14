@@ -69,30 +69,17 @@ enum PiIntegrationConfiguration {
     static let managedRunEnvironmentKey = "REPOPROMPT_PI_MANAGED_RUN"
     static let managedRunEnvironmentValue = "1"
 
-    /// RepoPrompt intentionally exposes only real pi models from providers that are
-    /// useful for this integration path. Other providers can still exist in pi, but
-    /// they should not appear in RepoPrompt model pickers or MCP setting options.
-    private static let supportedModelProviderIDs: Set<String> = [
-        "deepseek",
-        "openai-codex",
-        "z-ai",
-        "z.ai",
-        "zai"
-    ]
-
-    static func isSupportedModelProviderID(_ rawProvider: String?) -> Bool {
+    /// A pi model is eligible for RepoPrompt when pi reports a non-empty model
+    /// identifier. RepoPrompt must not maintain its own provider allowlist: if a
+    /// model appears in the user's pi model catalog, it should appear in RepoPrompt
+    /// and MitchPrompt pickers as-is.
+    static func isExposableModelProviderID(_ rawProvider: String?) -> Bool {
         guard let rawProvider else { return false }
-        let normalized = rawProvider
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-            .replacingOccurrences(of: "_", with: "-")
-        return supportedModelProviderIDs.contains(normalized)
+        return !rawProvider.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    static func isSupportedModelRaw(_ rawModel: String) -> Bool {
-        let trimmed = rawModel.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let separator = trimmed.firstIndex(of: "/") else { return false }
-        return isSupportedModelProviderID(String(trimmed[..<separator]))
+    static func isExposableModelRaw(_ rawModel: String) -> Bool {
+        !rawModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     /// RepoPrompt-managed pi RPC runs are explicit user actions for the selected workspace.

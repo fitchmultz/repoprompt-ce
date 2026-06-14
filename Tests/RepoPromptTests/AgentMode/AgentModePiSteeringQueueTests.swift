@@ -420,6 +420,29 @@ final class AgentModePiSteeringQueueTests: XCTestCase {
         XCTAssertTrue(fixture.session.pendingPiSteeringInstructions.isEmpty)
     }
 
+    func testPiModelOptionsUseActiveWorkspaceCatalogBeforePiIsSelected() throws {
+        AgentPiModelRegistry.shared.test_reset()
+        defer { AgentPiModelRegistry.shared.test_reset() }
+        let workspaceRoot = try makeTemporaryDirectory().appendingPathComponent("workspace", isDirectory: true)
+        try FileManager.default.createDirectory(at: workspaceRoot, withIntermediateDirectories: true)
+        _ = AgentPiModelRegistry.shared.updateDiscoveredModels(
+            Self.piModels(rawValue: "zai/glm-5.2", displayName: "GLM 5.2", thinkingLevels: [.high]),
+            workspacePath: workspaceRoot.path
+        )
+        _ = AgentPiModelRegistry.shared.updateDiscoveredModels(
+            Self.piModels(rawValue: "openai-codex/gpt-5.4", displayName: "GPT 5.4", thinkingLevels: [.low]),
+            workspacePath: nil
+        )
+        let viewModel = makeViewModel(testWorkspacePath: workspaceRoot.path)
+        viewModel.selectedAgent = .codexExec
+
+        let options = viewModel.modelOptions(for: .pi).map(\.rawValue)
+
+        XCTAssertEqual(options, ["zai/glm-5.2"])
+        XCTAssertFalse(options.contains("openai-codex/gpt-5.4"))
+        XCTAssertEqual(viewModel.piModelCatalogWorkspacePath(), workspaceRoot.standardizedFileURL.path)
+    }
+
     func testPiModelOptionsUseEffectiveWorktreeWorkspaceForActiveSession() throws {
         AgentPiModelRegistry.shared.test_reset()
         defer { AgentPiModelRegistry.shared.test_reset() }
@@ -453,6 +476,25 @@ final class AgentModePiSteeringQueueTests: XCTestCase {
         XCTAssertEqual(viewModel.piThinkingLevelOptionsForCurrentSelection(), [.high])
     }
 
+    func testPiModelPollingStartsForWorkspaceBeforePiIsSelected() async throws {
+        let workspacePath = "/tmp/pi-workspace-a"
+        let polling = AgentModeFakePiModelPolling()
+        let viewModel = makeViewModel(
+            testWorkspacePathProvider: { workspacePath },
+            piModelPollingService: polling
+        )
+        viewModel.test_setAgentAvailabilityContextOverride(.init(piAvailable: true))
+        viewModel.selectedAgent = .codexExec
+
+        viewModel.test_updateDynamicModelPolling()
+
+        let workspaceA = try XCTUnwrap(AgentPiModelRegistry.canonicalWorkspacePath(workspacePath))
+        try await waitUntilAsync("pi model subscription starts for picker workspace before pi selection") {
+            await polling.subscriptionWorkspacePaths() == [workspaceA]
+        }
+        XCTAssertEqual(viewModel.test_piModelsSubscribedWorkspacePath, workspaceA)
+    }
+
     func testPiModelPollingResubscribesWhenWorkspacePathChanges() async throws {
         var workspacePath: String? = "/tmp/pi-workspace-a"
         let polling = AgentModeFakePiModelPolling()
@@ -462,7 +504,7 @@ final class AgentModePiSteeringQueueTests: XCTestCase {
         )
         viewModel.test_setAgentAvailabilityContextOverride(.init(piAvailable: true))
         viewModel.selectedAgent = .codexExec
-        viewModel.selectedAgent = .pi
+        viewModel.test_updateDynamicModelPolling()
 
         let workspaceA = try XCTUnwrap(AgentPiModelRegistry.canonicalWorkspacePath(workspacePath))
         try await waitUntilAsync("initial pi model subscription uses workspace A") {
@@ -765,7 +807,7 @@ final class AgentModePiSteeringQueueTests: XCTestCase {
                         "isCompacting": False,
                         "messageCount": 1,
                         "pendingMessageCount": 0,
-                        "model": {"provider": "zai", "id": "glm-5.1", "displayName": "GLM 5.1"}
+                        "model": {"provider": "zai", "id": "glm-5.2", "displayName": "GLM 5.2"}
                     }
                 })
             else:

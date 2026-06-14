@@ -53,12 +53,12 @@ final class PiRPCClientTests: XCTestCase {
         XCTAssertEqual(state.thinkingLevel, "high")
         XCTAssertFalse(state.isStreaming)
         XCTAssertEqual(state.model?.provider, "zai")
-        XCTAssertEqual(state.model?.id, "glm-5.1")
+        XCTAssertEqual(state.model?.id, "glm-5.2")
 
         let models = try await client.getAvailableModels()
         XCTAssertEqual(models.map(\.provider), ["zai", "cursor"])
-        XCTAssertEqual(models.map(\.id), ["glm-5.1", "composer-2-5"])
-        XCTAssertEqual(models.map(\.displayName), ["GLM 5.1", "Composer 2.5"])
+        XCTAssertEqual(models.map(\.id), ["glm-5.2", "composer-2-5"])
+        XCTAssertEqual(models.map(\.displayName), ["GLM 5.2", "Composer 2.5"])
     }
 
     func testPromptStreamsEventsBeforePromptResponse() async throws {
@@ -178,7 +178,7 @@ final class PiRPCClientTests: XCTestCase {
         addTeardownBlock { await client.shutdown() }
 
         do {
-            _ = try await client.setModel(provider: "zai", modelID: "glm-5.1")
+            _ = try await client.setModel(provider: "zai", modelID: "glm-5.2")
             XCTFail("Expected mutating set_model to time out")
         } catch let error as PiRPCClient.ClientError {
             XCTAssertEqual(error, .requestTimedOut(id: "rp-pi-set_model-1", command: "set_model"))
@@ -213,7 +213,7 @@ final class PiRPCClientTests: XCTestCase {
         XCTAssertTrue(isRunningAfterTimeout)
 
         let models = try await client.getAvailableModels()
-        XCTAssertEqual(models.map(\.id), ["glm-5.1"])
+        XCTAssertEqual(models.map(\.id), ["glm-5.2"])
         let isRunningAfterFollowup = await client.isRunning
         XCTAssertTrue(isRunningAfterFollowup)
     }
@@ -473,7 +473,7 @@ final class PiRPCClientTests: XCTestCase {
                         "isCompacting": False,
                         "messageCount": 3,
                         "pendingMessageCount": 0,
-                        "model": {"provider": "zai", "id": "glm-5.1", "displayName": "GLM 5.1"}
+                        "model": {"provider": "zai", "id": "glm-5.2", "displayName": "GLM 5.2"}
                     }
                 })
             elif command == "get_available_models":
@@ -483,7 +483,7 @@ final class PiRPCClientTests: XCTestCase {
                     "command": "get_available_models",
                     "success": True,
                     "data": {"models": [
-                        {"provider": "zai", "id": "glm-5.1", "displayName": "GLM 5.1"},
+                        {"provider": "zai", "id": "glm-5.2", "displayName": "GLM 5.2"},
                         {"provider": "cursor", "id": "composer-2-5", "displayName": "Composer 2.5"}
                     ]}
                 })
@@ -610,7 +610,7 @@ final class PiRPCClientTests: XCTestCase {
                     "id": request_id,
                     "command": "get_available_models",
                     "success": True,
-                    "data": {"models": [{"provider": "zai", "id": "glm-5.1", "displayName": "GLM 5.1"}]}
+                    "data": {"models": [{"provider": "zai", "id": "glm-5.2", "displayName": "GLM 5.2"}]}
                 })
             else:
                 emit({"type": "response", "id": request_id, "command": command, "success": True})

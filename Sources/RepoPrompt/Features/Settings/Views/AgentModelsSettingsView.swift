@@ -354,7 +354,7 @@ struct AgentModelsSettingsView: View {
                     Text("Context Builder values differ")
                         .font(.caption.bold())
                         .foregroundColor(.orange)
-                    Text("MCP runs use \(drift.globalDescription). UI runs in this workspace use \(drift.workspaceDescription).")
+                    Text("Global Context Builder runs use \(drift.globalDescription). This workspace still has a legacy value of \(drift.workspaceDescription).")
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -363,13 +363,13 @@ struct AgentModelsSettingsView: View {
 
             HStack(spacing: 8) {
                 Spacer(minLength: 0)
-                Button("Use MCP for both") {
+                Button("Use Global for both") {
                     viewModel.resolveContextBuilderDriftUsingGlobal()
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
 
-                Button("Use UI for both") {
+                Button("Use Workspace for both") {
                     viewModel.resolveContextBuilderDriftUsingWorkspace()
                 }
                 .buttonStyle(.bordered)

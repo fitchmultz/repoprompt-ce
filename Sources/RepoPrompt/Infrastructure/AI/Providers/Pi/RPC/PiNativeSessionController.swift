@@ -71,7 +71,7 @@ actor PiNativeSessionController {
             case let .sessionSwitchCancelled(path):
                 "pi cancelled switching to session \(path)."
             case let .modelProviderMissing(raw):
-                "Cannot select pi model \(raw) because it does not include a provider prefix. Use provider/model, for example zai/glm-5.1."
+                "Cannot select pi model \(raw) because it does not include a provider prefix. Use provider/model, for example zai/glm-5.2."
             case let .unsupportedThinkingLevel(level):
                 "Unsupported pi thinking level: \(level)."
             case let .processUnavailable(message):

@@ -1440,6 +1440,31 @@ private enum AppSettingsMCPRegistry {
             ))
         }
 
+        if request.agentFilter == .pi || request.key.contains("planning_model") {
+            let piRawModels = allCandidates.compactMap { candidate -> String? in
+                guard case let .string(raw) = candidate.value,
+                      raw.hasPrefix("pi_custom_")
+                else { return nil }
+                return String(raw.dropFirst("pi_custom_".count))
+            }
+            // DEBUG_PROBE_H4_8 — remove in cleanup
+            DebugModeProbe.log(
+                hypothesisId: "H4",
+                location: "AppSettingsMCPService.aiModelRawCandidates",
+                message: "built AIModel raw candidates",
+                data: [
+                    "key": request.key,
+                    "agentFilter": request.agentFilter?.rawValue as Any,
+                    "totalCandidateCount": allCandidates.count,
+                    "piCandidates": [
+                        "count": piRawModels.count,
+                        "providers": DebugModeProbe.providerHistogram(rawModels: piRawModels),
+                        "sample": Array(piRawModels.prefix(8))
+                    ]
+                ]
+            )
+        }
+
         let totalCount = allCandidates.count
         let clampedLimit = max(1, request.limit)
         let truncated = totalCount > clampedLimit
@@ -1525,6 +1550,31 @@ private enum AppSettingsMCPRegistry {
                     allCandidates.append(candidate)
                 }
             }
+        }
+
+        if request.agentFilter == .pi || request.key.contains("context_builder") {
+            let piRawModels = allCandidates.compactMap { candidate -> String? in
+                guard candidate.group == AgentProviderKind.pi.rawValue,
+                      case let .string(raw) = candidate.value
+                else { return nil }
+                return raw
+            }
+            // DEBUG_PROBE_H4_9 — remove in cleanup
+            DebugModeProbe.log(
+                hypothesisId: "H4",
+                location: "AppSettingsMCPService.agentModelRawCandidates",
+                message: "built AgentModel raw candidates",
+                data: [
+                    "key": request.key,
+                    "agentFilter": request.agentFilter?.rawValue as Any,
+                    "totalCandidateCount": allCandidates.count,
+                    "piCandidates": [
+                        "count": piRawModels.count,
+                        "providers": DebugModeProbe.providerHistogram(rawModels: piRawModels),
+                        "sample": Array(piRawModels.prefix(8))
+                    ]
+                ]
+            )
         }
 
         let totalCount = allCandidates.count
