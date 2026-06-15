@@ -212,6 +212,32 @@ class LifecycleQueueTests(LifecycleTestCase):
         self.assertEqual(provider_timeout, conductor.TEST_TIMEOUT_SECONDS)
         self.assertLessEqual(timeout, 15 * 60)
 
+    def test_test_operations_default_to_xctest_stall_watchdog(self) -> None:
+        tmp, state = self.make_state()
+        self.addCleanup(tmp.cleanup)
+
+        with mock.patch.object(state, "_schedule_locked"):
+            root_payload = state.enqueue({"operation": "test", "args": {}})
+            provider_payload = state.enqueue({"operation": "provider-test", "args": {}})
+
+        root_job = state.jobs[root_payload["ticket"]]
+        provider_job = state.jobs[provider_payload["ticket"]]
+        self.assertEqual(root_job.args["xctestStallSeconds"], conductor.DEFAULT_XCTEST_STALL_SECONDS)
+        self.assertEqual(provider_job.args["xctestStallSeconds"], conductor.DEFAULT_XCTEST_STALL_SECONDS)
+        self.assertTrue(state._xctest_watchdog_enabled(root_job))
+        self.assertTrue(state._xctest_watchdog_enabled(provider_job))
+
+    def test_explicit_xctest_stall_timeout_overrides_default(self) -> None:
+        tmp, state = self.make_state()
+        self.addCleanup(tmp.cleanup)
+
+        with mock.patch.object(state, "_schedule_locked"):
+            payload = state.enqueue({"operation": "test", "args": {"xctestStallSeconds": 45.0}})
+
+        job = state.jobs[payload["ticket"]]
+        self.assertEqual(job.args["xctestStallSeconds"], 45.0)
+        self.assertEqual(job.timeout, conductor.TEST_TIMEOUT_SECONDS)
+
     def test_release_artifact_delegates_release_script_with_release_lanes_and_timeout(self) -> None:
         tmp, state = self.make_state()
         self.addCleanup(tmp.cleanup)
@@ -474,20 +500,36 @@ class LifecycleQueueTests(LifecycleTestCase):
         self.assertEqual(set(conductor.descendant_pids(10, table)), {11, 12, 13, 14})
         self.assertEqual(conductor.descendant_pids(20, table), [])
 
-    def test_process_tree_signal_includes_primary_group_descendant_groups_and_descendant_pids(self) -> None:
+    def test_process_tree_signal_tracks_descendants_by_start_token(self) -> None:
         tmp, state = self.make_state()
         self.addCleanup(tmp.cleanup)
         job = self.make_job(state, "running-test", "test", {}, ["build"], "running")
         job.process_pid = 100
-        job.process_pgid = 100
+        job.process_start = "root-token"
 
-        with mock.patch.object(conductor, "descendant_pids", return_value=[101, 102]), mock.patch.object(
-            conductor.os, "getpgid", side_effect={101: 100, 102: 200}.__getitem__
-        ), mock.patch.object(conductor.os, "killpg") as killpg, mock.patch.object(conductor.os, "kill") as kill:
-            state._signal_process_tree_locked(job, conductor.signal.SIGTERM, verb="terminating", reason="test cancel")
+        snapshot = {
+            100: (1, "root-token"),
+            101: (100, "child-token"),
+            102: (101, "grandchild-token"),
+        }
+        with mock.patch.object(conductor, "process_table_snapshot", side_effect=[snapshot, snapshot]), mock.patch.object(
+            conductor.os, "kill"
+        ) as kill:
+            signaled = state._signal_process_tree_locked(job, conductor.signal.SIGTERM)
 
-        self.assertEqual(killpg.call_args_list, [mock.call(100, conductor.signal.SIGTERM), mock.call(200, conductor.signal.SIGTERM)])
-        self.assertEqual(kill.call_args_list, [mock.call(101, conductor.signal.SIGTERM), mock.call(102, conductor.signal.SIGTERM)])
+        self.assertEqual(signaled, 3)
+        self.assertEqual(
+            kill.call_args_list,
+            [
+                mock.call(102, conductor.signal.SIGTERM),
+                mock.call(101, conductor.signal.SIGTERM),
+                mock.call(100, conductor.signal.SIGTERM),
+            ],
+        )
+        self.assertEqual(
+            job.tracked_processes,
+            {100: "root-token", 101: "child-token", 102: "grandchild-token"},
+        )
 
     def test_running_process_tree_targets_include_descendant_groups(self) -> None:
         tmp, state = self.make_state()
@@ -525,27 +567,32 @@ class LifecycleQueueTests(LifecycleTestCase):
         )
         kill.assert_called_once_with(999, conductor.signal.SIGTERM)
 
-    def test_process_tree_kill_uses_targets_captured_before_root_exited(self) -> None:
+    def test_process_tree_signal_skips_reused_pid_with_different_start_token(self) -> None:
         tmp, state = self.make_state()
         self.addCleanup(tmp.cleanup)
-        job = self.make_job(state, "reparenting-child", "test", {}, ["build"], "running")
+        job = self.make_job(state, "reused-child", "test", {}, ["build"], "running")
         job.process_pid = 100
-        job.process_pgid = 100
+        job.process_start = "root-token"
 
-        with mock.patch.object(conductor, "descendant_pids", return_value=[101]), mock.patch.object(
-            conductor.os, "getpgid", return_value=200
-        ), mock.patch.object(conductor.os, "killpg"), mock.patch.object(conductor.os, "kill"):
-            state._terminate_process_group_locked(job, reason="test cancel")
+        discovered_snapshot = {
+            100: (1, "root-token"),
+            101: (100, "child-token"),
+        }
+        confirmation_snapshot = {
+            100: (1, "root-token"),
+            101: (100, "reused-token"),
+        }
+        with mock.patch.object(
+            conductor,
+            "process_table_snapshot",
+            side_effect=[discovered_snapshot, confirmation_snapshot],
+        ), mock.patch.object(conductor.os, "kill") as kill:
+            signaled = state._signal_process_tree_locked(job, conductor.signal.SIGKILL)
 
-        with mock.patch.object(conductor, "descendant_pids", return_value=[]), mock.patch.object(
-            conductor.os, "killpg"
-        ) as killpg, mock.patch.object(conductor.os, "kill") as kill:
-            state._kill_process_group_locked(job, reason="test cancel; SIGKILL after grace period")
+        self.assertEqual(signaled, 1)
+        self.assertEqual(kill.call_args_list, [mock.call(100, conductor.signal.SIGKILL)])
 
-        self.assertEqual(killpg.call_args_list, [mock.call(100, conductor.signal.SIGKILL), mock.call(200, conductor.signal.SIGKILL)])
-        self.assertEqual(kill.call_args_list, [mock.call(101, conductor.signal.SIGKILL)])
-
-    def test_canceled_job_escalates_after_root_process_exits_first(self) -> None:
+    def test_canceled_job_does_not_escalate_after_job_becomes_terminal(self) -> None:
         tmp, state = self.make_state()
         self.addCleanup(tmp.cleanup)
         job = self.make_job(state, "exiting-parent", "test", {}, ["build"], "running")
@@ -569,18 +616,15 @@ class LifecycleQueueTests(LifecycleTestCase):
             worker.join(timeout=1.0)
 
         self.assertFalse(worker.is_alive())
-        kill.assert_called_once()
-        self.assertIs(kill.call_args.args[0], job)
+        kill.assert_not_called()
 
-    def test_force_shutdown_kills_cached_targets_after_root_process_exits_first(self) -> None:
+    def test_force_shutdown_skips_terminal_jobs_after_root_process_exits_first(self) -> None:
         tmp, state = self.make_state()
         self.addCleanup(tmp.cleanup)
         job = self.make_job(state, "force-exiting-parent", "test", {}, ["build"], "canceled")
         job.process_pid = 100
         job.process_pgid = 100
         job.cancel_requested = True
-        job.process_tree_target_pgids = {100, 200}
-        job.process_tree_target_pids = {101}
         state.jobs[job.ticket] = job
         state.server = mock.Mock()
 
@@ -589,8 +633,7 @@ class LifecycleQueueTests(LifecycleTestCase):
         ) as kill:
             state._force_shutdown_when_canceled([job.ticket])
 
-        kill.assert_called_once()
-        self.assertIs(kill.call_args.args[0], job)
+        kill.assert_not_called()
         state.server.shutdown.assert_called_once()
 
     def test_signal_shutdown_cancels_queued_jobs_and_terminates_running_jobs(self) -> None:
@@ -825,6 +868,30 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
         self.assertIsNone(claim)
         self.assertFalse(job.measurement_invalid)
         kill.assert_not_called()
+
+    def test_watchdog_arms_after_build_complete_before_first_progress_marker(self) -> None:
+        tmp, state = self.make_state()
+        self.addCleanup(tmp.cleanup)
+        job = self.make_watchdog_job(state)
+
+        armed = state._record_xctest_startup_locked(job, "Build complete! (2.35s)\n", observed_at=40.0)
+
+        self.assertTrue(armed)
+        self.assertEqual(job.xctest_progress_deadline, 45.0)
+        claim = state._claim_xctest_stall_locked(job, observed_at=45.0)
+        self.assertIsNotNone(claim)
+        self.assertIsNone(claim.current_test)
+        self.assertTrue(job.measurement_invalid)
+
+    def test_watchdog_waits_for_build_complete_before_startup_deadline(self) -> None:
+        tmp, state = self.make_state()
+        self.addCleanup(tmp.cleanup)
+        job = self.make_watchdog_job(state)
+
+        armed = state._record_xctest_startup_locked(job, "[12/34] Compiling Thing.swift\n", observed_at=40.0)
+
+        self.assertFalse(armed)
+        self.assertIsNone(job.xctest_progress_deadline)
 
     def test_only_xctest_progress_markers_reset_after_first_started_marker(self) -> None:
         tmp, state = self.make_state()
