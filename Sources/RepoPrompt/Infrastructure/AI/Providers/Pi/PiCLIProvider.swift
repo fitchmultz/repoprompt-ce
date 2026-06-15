@@ -16,12 +16,12 @@ final class PiCLIProvider: AIProvider {
         controllerFactory: ControllerFactory? = nil
     ) {
         self.launchPolicyProvider = launchPolicyProvider
-        self.controllerFactory = controllerFactory ?? { modelString, _ in
+        self.controllerFactory = controllerFactory ?? { modelString, launchPolicy in
             PiNativeSessionController(
                 workspacePath: nil,
                 options: .init(
                     modelRaw: modelString,
-                    launchArguments: PiIntegrationConfiguration.managedRPCPromptOnlyLaunchArguments(launchPolicy: launchPolicyProvider())
+                    launchArguments: PiIntegrationConfiguration.managedRPCPromptOnlyLaunchArguments(launchPolicy: launchPolicy)
                 )
             )
         }

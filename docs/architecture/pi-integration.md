@@ -210,7 +210,7 @@ The managed pi bridge registers an explicit read-only `bind_context` wrapper plu
 
 RepoPrompt owns the MCP permission boundary for RepoPrompt tools and the preflight policy boundary for managed pi built-ins. The pi bridge exposes RepoPrompt tools, calls `repoprompt-mcp`, and intercepts only pi built-ins through `tool_call`; RepoPrompt still controls routing, active window selection, auto-approval, Agent Mode permission UI, and Safe Managed policy resolution.
 
-Managed Agent Mode runs register the expected pi process PID and acquire an MCP bootstrap/routing lease before pi starts tool execution. Terminal cleanup must release leases, clear client connection policy, clean run routing state, and shut down the pi controller, which clears in-process session grants.
+Managed Agent Mode runs register the expected pi process PID and acquire an MCP bootstrap/routing lease before pi starts tool execution. After the pi RPC session starts, Agent Mode waits for the managed `pi`/`pi-schema` MCP route to bind; if routing is not confirmed before the bootstrap timeout, the run fails closed and clears the pending MCP policy instead of continuing with unavailable or misrouted tools. Terminal cleanup must release leases, clear client connection policy, clean run routing state, and shut down the pi controller, which clears in-process session grants.
 
 ### Extension UI
 
@@ -227,7 +227,7 @@ Run the smallest coordinated validation that covers the changed contract, then b
 | Version gate / launch args / project trust docs | `make dev-test FILTER=PiIntegrationConfigurationTests` |
 | RPC framing, event parsing, timeout policy | `make dev-test FILTER=PiRPCClientTests` |
 | Session controller, stream mapping, image forwarding | `make dev-test FILTER=PiNativeSessionControllerTests` |
-| Agent Mode pi runner behavior | `make dev-test FILTER=AgentModePi` or specific pi Agent Mode test filters |
+| Agent Mode pi runner behavior | `make dev-test FILTER=AgentModeRunServiceLifecycleTests` plus `make dev-test FILTER=AgentModePi` or other specific pi Agent Mode filters |
 | Headless Context Builder pi provider | `make dev-test FILTER=PiHeadlessAgentProviderTests` |
 | Bridge rendering/install behavior | `make dev-test FILTER=PiRepoPromptBridgeExtensionInstallerTests` |
 | Model catalog/polling/settings changes | `make dev-test FILTER=PiModelCatalogTests` and related model-selection filters |
@@ -242,7 +242,7 @@ Use the coordinated `make dev-*` commands by default so builds, tests, and launc
 - Install pi `0.79.0` or newer.
 - RepoPrompt launches pi through the configured `pi` CLI profile and supplemental PATH hints.
 - Managed runs use `--mode rpc --approve`; model discovery and prompt-only flows can add `--no-session --no-tools`.
-- The window-scoped bridge is generated and installed automatically for Agent Mode pi runs.
+- The window-scoped bridge is generated and installed automatically for Agent Mode pi runs. RepoPrompt keeps other managed window-scoped bridge files in place so concurrent pi runs in different windows can survive pi extension reload/rebind events; stale managed bridge files are repaired in place during install.
 - The global bridge is optional and user-managed through RepoPrompt; it must not overwrite a non-RepoPrompt extension at the same path.
 - Live smoke requires a CE debug app and CE debug CLI that talk to this checkout, not a production non-CE app.
 

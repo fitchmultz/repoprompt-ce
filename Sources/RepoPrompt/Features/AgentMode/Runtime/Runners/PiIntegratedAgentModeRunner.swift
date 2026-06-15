@@ -1,22 +1,38 @@
 import Foundation
 
+private enum PiAgentModeMCPRouting {
+    static let timeoutMilliseconds = 10000
+
+    static func errorText(timeoutMilliseconds: Int) -> String {
+        let seconds = Double(timeoutMilliseconds) / 1000
+        return "mcp_routing_failed: pi did not route the expected MCP client 'pi' to this Agent Mode run within \(format(seconds))s. The run was terminated and MCP bootstrap state was released."
+    }
+
+    private static func format(_ seconds: Double) -> String {
+        String(format: "%.1f", seconds)
+    }
+}
+
 @MainActor
 final class PiIntegratedAgentModeRunner {
     private let windowID: Int
     private let launchPolicyProvider: () -> PiManagedRunLaunchPolicy
     private let hooks: AgentModeRunService.Hooks
     private let terminalCommitBarrier: AgentRunTerminalCommitBarrier
+    private let mcpRoutingTimeoutMilliseconds: Int
 
     init(
         windowID: Int,
         launchPolicyProvider: @escaping () -> PiManagedRunLaunchPolicy = { .defaultPolicy },
         hooks: AgentModeRunService.Hooks,
-        terminalCommitBarrier: AgentRunTerminalCommitBarrier
+        terminalCommitBarrier: AgentRunTerminalCommitBarrier,
+        mcpRoutingTimeoutMilliseconds: Int = PiAgentModeMCPRouting.timeoutMilliseconds
     ) {
         self.windowID = windowID
         self.launchPolicyProvider = launchPolicyProvider
         self.hooks = hooks
         self.terminalCommitBarrier = terminalCommitBarrier
+        self.mcpRoutingTimeoutMilliseconds = mcpRoutingTimeoutMilliseconds
     }
 
     func startRun(
@@ -202,8 +218,18 @@ final class PiIntegratedAgentModeRunner {
                 model: session.selectedModelRaw,
                 thinkingLevel: session.selectedReasoningEffortRaw
             )
-            await lease.releaseWithoutRoutingWait()
+            let routed = await releaseLeaseAfterSessionStart(lease)
             didReleaseLease = true
+            guard routed else {
+                hooks.recordPendingHandoffSendOutcome(session, false)
+                await commitTerminal(
+                    .failed,
+                    source: "pi.mcpRoutingFailed",
+                    errorText: PiAgentModeMCPRouting.errorText(timeoutMilliseconds: mcpRoutingTimeoutMilliseconds),
+                    notifyTurnComplete: false
+                )
+                return
+            }
             PiRunSessionStateMapper.applySessionRef(ref, to: session)
             hooks.recordPendingHandoffSendOutcome(session, true)
             hooks.stageConsumedAttachmentFilesForDeferredCleanup(attachments, session)
@@ -306,6 +332,10 @@ final class PiIntegratedAgentModeRunner {
         }
     }
 
+    private func releaseLeaseAfterSessionStart(_ lease: MCPBootstrapLease) async -> Bool {
+        await lease.releaseWhenRouted(timeoutMs: mcpRoutingTimeoutMilliseconds)
+    }
+
     private func makeTerminalTeardown(
         session: AgentModeViewModel.TabSession,
         controller: PiNativeSessionController,
@@ -372,6 +402,14 @@ final class PiIntegratedAgentModeRunner {
     }
 
     #if DEBUG
+        func test_releaseLeaseAfterSessionStart(_ lease: MCPBootstrapLease) async -> Bool {
+            await releaseLeaseAfterSessionStart(lease)
+        }
+
+        static func test_mcpRoutingErrorText(timeoutMilliseconds: Int) -> String {
+            PiAgentModeMCPRouting.errorText(timeoutMilliseconds: timeoutMilliseconds)
+        }
+
         func test_handleBlockingExtensionUIRequest(
             _ request: PiRPCClient.PiExtensionUIRequest,
             session: AgentModeViewModel.TabSession,

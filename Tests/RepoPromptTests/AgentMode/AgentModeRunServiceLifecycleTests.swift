@@ -980,6 +980,51 @@ final class AgentModeRunServiceLifecycleTests: XCTestCase {
         )
     }
 
+    func testPiLeaseReleaseWaitsForRoutedMCPConnection() async throws {
+        let recorder = LifecycleRecorder()
+        let runner = PiIntegratedAgentModeRunner(
+            windowID: 1,
+            hooks: makeHooks(recorder: recorder),
+            terminalCommitBarrier: AgentRunTerminalCommitBarrier(hooks: makeHooks(recorder: recorder)),
+            mcpRoutingTimeoutMilliseconds: 100
+        )
+        let runID = UUID()
+        let lease = makePiRoutingLease(runID: runID, recorder: recorder)
+
+        let acquired = await lease.acquire()
+        XCTAssertTrue(acquired)
+        await MCPRoutingWaiter.notifyRouted(runID: runID)
+        let routed = try await withLifecycleTimeout("pi routed lease release") {
+            await runner.test_releaseLeaseAfterSessionStart(lease)
+        }
+
+        XCTAssertTrue(routed)
+        XCTAssertTrue(recorder.contains("policy:pi"))
+        XCTAssertFalse(recorder.contains("clear:pi"))
+    }
+
+    func testPiLeaseReleaseClearsPolicyWhenRoutingDoesNotArrive() async throws {
+        let recorder = LifecycleRecorder()
+        let runner = PiIntegratedAgentModeRunner(
+            windowID: 1,
+            hooks: makeHooks(recorder: recorder),
+            terminalCommitBarrier: AgentRunTerminalCommitBarrier(hooks: makeHooks(recorder: recorder)),
+            mcpRoutingTimeoutMilliseconds: 20
+        )
+        let lease = makePiRoutingLease(runID: UUID(), recorder: recorder)
+
+        let acquired = await lease.acquire()
+        XCTAssertTrue(acquired)
+        let routed = try await withLifecycleTimeout("pi unrouted lease release", timeoutSeconds: 0.5) {
+            await runner.test_releaseLeaseAfterSessionStart(lease)
+        }
+
+        XCTAssertFalse(routed)
+        XCTAssertTrue(recorder.contains("policy:pi"))
+        XCTAssertTrue(recorder.contains("clear:pi"))
+        XCTAssertTrue(PiIntegratedAgentModeRunner.test_mcpRoutingErrorText(timeoutMilliseconds: 20).contains("mcp_routing_failed"))
+    }
+
     func testPiExtensionUIResponseGateClearsWhenResponseAndCancellationBothThrow() async {
         let recorder = LifecycleRecorder()
         let session = AgentModeViewModel.TabSession(tabID: UUID())
@@ -1517,6 +1562,34 @@ final class AgentModeRunServiceLifecycleTests: XCTestCase {
                 toolTrackingHooks: .noOp
             ),
             host: host
+        )
+    }
+
+    private func makePiRoutingLease(runID: UUID, recorder: LifecycleRecorder) -> MCPBootstrapLease {
+        let spec = MCPBootstrapLeaseSpec(
+            runID: runID,
+            gateID: UUID(),
+            windowID: 1,
+            tabID: UUID(),
+            clientName: AgentProviderKind.pi.mcpClientNameHint,
+            restrictedTools: [],
+            additionalTools: nil,
+            oneShot: false,
+            reason: "Lifecycle pi routing test",
+            ttl: 10,
+            purpose: .agentModeRun,
+            taskLabelKind: nil,
+            allowsAgentExternalControlTools: false,
+            requiresExpectedAgentPID: false
+        )
+        return MCPBootstrapLease(
+            spec: spec,
+            policyInstaller: { leaseSpec in
+                recorder.record("policy:\(leaseSpec.clientName ?? "nil")")
+            },
+            policyClearer: { leaseSpec in
+                recorder.record("clear:\(leaseSpec.clientName ?? "nil")")
+            }
         )
     }
 

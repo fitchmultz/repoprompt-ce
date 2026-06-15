@@ -34,7 +34,7 @@ final class PiRepoPromptBridgeExtensionInstallerTests: XCTestCase {
         )
     }
 
-    func testManagedInstallUsesSingleActiveWindowScopedBridgePath() throws {
+    func testManagedInstallKeepsOtherWindowScopedBridgePaths() throws {
         let home = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: home) }
         let appSupport = home.appendingPathComponent("Application Support", isDirectory: true)
@@ -47,8 +47,9 @@ final class PiRepoPromptBridgeExtensionInstallerTests: XCTestCase {
         XCTAssertEqual(first.lastPathComponent, "repoprompt-bridge-window-4.ts")
         XCTAssertEqual(second.lastPathComponent, "repoprompt-bridge-window-5.ts")
         XCTAssertNotEqual(first, second)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: first.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: first.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: second.path))
+        XCTAssertTrue(try String(contentsOf: first, encoding: .utf8).contains(#"const REPOPROMPT_WINDOW_ID: string | undefined = "4""#))
         XCTAssertTrue(try String(contentsOf: second, encoding: .utf8).contains(#"const REPOPROMPT_WINDOW_ID: string | undefined = "5""#))
     }
 
@@ -89,9 +90,10 @@ final class PiRepoPromptBridgeExtensionInstallerTests: XCTestCase {
         )
 
         _ = try PiRepoPromptBridgeExtensionInstaller.install(windowID: 5, fileManager: StubApplicationSupportFileManager(applicationSupportURL: appSupport), cliPath: cliPath)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: staleURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: staleURL.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: currentURL.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: unmanagedURL.path))
+        XCTAssertTrue(try String(contentsOf: staleURL, encoding: .utf8).contains(#"const REPOPROMPT_WINDOW_ID: string | undefined = "4""#))
         XCTAssertEqual(
             PiRepoPromptBridgeExtensionInstaller.staleManagedWindowExtensionURLs(directory: directory, cliPath: cliPath),
             []
@@ -380,12 +382,230 @@ final class PiRepoPromptBridgeExtensionInstallerTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: extensionURL.path))
     }
 
+    func testManagedBridgeBuiltInToolPolicyBehavior() throws {
+        guard let tsc = Self.findExecutable("tsc"), let node = Self.findExecutable("node") else {
+            throw XCTSkip("TypeScript bridge behavior harness requires node and tsc.")
+        }
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let bridgeURL = directory.appendingPathComponent("bridge.ts")
+        let harnessURL = directory.appendingPathComponent("bridge-policy-harness.ts")
+        let outDir = directory.appendingPathComponent("out", isDirectory: true)
+
+        let rendered = PiRepoPromptBridgeExtensionInstaller.extensionSource(
+            windowID: 42,
+            cliPath: "/tmp/repoprompt-mcp"
+        )
+        try Self.nodeExecutableBridgeSource(from: rendered).write(to: bridgeURL, atomically: true, encoding: .utf8)
+        try Self.bridgePolicyHarnessSource.write(to: harnessURL, atomically: true, encoding: .utf8)
+
+        try Self.runProcess(
+            executable: tsc,
+            arguments: [
+                "--module", "commonjs",
+                "--target", "es2022",
+                "--moduleResolution", "node",
+                "--esModuleInterop",
+                "--skipLibCheck",
+                "--noImplicitAny", "false",
+                "--ignoreDeprecations", "6.0",
+                "--outDir", outDir.path,
+                harnessURL.path,
+                bridgeURL.path
+            ],
+            workingDirectory: directory
+        )
+        try Self.runProcess(
+            executable: node,
+            arguments: [outDir.appendingPathComponent("bridge-policy-harness.js").path],
+            workingDirectory: directory
+        )
+    }
+
     private func makeTempDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("PiRepoPromptBridgeExtensionInstallerTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
     }
+
+    private static func nodeExecutableBridgeSource(from rendered: String) -> String {
+        let imports = """
+        import { createHash } from "node:crypto";
+        import type { ExtensionAPI, ExtensionContext, ToolCallEvent, ToolCallEventResult } from "@earendil-works/pi-coding-agent";
+        """
+        let harnessPrelude = """
+        declare const require: any;
+        declare const process: any;
+        const { createHash } = require("node:crypto");
+        type ExtensionAPI = any;
+        type ExtensionContext = any;
+        type ToolCallEvent = any;
+        type ToolCallEventResult = any;
+        """
+        return rendered.replacingOccurrences(of: imports, with: harnessPrelude)
+    }
+
+    private static let bridgePolicyHarnessSource = #"""
+    declare const require: any;
+    declare const process: any;
+
+    const assert = require("node:assert/strict");
+    const repoPromptBridge = require("./bridge").default;
+
+    type ExecResponse = { code: number; stdout: string; stderr: string };
+
+    class FakePi {
+      handlers = new Map<string, Array<(...args: any[]) => Promise<any> | any>>();
+      registeredTools: any[] = [];
+      execCalls: any[] = [];
+
+      constructor(private responses: ExecResponse[]) {}
+
+      on(name: string, handler: (...args: any[]) => Promise<any> | any) {
+        const handlers = this.handlers.get(name) ?? [];
+        handlers.push(handler);
+        this.handlers.set(name, handlers);
+      }
+
+      registerTool(tool: any) {
+        this.registeredTools.push(tool);
+      }
+
+      async exec(command: string, args: string[], options: any): Promise<ExecResponse> {
+        this.execCalls.push({ command, args, options });
+        const response = this.responses.shift();
+        if (!response) throw new Error(`No fake pi.exec response for ${command} ${args.join(" ")}`);
+        return response;
+      }
+
+      async trigger(name: string, ...args: any[]) {
+        let result: any;
+        for (const handler of this.handlers.get(name) ?? []) {
+          result = await handler(...args);
+        }
+        return result;
+      }
+    }
+
+    function schemaResponse(): ExecResponse {
+      return { code: 0, stdout: JSON.stringify({ tools: [] }), stderr: "" };
+    }
+
+    function approvalResponse(choice: string): ExecResponse {
+      return {
+        code: 0,
+        stdout: JSON.stringify({ answers: { pi_tool_approval: { selected_options: [choice] } } }),
+        stderr: "",
+      };
+    }
+
+    async function loadBridge(permissionLevel: string | undefined, responses: ExecResponse[] = [schemaResponse()]): Promise<FakePi> {
+      if (permissionLevel === undefined) {
+        delete process.env.REPOPROMPT_PI_PERMISSION_LEVEL;
+      } else {
+        process.env.REPOPROMPT_PI_PERMISSION_LEVEL = permissionLevel;
+      }
+      const pi = new FakePi(responses);
+      await repoPromptBridge(pi);
+      assert.ok(pi.handlers.has("tool_call"), "managed window bridge should register a tool_call policy handler");
+      assert.ok(pi.handlers.has("session_shutdown"), "managed window bridge should clear session grants on session shutdown");
+      return pi;
+    }
+
+    const ctx = { cwd: "/tmp/repoprompt-pi-bridge-policy", signal: undefined };
+    const bashEvent = { toolName: "bash", input: { command: "printf ok" } };
+
+    async function main() {
+      let pi = await loadBridge(undefined);
+      let result = await pi.trigger("tool_call", bashEvent, ctx);
+      assert.equal(result.block, true);
+      assert.match(result.reason, /missing or invalid/);
+
+      pi = await loadBridge("readOnly");
+      assert.equal(await pi.trigger("tool_call", { toolName: "read", input: { path: "README.md" } }, ctx), undefined);
+      result = await pi.trigger("tool_call", bashEvent, ctx);
+      assert.equal(result.block, true);
+      assert.match(result.reason, /Read Only policy blocks bash/);
+
+      result = await pi.trigger("tool_call", { toolName: "workspace_context", input: {} }, ctx);
+      assert.equal(result, undefined, "RepoPrompt dynamic tools should stay governed by RepoPrompt MCP policy, not the built-in preflight hook");
+
+      pi = await loadBridge("askBeforeWrite", [schemaResponse(), approvalResponse("Allow once")]);
+      result = await pi.trigger("tool_call", bashEvent, ctx);
+      assert.equal(result, undefined);
+      assert.equal(pi.execCalls.length, 2);
+      assert.ok(pi.execCalls[1].args.includes("ask_user"));
+
+      pi = await loadBridge("askBeforeWrite", [schemaResponse(), approvalResponse("Allow for session"), approvalResponse("Deny")]);
+      result = await pi.trigger("tool_call", bashEvent, ctx);
+      assert.equal(result, undefined);
+      assert.equal(pi.execCalls.length, 2);
+      result = await pi.trigger("tool_call", bashEvent, ctx);
+      assert.equal(result, undefined);
+      assert.equal(pi.execCalls.length, 2, "session grant should avoid a second approval for the same canonical call");
+      await pi.trigger("session_shutdown");
+      result = await pi.trigger("tool_call", bashEvent, ctx);
+      assert.equal(result.block, true);
+      assert.match(result.reason, /denied/);
+      assert.equal(pi.execCalls.length, 3, "session_shutdown should clear the grant and require approval again");
+
+      pi = await loadBridge("autoReview", [schemaResponse(), { code: 0, stdout: "not json", stderr: "" }]);
+      result = await pi.trigger("tool_call", bashEvent, ctx);
+      assert.equal(result.block, true);
+      assert.match(result.reason, /malformed approval response/);
+
+      pi = await loadBridge("askBeforeWrite", [schemaResponse(), { code: 1, stdout: "", stderr: "app is not running" }]);
+      result = await pi.trigger("tool_call", bashEvent, ctx);
+      assert.equal(result.block, true);
+      assert.match(result.reason, /app approval failed/);
+    }
+
+    main().catch((error: unknown) => {
+      console.error(error);
+      process.exit(1);
+    });
+    """#
+
+    private static func findExecutable(_ name: String) -> String? {
+        let pathCandidates = (ProcessInfo.processInfo.environment["PATH"] ?? "")
+            .split(separator: ":")
+            .map(String.init) + [
+                "/opt/homebrew/bin",
+                "/usr/local/bin"
+            ]
+        for directory in pathCandidates {
+            let candidate = URL(fileURLWithPath: directory).appendingPathComponent(name).path
+            if FileManager.default.isExecutableFile(atPath: candidate) {
+                return candidate
+            }
+        }
+        return nil
+    }
+
+    @discardableResult
+    private static func runProcess(executable: String, arguments: [String], workingDirectory: URL) throws -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        process.currentDirectoryURL = workingDirectory
+        let outputPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = outputPipe
+        try process.run()
+        process.waitUntilExit()
+        let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
+        let output = String(data: data, encoding: .utf8) ?? ""
+        guard process.terminationStatus == 0 else {
+            XCTFail(output)
+            throw BridgeHarnessProcessError.failed(status: process.terminationStatus, output: output)
+        }
+        return output
+    }
+}
+
+private enum BridgeHarnessProcessError: Error {
+    case failed(status: Int32, output: String)
 }
 
 private final class StubApplicationSupportFileManager: FileManager, @unchecked Sendable {
