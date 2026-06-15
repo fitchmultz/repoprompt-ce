@@ -358,10 +358,12 @@ public class APISettingsViewModel: ObservableObject {
     private var piModelsTask: Task<Void, Never>?
     private var piModelsSubscribedWorkspacePath: String?
     private var openRouterModelsTask: Task<Void, Never>?
+    private var initialLoadTask: Task<Void, Never>?
     private var cliConnectionCancellables = Set<AnyCancellable>()
     private var hasLoadedStoredData = false
     private var isLoadingStoredData = false
     private var hasStoredZAIKey = false
+    private var agentAvailabilityCancellable: AnyCancellable?
 
     /// Current Claude Code-compatible backend configurations (GLM/Z.ai, Kimi, Custom), keyed by backend ID.
     ///
@@ -390,6 +392,40 @@ public class APISettingsViewModel: ObservableObject {
             kimiConfigured: compatibleBackendIsActive(.kimi),
             customClaudeCompatibleConfigured: compatibleBackendIsActive(.custom)
         )
+    }
+
+    /// Published mirror of `agentModeAvailabilityContext`. Consumers subscribe to this
+    /// instead of listening for change notifications: `@Published` replays the current
+    /// value on subscription, so observers constructed after a state change still
+    /// initialize correctly, and duplicate emissions are filtered by value with
+    /// `removeDuplicates()` rather than by guessing on the producer side whether a
+    /// notification is "needed".
+    @Published private(set) var agentAvailability: AgentModelCatalog.AvailabilityContext = .none
+
+    private func refreshAgentAvailability() {
+        let next = agentModeAvailabilityContext
+        guard next != agentAvailability else { return }
+        agentAvailability = next
+    }
+
+    /// Safety net behind the explicit `refreshAgentAvailability()` calls: recompute
+    /// whenever any published input of the availability context changes, so mutation
+    /// paths without an explicit refresh still converge. The main-queue hop defers the
+    /// recompute past `@Published`'s willSet emission, when the new value is readable.
+    private func installAgentAvailabilityObservers() {
+        agentAvailabilityCancellable = Publishers.MergeMany([
+            $isClaudeCodeConnected.map { _ in () }.eraseToAnyPublisher(),
+            $isCodexConnected.map { _ in () }.eraseToAnyPublisher(),
+            $isOpenCodeConnected.map { _ in () }.eraseToAnyPublisher(),
+            $isCursorConnected.map { _ in () }.eraseToAnyPublisher(),
+            $claudeCodeCLIStatus.map { _ in () }.eraseToAnyPublisher(),
+            $compatibleBackendConfigs.map { _ in () }.eraseToAnyPublisher(),
+            $compatibleBackendSecretPresence.map { _ in () }.eraseToAnyPublisher()
+        ])
+        .receive(on: DispatchQueue.main)
+        .sink { [weak self] _ in
+            self?.refreshAgentAvailability()
+        }
     }
 
     /// Availability safe for restoring persisted Context Builder selections. A persisted
@@ -548,14 +584,10 @@ public class APISettingsViewModel: ObservableObject {
         Task { await updateAvailableModels() }
     }
 
-    @discardableResult
-    private func publishClaudeCodeGLMAvailability() -> Bool {
-        let previousSecretPresent = compatibleBackendSecretPresence[.glmZAI] ?? false
-        let configuredDidChange = ClaudeCodeGLMIntegration.setConfigured(hasStoredZAIKey)
+    private func refreshClaudeCodeGLMAvailability() {
+        ClaudeCodeGLMIntegration.setConfigured(hasStoredZAIKey)
         compatibleBackendSecretPresence[.glmZAI] = hasStoredZAIKey
-        guard configuredDidChange || previousSecretPresent != hasStoredZAIKey else { return false }
-        NotificationCenter.default.post(name: .claudeCodeGLMAvailabilityChanged, object: nil)
-        return true
+        refreshAgentAvailability()
     }
 
     // MARK: - Claude Code-compatible backends ------------------------------------------------
@@ -570,7 +602,6 @@ public class APISettingsViewModel: ObservableObject {
         accessMode: KeychainAccessMode = .nonInteractive(reason: .backgroundAvailabilityCheck)
     ) async {
         let previousAvailability = isClaudeFamilyModelProviderAvailable
-        let previousActiveBackends = Set(ClaudeCodeCompatibleBackendID.allCases.filter { compatibleBackendIsActive($0) })
         let store = compatibleBackendStore
         var configs: [ClaudeCodeCompatibleBackendID: ClaudeCodeCompatibleBackendConfig] = [:]
         var presence: [ClaudeCodeCompatibleBackendID: Bool] = [:]
@@ -584,10 +615,7 @@ public class APISettingsViewModel: ObservableObject {
         }
         compatibleBackendConfigs = configs
         compatibleBackendSecretPresence = presence
-        let currentActiveBackends = Set(ClaudeCodeCompatibleBackendID.allCases.filter { compatibleBackendIsActive($0) })
-        if previousActiveBackends != currentActiveBackends {
-            postCompatibleBackendAvailabilityChanged()
-        }
+        refreshAgentAvailability()
         await refreshClaudeFamilyModelAvailabilityIfNeeded(previousAvailability: previousAvailability)
     }
 
@@ -821,8 +849,8 @@ public class APISettingsViewModel: ObservableObject {
 
     /// Persists a Claude Code-compatible backend config and refreshes availability only if
     /// the active/enabled/valid state or model behavior actually changed. Text-field edits
-    /// (display name, slot-mapping IDs) are persisted without re-posting the availability
-    /// notification on every keystroke.
+    /// (display name, slot-mapping IDs) are persisted without queueing a Claude-family
+    /// model refresh on every keystroke.
     ///
     /// - Parameter config: The new config to persist (display name, base URL, auth, model behavior).
     @MainActor
@@ -842,7 +870,7 @@ public class APISettingsViewModel: ObservableObject {
             || previous.isValid != latest.isValid
             || modelBehaviorKind(previous.modelBehavior) != modelBehaviorKind(latest.modelBehavior)
         if materialStateChanged {
-            postCompatibleBackendAvailabilityChanged()
+            refreshAgentAvailability()
             queueClaudeFamilyModelAvailabilityRefreshIfNeeded(previousAvailability: previousAvailability)
         }
     }
@@ -864,7 +892,6 @@ public class APISettingsViewModel: ObservableObject {
         let previousAvailability = isClaudeFamilyModelProviderAvailable
         invalidateCompatibleBackendTestResult(for: id)
         let trimmed = secret.trimmingCharacters(in: .whitespacesAndNewlines)
-        let postedAvailabilityChange: Bool
         if id == .glmZAI {
             // Share the existing Z.ai API Provider key.
             try await keyManager.saveAPIKey(trimmed, for: .zAI)
@@ -872,18 +899,12 @@ public class APISettingsViewModel: ObservableObject {
             hasStoredZAIKey = !trimmed.isEmpty
             isZaiKeyValid = hasStoredZAIKey
             availableZAIModels = hasStoredZAIKey ? defaultZAIModels : []
-            postedAvailabilityChange = publishClaudeCodeGLMAvailability()
+            refreshClaudeCodeGLMAvailability()
+            await updateAvailableModels()
         } else {
             try await compatibleBackendStore.saveSecret(trimmed, for: id)
             compatibleBackendSecretPresence[id] = !trimmed.isEmpty
-            postedAvailabilityChange = false
-        }
-        if id != .glmZAI, !postedAvailabilityChange {
-            postCompatibleBackendAvailabilityChanged()
-        }
-        if id == .glmZAI {
-            await updateAvailableModels()
-        } else {
+            refreshAgentAvailability()
             await refreshClaudeFamilyModelAvailabilityIfNeeded(previousAvailability: previousAvailability)
         }
     }
@@ -896,28 +917,21 @@ public class APISettingsViewModel: ObservableObject {
     ) async throws {
         let previousAvailability = isClaudeFamilyModelProviderAvailable
         invalidateCompatibleBackendTestResult(for: id)
-        let postedAvailabilityChange: Bool
         if id == .glmZAI {
             try await keyManager.deleteAPIKey(for: .zAI)
             hasStoredZAIKey = false
             zaiApiKey = ""
             isZaiKeyValid = false
             availableZAIModels = []
-            postedAvailabilityChange = publishClaudeCodeGLMAvailability()
+            refreshClaudeCodeGLMAvailability()
             zaiCustomModel = ""
             UserDefaults.standard.removeObject(forKey: "customModelZAI")
-        } else {
-            try await compatibleBackendStore.deleteSecret(for: id)
-            compatibleBackendSecretPresence[id] = false
-            postedAvailabilityChange = false
-        }
-        if id != .glmZAI, !postedAvailabilityChange {
-            postCompatibleBackendAvailabilityChanged()
-        }
-        if id == .glmZAI {
             await updateAvailableModels()
             resetPreferredModelIfNeeded(for: .zAI)
         } else {
+            try await compatibleBackendStore.deleteSecret(for: id)
+            compatibleBackendSecretPresence[id] = false
+            refreshAgentAvailability()
             await refreshClaudeFamilyModelAvailabilityIfNeeded(previousAvailability: previousAvailability)
         }
     }
@@ -930,7 +944,7 @@ public class APISettingsViewModel: ObservableObject {
         invalidateCompatibleBackendTestResult(for: id)
         compatibleBackendStore.resetConfig(for: id)
         compatibleBackendConfigs[id] = compatibleBackendStore.config(for: id)
-        postCompatibleBackendAvailabilityChanged()
+        refreshAgentAvailability()
         queueClaudeFamilyModelAvailabilityRefreshIfNeeded(previousAvailability: previousAvailability)
     }
 
@@ -951,15 +965,8 @@ public class APISettingsViewModel: ObservableObject {
         return compatibleBackendStore.isConfigured(id)
     }
 
-    private func postCompatibleBackendAvailabilityChanged() {
-        // Reuse the existing .claudeCodeGLMAvailabilityChanged notification to keep pickers,
-        // recommendations, and agent-mode view models in sync for every compatible backend.
-        NotificationCenter.default.post(name: .claudeCodeGLMAvailabilityChanged, object: nil)
-    }
-
-    private func notifyClaudeCompatibleBackendRuntimeAvailabilityIfNeeded(previousStatus: ClaudeCodeCLIStatus) {
-        guard previousStatus.isKnownMissing != claudeCodeCLIStatus.isKnownMissing else { return }
-        postCompatibleBackendAvailabilityChanged()
+    private func notifyClaudeCompatibleBackendRuntimeAvailabilityIfNeeded(previousStatus _: ClaudeCodeCLIStatus) {
+        refreshAgentAvailability()
     }
 
     private func queueClaudeFamilyModelAvailabilityRefreshIfNeeded(previousAvailability: Bool) {
@@ -976,29 +983,73 @@ public class APISettingsViewModel: ObservableObject {
     private let keyManager: KeyManager
     private let piModelPollingService: any PiModelPolling
     private let piConnectionDefaults: UserDefaults
+    private let codexModelPollingService: CodexModelPollingService
+    private let storedDataLoadBoundary: (@MainActor @Sendable () async -> Void)?
+    private let contextBuilderProviderValidationWillBegin: (@MainActor @Sendable () async -> Void)?
+    private var hasPreparedForWindowClose = false
 
     init(
         aiQueriesService: AIQueriesService,
         keyManager: KeyManager,
         loadStoredDataOnInit: Bool = true,
         piModelPollingService: any PiModelPolling = PiModelPollingService.shared,
-        piConnectionDefaults: UserDefaults = .standard
+        piConnectionDefaults: UserDefaults = .standard,
+        codexModelPollingService: CodexModelPollingService = .shared,
+        storedDataLoadBoundary: (@MainActor @Sendable () async -> Void)? = nil,
+        contextBuilderProviderValidationWillBegin: (@MainActor @Sendable () async -> Void)? = nil
     ) {
         self.aiQueriesService = aiQueriesService
         self.keyManager = keyManager
         self.piModelPollingService = piModelPollingService
         self.piConnectionDefaults = piConnectionDefaults
+        self.codexModelPollingService = codexModelPollingService
+        self.storedDataLoadBoundary = storedDataLoadBoundary
+        self.contextBuilderProviderValidationWillBegin = contextBuilderProviderValidationWillBegin
         isPiConnected = piConnectionDefaults.bool(forKey: "PiCLIConnected")
         installCLIConnectionObservers()
+        installAgentAvailabilityObservers()
+        refreshAgentAvailability()
         if loadStoredDataOnInit {
-            Task {
-                await self.loadStoredDataIfNeeded()
-                await self.validateCachedContextBuilderProvidersIfNeeded()
+            initialLoadTask = Task { [weak self] in
+                guard let self else { return }
+                await loadStoredDataIfNeeded()
+                guard !Task.isCancelled, !hasPreparedForWindowClose else { return }
+                await validateCachedContextBuilderProvidersIfNeeded()
             }
         }
     }
 
+    func prepareForWindowClose() {
+        guard !hasPreparedForWindowClose else { return }
+        hasPreparedForWindowClose = true
+        initialLoadTask?.cancel()
+        initialLoadTask = nil
+        openAIModelsTask?.cancel()
+        openAIModelsTask = nil
+        deepSeekModelsTask?.cancel()
+        deepSeekModelsTask = nil
+        fireworksModelsTask?.cancel()
+        fireworksModelsTask = nil
+        grokModelsTask?.cancel()
+        grokModelsTask = nil
+        groqModelsTask?.cancel()
+        groqModelsTask = nil
+        stopCodexModelsSubscription()
+        openCodeModelsTask?.cancel()
+        openCodeModelsTask = nil
+        cursorModelsTask?.cancel()
+        cursorModelsTask = nil
+        openRouterModelsTask?.cancel()
+        openRouterModelsTask = nil
+        contextBuilderProviderValidationTask?.cancel()
+        contextBuilderProviderValidationTask = nil
+        cliConnectionCancellables.removeAll()
+        agentAvailabilityCancellable?.cancel()
+        agentAvailabilityCancellable = nil
+    }
+
     deinit {
+        initialLoadTask?.cancel()
         openAIModelsTask?.cancel()
         deepSeekModelsTask?.cancel()
         fireworksModelsTask?.cancel()
@@ -1065,6 +1116,10 @@ public class APISettingsViewModel: ObservableObject {
         accessMode: KeychainAccessMode = .nonInteractive(reason: .bulkSettingsLoad)
     ) async {
         await loadAllKeys(accessMode: accessMode) // returns immediately; fetch tasks run in background
+        guard !Task.isCancelled, !hasPreparedForWindowClose else {
+            isLoadingStoredData = false
+            return
+        }
         hasLoadedStoredData = true
         isLoadingStoredData = false
     }
@@ -1076,6 +1131,10 @@ public class APISettingsViewModel: ObservableObject {
         _ completion: @escaping () -> Void
     ) async {
         await loadAllKeys(accessMode: accessMode)
+        guard !Task.isCancelled, !hasPreparedForWindowClose else {
+            isLoadingStoredData = false
+            return
+        }
         hasLoadedStoredData = true
         isLoadingStoredData = false
         completion() // fires while background fetches still run
@@ -1085,7 +1144,11 @@ public class APISettingsViewModel: ObservableObject {
     func loadStoredDataIfNeeded(
         accessMode: KeychainAccessMode = .nonInteractive(reason: .bulkSettingsLoad)
     ) async {
-        guard !hasLoadedStoredData, !isLoadingStoredData else { return }
+        guard !Task.isCancelled,
+              !hasPreparedForWindowClose,
+              !hasLoadedStoredData,
+              !isLoadingStoredData
+        else { return }
         isLoadingStoredData = true
         await loadStoredData(accessMode: accessMode)
     }
@@ -1095,6 +1158,7 @@ public class APISettingsViewModel: ObservableObject {
     /// cannot reject a saved dynamic model before discovery has had a chance to run.
     @MainActor
     func validateCachedContextBuilderProvidersIfNeeded() async {
+        guard !Task.isCancelled, !hasPreparedForWindowClose else { return }
         if isContextBuilderProviderValidationComplete { return }
         if let contextBuilderProviderValidationTask {
             await contextBuilderProviderValidationTask.value
@@ -1104,11 +1168,14 @@ public class APISettingsViewModel: ObservableObject {
         // Load persisted ACP catalogs before any provider result can trigger restoration.
         // A live refresh may legitimately omit dynamic metadata, especially for Cursor.
         await AgentACPModelRegistry.shared.warmStandardStoreIfNeeded()
+        guard !Task.isCancelled, !hasPreparedForWindowClose else { return }
         if isContextBuilderProviderValidationComplete { return }
         if let contextBuilderProviderValidationTask {
             await contextBuilderProviderValidationTask.value
             return
         }
+        await contextBuilderProviderValidationWillBegin?()
+        guard !Task.isCancelled, !hasPreparedForWindowClose else { return }
 
         let shouldValidateClaude = isClaudeCodeConnected
         let shouldValidateClaudeBinary = hasActiveClaudeCompatibleBackend
@@ -1118,7 +1185,7 @@ public class APISettingsViewModel: ObservableObject {
         let shouldValidatePi = isPiConnected
 
         let task = Task { @MainActor [weak self] in
-            guard let self else { return }
+            guard let self, !Task.isCancelled, !hasPreparedForWindowClose else { return }
 
             async let claudeReady = probeCachedClaudeCodeConnection(
                 ifNeeded: shouldValidateClaude,
@@ -1129,6 +1196,7 @@ public class APISettingsViewModel: ObservableObject {
             async let cursorReady = probeCachedCursorConnection(ifNeeded: shouldValidateCursor)
             async let piReady = probeCachedPiConnection(ifNeeded: shouldValidatePi)
             let readiness = await (claudeReady, codexReady, openCodeReady, cursorReady, piReady)
+            guard !Task.isCancelled, !hasPreparedForWindowClose else { return }
 
             applyContextBuilderProviderValidationResult(readiness.0, provider: .claudeCode)
             applyContextBuilderProviderValidationResult(readiness.1, provider: .codexExec)
@@ -1286,6 +1354,8 @@ public class APISettingsViewModel: ObservableObject {
     func loadAllKeys(
         accessMode: KeychainAccessMode = .nonInteractive(reason: .bulkSettingsLoad)
     ) async {
+        guard !Task.isCancelled, !hasPreparedForWindowClose else { return }
+
         // ── 0. Cancel previous background fetches ───────────────────────────────
         openAIModelsTask?.cancel()
         openAIModelsTask = nil
@@ -1313,6 +1383,8 @@ public class APISettingsViewModel: ObservableObject {
 
         keychainAccessDiagnostics.removeAll()
         loadNonSecretStoredData()
+        await storedDataLoadBoundary?()
+        guard !Task.isCancelled, !hasPreparedForWindowClose else { return }
 
         // ----------------------------------------------------------------
         // 1. Fetch tokens independently so one denied provider does not abort
@@ -1379,6 +1451,7 @@ public class APISettingsViewModel: ObservableObject {
             accessMode: accessMode,
             preserveExistingValueOnFailure: false
         )
+        guard !Task.isCancelled, !hasPreparedForWindowClose else { return }
 
         // ----------------------------------------------------------------
         // 2. Restore Azure configuration if it was readable. Denied/noninteractive
@@ -1439,13 +1512,14 @@ public class APISettingsViewModel: ObservableObject {
         zaiApiKey = storedZAIKey
         isZaiKeyValid = hasStoredZAIKey
         availableZAIModels = isZaiKeyValid ? defaultZAIModels : []
-        publishClaudeCodeGLMAvailability()
+        refreshClaudeCodeGLMAvailability()
 
         customProviderApiKey = storedCustomProviderKey
 
         // ----------------------------------------------------------------
         // 4. Fire-and-forget model-catalogue fetches (always refresh)
         // ----------------------------------------------------------------
+        guard !Task.isCancelled, !hasPreparedForWindowClose else { return }
         if isOpenAIKeyValid { openAIModelsTask = Task { await self.updateOpenAIModels() } }
         if isDeepSeekKeyValid { deepSeekModelsTask = Task { await self.updateDeepSeekModels() } }
         if isFireworksKeyValid { fireworksModelsTask = Task { await self.updateFireworksModels() } }
@@ -1466,6 +1540,7 @@ public class APISettingsViewModel: ObservableObject {
         // 5. Build initial UI list from whatever caches we already have
         // ----------------------------------------------------------------
         await updateAvailableModels()
+        guard !Task.isCancelled, !hasPreparedForWindowClose else { return }
 
         // ----------------------------------------------------------------
         // 6. Load Claude Code-compatible backend state (GLM/Kimi/Custom)
@@ -1905,7 +1980,7 @@ public class APISettingsViewModel: ObservableObject {
                 zaiApiKey = trimmedKey
                 isZaiKeyValid = true
                 availableZAIModels = defaultZAIModels
-                publishClaudeCodeGLMAvailability()
+                refreshClaudeCodeGLMAvailability()
                 seedPreferredComposeModelIfMissing(AIModel.zaiGLM5, reason: "api_settings.validate_key.default_seed.zai")
             case .claudeCode:
                 break
@@ -1966,7 +2041,7 @@ public class APISettingsViewModel: ObservableObject {
             zaiApiKey = ""
             isZaiKeyValid = false
             availableZAIModels = []
-            publishClaudeCodeGLMAvailability()
+            refreshClaudeCodeGLMAvailability()
             zaiCustomModel = ""
             UserDefaults.standard.removeObject(forKey: "customModelZAI")
         case .claudeCode:
@@ -2382,14 +2457,45 @@ public class APISettingsViewModel: ObservableObject {
             zaiApiKey = trimmed
             isZaiKeyValid = true
             availableZAIModels = defaultZAIModels
-            publishClaudeCodeGLMAvailability()
+            refreshClaudeCodeGLMAvailability()
             await updateAvailableModels()
         } else {
             isZaiKeyValid = false
             availableZAIModels = []
-            publishClaudeCodeGLMAvailability()
+            refreshClaudeCodeGLMAvailability()
         }
         return ok
+    }
+
+    func validateZAICodingPlanKey() async throws -> Bool {
+        let trimmed = zaiApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let ok: Bool
+        do {
+            ok = try await aiQueriesService.testZAICodingPlanAPI(with: trimmed)
+        } catch {
+            await markZAIValidationUnavailable()
+            throw error
+        }
+        if ok {
+            try await keyManager.saveAPIKey(trimmed, for: .zAI)
+            invalidateCompatibleBackendTestResult(for: .glmZAI)
+            hasStoredZAIKey = true
+            zaiApiKey = trimmed
+            isZaiKeyValid = true
+            availableZAIModels = defaultZAIModels
+            refreshClaudeCodeGLMAvailability()
+            await updateAvailableModels()
+        } else {
+            await markZAIValidationUnavailable()
+        }
+        return ok
+    }
+
+    private func markZAIValidationUnavailable() async {
+        isZaiKeyValid = false
+        availableZAIModels = []
+        refreshClaudeCodeGLMAvailability()
+        await updateAvailableModels()
     }
 
     // MARK: - Custom Provider (OpenAI-compatible)
@@ -3237,6 +3343,7 @@ public class APISettingsViewModel: ObservableObject {
     }
 
     private func startOpenCodeModelsSubscriptionIfNeeded(workspacePath: String?) {
+        guard !hasPreparedForWindowClose else { return }
         guard openCodeModelsTask == nil else { return }
         openCodeModelsTask = Task { [weak self, workspacePath] in
             let stream = await OpenCodeACPModelPollingService.shared.subscribe(workspacePath: workspacePath)
@@ -3385,6 +3492,7 @@ public class APISettingsViewModel: ObservableObject {
     }
 
     private func startCursorModelsSubscriptionIfNeeded(workspacePath: String?) {
+        guard !hasPreparedForWindowClose else { return }
         guard cursorModelsTask == nil else { return }
         cursorModelsTask = Task { [weak self, workspacePath] in
             let stream = await CursorACPModelPollingService.shared.subscribe(workspacePath: workspacePath)
@@ -3803,14 +3911,16 @@ public class APISettingsViewModel: ObservableObject {
     /// Starts a subscription to the centralized Codex model polling service.
     /// Replaces the previous ephemeral-client one-shot refresh.
     private func startCodexModelsSubscriptionIfNeeded() {
+        guard !hasPreparedForWindowClose else { return }
         guard codexModelsTask == nil else { return }
-        codexModelsTask = Task { [weak self] in
+        let codexModelPollingService = codexModelPollingService
+        codexModelsTask = Task { [weak self, codexModelPollingService] in
             guard let self else { return }
 
             // subscribe() starts the polling loop if idle and immediately yields the latest
             // snapshot (if available). The polling loop refreshes immediately on first tick,
             // so no explicit refreshNow() is needed here.
-            let stream = await CodexModelPollingService.shared.subscribe()
+            let stream = await codexModelPollingService.subscribe()
             for await snapshot in stream {
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
@@ -3825,6 +3935,36 @@ public class APISettingsViewModel: ObservableObject {
         codexModelsTask?.cancel()
         codexModelsTask = nil
     }
+
+    #if DEBUG
+        func test_startCodexModelsSubscriptionIfNeeded() {
+            startCodexModelsSubscriptionIfNeeded()
+        }
+
+        var test_hasCodexModelsSubscriptionTask: Bool {
+            codexModelsTask != nil
+        }
+
+        var test_hasPreparedForWindowClose: Bool {
+            hasPreparedForWindowClose
+        }
+
+        var test_hasFinishedInitialStoredDataLoad: Bool {
+            hasLoadedStoredData && !isLoadingStoredData
+        }
+
+        var test_initialLoadTask: Task<Void, Never>? {
+            initialLoadTask
+        }
+
+        var test_hasContextBuilderProviderValidationTask: Bool {
+            contextBuilderProviderValidationTask != nil
+        }
+
+        func test_stopCodexModelsSubscription() {
+            stopCodexModelsSubscription()
+        }
+    #endif
 
     private func updateGrokModels() async {
         guard isGrokKeyValid else { return }

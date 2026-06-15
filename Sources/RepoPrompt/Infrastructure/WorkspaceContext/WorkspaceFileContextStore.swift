@@ -904,6 +904,24 @@ actor WorkspaceFileContextStore {
             let state = try state(for: rootID)
             await state.service.setContentReadChunkHandlerForTesting(handler)
         }
+
+        func resetSearchContentFingerprintRequestCountForTesting(rootID: UUID) async throws {
+            let state = try state(for: rootID)
+            await state.service.resetContentFingerprintRequestCountForTesting()
+        }
+
+        func searchContentFingerprintRequestCountForTesting(rootID: UUID) async throws -> Int {
+            let state = try state(for: rootID)
+            return await state.service.contentFingerprintRequestCountSnapshotForTesting()
+        }
+
+        func setCachedSearchContentWatcherActiveOverrideForTesting(
+            rootID: UUID,
+            _ isActive: Bool?
+        ) async throws {
+            let state = try state(for: rootID)
+            await state.service.setCachedSearchContentWatcherActiveOverrideForTesting(isActive)
+        }
     #endif
 
     private enum ExplicitDiskLookupCandidatesResult {
@@ -1236,6 +1254,20 @@ actor WorkspaceFileContextStore {
             await waitForCurrentPublisherIngress(rootIDs: [rootID])
             return
         }
+        guard try await attachPublisherIngress(state: state, rootID: rootID) else { return }
+        do {
+            try await reconcileWatcherServiceState(state.service, rootID: rootID)
+            await waitForCurrentPublisherIngress(rootIDs: [rootID])
+        } catch {
+            watcherCancellablesByRootID.removeValue(forKey: rootID)?.cancel()
+            publisherIngressCoordinator.closePublisherIngress(rootID: rootID)
+            try? await reconcileWatcherServiceState(state.service, rootID: rootID)
+            await waitForCurrentPublisherIngress(rootIDs: [rootID])
+            throw error
+        }
+    }
+
+    private func attachPublisherIngress(state: RootState, rootID: UUID) async throws -> Bool {
         let root = state.root
         let lifetimeID = state.lifetimeID
         let diagnosticRootToken = state.service.diagnosticRootToken
@@ -1264,7 +1296,7 @@ actor WorkspaceFileContextStore {
               publisherIngressCoordinator.isPublisherIngressOpen(subscription)
         else {
             try await reconcileWatcherServiceState(state.service, rootID: rootID)
-            return
+            return false
         }
         let cancellable = publisher.sink { publication in
             #if DEBUG || EDIT_FLOW_PERF
@@ -1293,20 +1325,19 @@ actor WorkspaceFileContextStore {
         else {
             cancellable.cancel()
             try await reconcileWatcherServiceState(state.service, rootID: rootID)
-            return
+            return false
         }
         watcherCancellablesByRootID[rootID] = cancellable
-        do {
-            try await reconcileWatcherServiceState(state.service, rootID: rootID)
-            await waitForCurrentPublisherIngress(rootIDs: [rootID])
-        } catch {
-            watcherCancellablesByRootID.removeValue(forKey: rootID)?.cancel()
-            publisherIngressCoordinator.closePublisherIngress(rootID: rootID)
-            try? await reconcileWatcherServiceState(state.service, rootID: rootID)
-            await waitForCurrentPublisherIngress(rootIDs: [rootID])
-            throw error
-        }
+        return true
     }
+
+    #if DEBUG
+        func attachPublisherIngressWithoutStartingWatcherForTesting(rootID: UUID) async throws -> Bool {
+            if watcherCancellablesByRootID[rootID] != nil { return true }
+            let state = try state(for: rootID)
+            return try await attachPublisherIngress(state: state, rootID: rootID)
+        }
+    #endif
 
     func stopWatchingRoot(id rootID: UUID) async {
         watcherCancellablesByRootID.removeValue(forKey: rootID)?.cancel()
@@ -1480,6 +1511,10 @@ actor WorkspaceFileContextStore {
             }
         #endif
         guard isRootLifetimeCurrent(rootID: root.id, expectedLifetimeID: expectedLifetimeID) else { return }
+        if publication.source == .overflowRootRescan || publication.source == .recoveryFullResync {
+            await invalidateRetainedSearchContentForRecoveryUncertainty(rootID: root.id)
+            guard isRootLifetimeCurrent(rootID: root.id, expectedLifetimeID: expectedLifetimeID) else { return }
+        }
         await handleObservedFileSystemDeltas(
             publication.deltas,
             root: root,
@@ -2589,6 +2624,32 @@ actor WorkspaceFileContextStore {
     /// existing flight covers both the callback-accepted and publisher-accepted cuts.
     func awaitAppliedIngress(rootScope: WorkspaceLookupRootScope) async -> [WorkspaceIngressBarrierSample] {
         await awaitAppliedIngress(rootIDs: rootsForPathLookup(scope: rootScope).map(\.id))
+    }
+
+    func contentSearchFreshnessPolicy(
+        rootScope: WorkspaceLookupRootScope,
+        appliedIngressSamples: [WorkspaceIngressBarrierSample]
+    ) async -> FileContentFreshnessPolicy {
+        let scopedRoots = rootsForPathLookup(scope: rootScope)
+        guard !scopedRoots.isEmpty,
+              appliedIngressSamples.count == scopedRoots.count
+        else {
+            return .validateDiskMetadata
+        }
+        let samplesByRootID = Dictionary(uniqueKeysWithValues: appliedIngressSamples.map { ($0.rootID, $0) })
+        for root in scopedRoots {
+            guard let state = rootStatesByID[root.id],
+                  let sample = samplesByRootID[root.id],
+                  await state.service.canUseCachedSearchContent(
+                      afterAppliedWatcherWatermark: sample.appliedWatcherWatermark
+                  ),
+                  publisherIngressCoordinator.appliedSnapshot(rootID: root.id)
+                  .acceptedServicePublicationSequence <= sample.appliedServicePublicationSequence
+            else {
+                return .validateDiskMetadata
+            }
+        }
+        return .cachedMetadata
     }
 
     /// Resolves the narrowest safe workspace freshness scope for an explicit request.
@@ -4240,7 +4301,10 @@ actor WorkspaceFileContextStore {
         return foldersByID[folderID]
     }
 
-    func searchContentSnapshot(for expectedRecord: WorkspaceFileRecord) async throws -> FileSearchContentSnapshot {
+    func searchContentSnapshot(
+        for expectedRecord: WorkspaceFileRecord,
+        freshnessPolicy: FileContentFreshnessPolicy = .validateDiskMetadata
+    ) async throws -> FileSearchContentSnapshot {
         for attempt in 0 ..< 2 {
             try Task.checkCancellation()
             guard let state = rootStatesByID[expectedRecord.rootID],
@@ -4257,6 +4321,23 @@ actor WorkspaceFileContextStore {
                 fileID: current.id,
                 standardizedRelativePath: current.standardizedRelativePath
             )
+            if case .cachedMetadata = freshnessPolicy,
+               let cached = await searchDecodedContentCache.cachedSnapshot(
+                   for: cacheKey,
+                   invalidationEpoch: epoch
+               )
+            {
+                guard searchContentRecordIsCurrent(current, invalidationEpoch: epoch) else {
+                    if attempt == 0 { continue }
+                    return staleSearchContentSnapshot(for: current)
+                }
+                return FileSearchContentSnapshot(
+                    content: cached.content,
+                    contentRevision: cached.revision,
+                    modificationDate: cached.modificationDate,
+                    isFresh: true
+                )
+            }
             let fingerprint: FileContentFingerprint
             do {
                 fingerprint = try await service.contentFingerprint(
@@ -6410,6 +6491,26 @@ actor WorkspaceFileContextStore {
             await searchDecodedContentCache.invalidate(key, through: invalidationEpoch)
             await interactiveReadCache.invalidate(key, through: invalidationEpoch)
         }
+    }
+
+    private func invalidateRetainedSearchContentForRecoveryUncertainty(rootID: UUID) async {
+        guard let state = rootStatesByID[rootID] else { return }
+        var invalidations = WorkspaceSearchContentInvalidationBatch()
+        for fileID in state.fileIDsByRelativePath.values {
+            guard let file = filesByID[fileID] else { continue }
+            let key = WorkspaceSearchContentCacheKey(
+                rootID: file.rootID,
+                fileID: file.id,
+                standardizedRelativePath: file.standardizedRelativePath
+            )
+            nextSearchContentInvalidationEpoch &+= 1
+            let invalidationEpoch = nextSearchContentInvalidationEpoch
+            searchContentInvalidationEpochsByFileID[file.id] = invalidationEpoch
+            invalidations.record(key, through: invalidationEpoch)
+        }
+        guard !invalidations.isEmpty else { return }
+        await searchDecodedContentCache.invalidate(invalidations)
+        await interactiveReadCache.invalidate(invalidations)
     }
 
     private func finalizePublicationInvalidations(_ batch: PublicationInvalidationBatch) {
