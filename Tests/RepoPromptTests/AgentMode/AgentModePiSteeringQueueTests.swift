@@ -577,7 +577,8 @@ final class AgentModePiSteeringQueueTests: XCTestCase {
                 fatalError("Codex controller should not be requested by pi steering queue tests")
             },
             piModelPollingService: piModelPollingService,
-            testMCPServer: testMCPServer
+            testMCPServer: testMCPServer,
+            testUsesProductionAgentDefaultsAndModelPolling: true
         )
         viewModel.test_setAgentAvailabilityContextOverride(AgentModelCatalog.AvailabilityContext(piAvailable: true))
         return viewModel
