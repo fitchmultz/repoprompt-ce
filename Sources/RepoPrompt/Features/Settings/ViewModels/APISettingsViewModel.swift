@@ -1034,19 +1034,6 @@ public class APISettingsViewModel: ObservableObject {
         isCodexConnected = UserDefaults.standard.bool(forKey: "CodexCLIConnected")
         isOpenCodeConnected = UserDefaults.standard.bool(forKey: "OpenCodeCLIConnected")
         isPiConnected = UserDefaults.standard.bool(forKey: "PiCLIConnected")
-        // DEBUG_PROBE_H2_1 — remove in cleanup
-        DebugModeProbe.log(
-            hypothesisId: "H2",
-            location: "APISettingsViewModel.loadNonSecretStoredData",
-            message: "loaded persisted CLI connection flags",
-            data: [
-                "claudeConnected": isClaudeCodeConnected,
-                "codexConnected": isCodexConnected,
-                "openCodeConnected": isOpenCodeConnected,
-                "piConnected": isPiConnected,
-                "piUserDefault": UserDefaults.standard.bool(forKey: "PiCLIConnected")
-            ]
-        )
 
         if let customConfig = try? CustomProviderConfiguration.load() {
             if let version = customConfig.apiVersion, !version.isEmpty {
@@ -1125,20 +1112,6 @@ public class APISettingsViewModel: ObservableObject {
         let shouldValidateOpenCode = isOpenCodeConnected
         let shouldValidateCursor = isCursorConnected
         let shouldValidatePi = isPiConnected
-        // DEBUG_PROBE_H2_2 — remove in cleanup
-        DebugModeProbe.log(
-            hypothesisId: "H2",
-            location: "APISettingsViewModel.validateCachedContextBuilderProvidersIfNeeded",
-            message: "starting cached provider validation",
-            data: [
-                "shouldValidateClaude": shouldValidateClaude,
-                "shouldValidateCodex": shouldValidateCodex,
-                "shouldValidateOpenCode": shouldValidateOpenCode,
-                "shouldValidateCursor": shouldValidateCursor,
-                "shouldValidatePi": shouldValidatePi,
-                "currentPiOptions": DebugModeProbe.optionSummary(availablePiModelOptions)
-            ]
-        )
 
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -1158,22 +1131,6 @@ public class APISettingsViewModel: ObservableObject {
             applyContextBuilderProviderValidationResult(readiness.2, provider: .openCode)
             applyContextBuilderProviderValidationResult(readiness.3, provider: .cursor)
             applyContextBuilderProviderValidationResult(readiness.4, provider: .pi)
-            // DEBUG_PROBE_H2_3 — remove in cleanup
-            DebugModeProbe.log(
-                hypothesisId: "H2",
-                location: "APISettingsViewModel.validateCachedContextBuilderProvidersIfNeeded",
-                message: "cached provider validation results applied",
-                data: [
-                    "claudeReady": readiness.0,
-                    "codexReady": readiness.1,
-                    "openCodeReady": readiness.2,
-                    "cursorReady": readiness.3,
-                    "piReady": readiness.4,
-                    "isPiConnected": isPiConnected,
-                    "verifiedProviders": contextBuilderVerifiedCLIProviders.map(\.rawValue).sorted(),
-                    "piOptions": DebugModeProbe.optionSummary(availablePiModelOptions)
-                ]
-            )
             if isCodexConnected, isVerifiedContextBuilderProvider(.codexExec) {
                 startCodexModelsSubscriptionIfNeeded()
             }
@@ -1188,32 +1145,10 @@ public class APISettingsViewModel: ObservableObject {
     }
 
     private func probeCachedPiConnection(ifNeeded: Bool) async -> Bool {
-        // DEBUG_PROBE_H2_4 — remove in cleanup
-        DebugModeProbe.log(
-            hypothesisId: "H2",
-            location: "APISettingsViewModel.probeCachedPiConnection",
-            message: "probing cached pi connection",
-            data: ["ifNeeded": ifNeeded]
-        )
         guard ifNeeded else { return false }
         do {
-            let result = try await refreshPiAvailabilityFromModelDiscovery(workspacePath: nil, collector: nil)
-            // DEBUG_PROBE_H2_5 — remove in cleanup
-            DebugModeProbe.log(
-                hypothesisId: "H2",
-                location: "APISettingsViewModel.probeCachedPiConnection",
-                message: "pi probe completed",
-                data: ["result": result, "piOptions": DebugModeProbe.optionSummary(availablePiModelOptions)]
-            )
-            return result
+            return try await refreshPiAvailabilityFromModelDiscovery(workspacePath: nil, collector: nil)
         } catch {
-            // DEBUG_PROBE_H2_6 — remove in cleanup
-            DebugModeProbe.log(
-                hypothesisId: "H2",
-                location: "APISettingsViewModel.probeCachedPiConnection",
-                message: "pi probe failed",
-                data: ["error": error.localizedDescription]
-            )
             return false
         }
     }
@@ -3509,18 +3444,6 @@ public class APISettingsViewModel: ObservableObject {
     }
 
     func refreshPiModelCatalogIfConnected(workspacePath: String? = nil) {
-        // DEBUG_PROBE_H5_1 — remove in cleanup
-        DebugModeProbe.log(
-            hypothesisId: "H5",
-            location: "APISettingsViewModel.refreshPiModelCatalogIfConnected",
-            message: "refresh requested",
-            data: [
-                "workspace": DebugModeProbe.workspaceLabel(workspacePath),
-                "isPiConnected": isPiConnected,
-                "piUserDefault": UserDefaults.standard.bool(forKey: "PiCLIConnected"),
-                "hasPreflightTask": piPreflightTask != nil
-            ]
-        )
         guard isPiConnected || UserDefaults.standard.bool(forKey: "PiCLIConnected") else { return }
         guard piPreflightTask == nil else { return }
         piPreflightTask = Task { [weak self, workspacePath] in
@@ -3573,17 +3496,6 @@ public class APISettingsViewModel: ObservableObject {
     }
 
     private func startPiAvailabilityPreflightIfNeeded(workspacePath: String?) {
-        // DEBUG_PROBE_H5_2 — remove in cleanup
-        DebugModeProbe.log(
-            hypothesisId: "H5",
-            location: "APISettingsViewModel.startPiAvailabilityPreflightIfNeeded",
-            message: "preflight requested",
-            data: [
-                "workspace": DebugModeProbe.workspaceLabel(workspacePath),
-                "hasPreflightTask": piPreflightTask != nil,
-                "isPiConnected": isPiConnected
-            ]
-        )
         guard piPreflightTask == nil else { return }
         piPreflightTask = Task { [weak self, workspacePath] in
             guard let self else { return }
@@ -3617,36 +3529,11 @@ public class APISettingsViewModel: ObservableObject {
         workspacePath: String?,
         collector: CLIProcessLogCollector?
     ) async throws -> Bool {
-        // DEBUG_PROBE_H2_7 — remove in cleanup
-        DebugModeProbe.log(
-            hypothesisId: "H2",
-            location: "APISettingsViewModel.refreshPiAvailabilityFromModelDiscovery",
-            message: "discoverOnce starting",
-            data: ["workspace": DebugModeProbe.workspaceLabel(workspacePath)]
-        )
         let snapshot = try await piModelPollingService.discoverOnce(workspacePath: workspacePath)
         guard let snapshot else {
-            // DEBUG_PROBE_H2_8 — remove in cleanup
-            DebugModeProbe.log(
-                hypothesisId: "H2",
-                location: "APISettingsViewModel.refreshPiAvailabilityFromModelDiscovery",
-                message: "discoverOnce returned nil",
-                data: ["workspace": DebugModeProbe.workspaceLabel(workspacePath)]
-            )
-            applyPiDisconnected(errorMessage: "pi did not return any supported openai-codex, Z.Ai, or DeepSeek models.")
+            applyPiDisconnected(errorMessage: "pi did not return any model options from its configured providers.")
             return false
         }
-        // DEBUG_PROBE_H4_1 — remove in cleanup
-        DebugModeProbe.log(
-            hypothesisId: "H4",
-            location: "APISettingsViewModel.refreshPiAvailabilityFromModelDiscovery",
-            message: "discoverOnce returned snapshot",
-            data: [
-                "workspace": DebugModeProbe.workspaceLabel(workspacePath),
-                "snapshot": DebugModeProbe.optionSummary(snapshot.models.options),
-                "currentModelRaw": snapshot.models.currentModelRaw as Any
-            ]
-        )
         collector?.append("Discovered \(snapshot.models.options.count) pi model option(s)")
         piError = nil
         isPiConnected = true
@@ -3656,18 +3543,6 @@ public class APISettingsViewModel: ObservableObject {
 
     private func startPiModelsSubscriptionIfNeeded(workspacePath: String?) {
         let canonicalWorkspacePath = AgentPiModelRegistry.canonicalWorkspacePath(workspacePath)
-        // DEBUG_PROBE_H5_3 — remove in cleanup
-        DebugModeProbe.log(
-            hypothesisId: "H5",
-            location: "APISettingsViewModel.startPiModelsSubscriptionIfNeeded",
-            message: "subscription requested",
-            data: [
-                "requestedWorkspace": DebugModeProbe.workspaceLabel(workspacePath),
-                "canonicalWorkspace": DebugModeProbe.workspaceLabel(canonicalWorkspacePath),
-                "existingWorkspace": DebugModeProbe.workspaceLabel(piModelsSubscribedWorkspacePath),
-                "hasTask": piModelsTask != nil
-            ]
-        )
         if piModelsTask != nil {
             guard piModelsSubscribedWorkspacePath != canonicalWorkspacePath else { return }
             stopPiModelsSubscription()
@@ -3682,28 +3557,10 @@ public class APISettingsViewModel: ObservableObject {
                     guard let self else { return }
                     switch event {
                     case let .snapshot(snapshot):
-                        // DEBUG_PROBE_H5_4 — remove in cleanup
-                        DebugModeProbe.log(
-                            hypothesisId: "H5",
-                            location: "APISettingsViewModel.startPiModelsSubscriptionIfNeeded",
-                            message: "subscription yielded snapshot",
-                            data: [
-                                "workspace": DebugModeProbe.workspaceLabel(canonicalWorkspacePath),
-                                "snapshot": DebugModeProbe.optionSummary(snapshot.models.options),
-                                "currentModelRaw": snapshot.models.currentModelRaw as Any
-                            ]
-                        )
                         piError = nil
                         isPiConnected = true
                         applyPiModelSnapshot(snapshot)
                     case let .failure(failure):
-                        // DEBUG_PROBE_H5_5 — remove in cleanup
-                        DebugModeProbe.log(
-                            hypothesisId: "H5",
-                            location: "APISettingsViewModel.startPiModelsSubscriptionIfNeeded",
-                            message: "subscription yielded failure",
-                            data: ["workspace": DebugModeProbe.workspaceLabel(canonicalWorkspacePath), "message": failure.message]
-                        )
                         applyPiDisconnected(errorMessage: failure.message)
                     }
                 }
@@ -3727,29 +3584,11 @@ public class APISettingsViewModel: ObservableObject {
     }
 
     private func applyPiModelSnapshot(_ snapshot: PiModelPollingService.Snapshot) {
-        // DEBUG_PROBE_H4_2 — remove in cleanup
-        DebugModeProbe.log(
-            hypothesisId: "H4",
-            location: "APISettingsViewModel.applyPiModelSnapshot",
-            message: "applying pi model snapshot to API settings",
-            data: [
-                "before": DebugModeProbe.optionSummary(availablePiModelOptions),
-                "incoming": DebugModeProbe.optionSummary(snapshot.models.options),
-                "currentModelRaw": snapshot.models.currentModelRaw as Any
-            ]
-        )
         availablePiModelOptions = snapshot.models.options
         Task { await updateAvailableModels() }
     }
 
     private func applyPiDisconnected(errorMessage: String?) {
-        // DEBUG_PROBE_H2_9 — remove in cleanup
-        DebugModeProbe.log(
-            hypothesisId: "H2",
-            location: "APISettingsViewModel.applyPiDisconnected",
-            message: "marking pi disconnected",
-            data: ["errorMessage": errorMessage as Any, "previousOptions": DebugModeProbe.optionSummary(availablePiModelOptions)]
-        )
         piError = errorMessage
         isPiConnected = false
         availablePiModelOptions = []

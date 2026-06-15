@@ -230,6 +230,10 @@ final class AgentModeProviderBindingService {
                     }
                 }
             case .pi:
+                // Managed pi applies built-in tool policy at process launch through the
+                // bridge environment. Existing active runs keep their launch policy, but
+                // saving and refreshing the current binding makes the change visible and
+                // ensures the next pi run uses the new level.
                 break
             }
         }

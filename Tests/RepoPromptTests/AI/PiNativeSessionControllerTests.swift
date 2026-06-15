@@ -153,7 +153,7 @@ final class PiNativeSessionControllerTests: XCTestCase {
             currentModelRaw: nil
         ), workspacePath: workspaceURL.path))
         AgentPiModelRegistry.shared.test_clearMemoryPreservingStore()
-        XCTAssertNil(AgentPiModelRegistry.shared.resolvedSnapshot(workspacePath: workspaceURL.path))
+        XCTAssertEqual(AgentPiModelRegistry.shared.resolvedSnapshot(workspacePath: workspaceURL.path)?.options.map(\.rawValue), [rawModel])
         let client = PiRPCClient(config: .init(
             commandName: scriptURL.path,
             additionalPathHints: [],
@@ -708,6 +708,8 @@ final class PiNativeSessionControllerTests: XCTestCase {
                 error as? PiRPCImageContentBuilder.Error,
                 .unsupportedRemoteImageURL("https://example.com/image.png")
             )
+            XCTAssertTrue(error.localizedDescription.contains("must be local files"))
+            XCTAssertTrue(error.localizedDescription.contains("Save the image locally"))
         }
 
         let directory = try makeTemporaryDirectory()

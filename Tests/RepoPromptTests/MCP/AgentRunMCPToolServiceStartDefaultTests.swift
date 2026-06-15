@@ -82,6 +82,56 @@ final class AgentRunMCPToolServiceStartDefaultTests: XCTestCase {
         }
     }
 
+    func testFreshPiStartsUseSafeManagedPermissionGate() throws {
+        let suiteName = "AgentRunMCPToolServiceStartDefaultTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.removePersistentDomain(forName: suiteName)
+        PiAgentToolPreferences.setPermissionLevel(.fullAccess, defaults: defaults)
+        let service = makeBindingService(defaults: defaults)
+
+        let profile = service.permissionProfileForMCPActivation(isSubagent: true, provider: .pi)
+        let snapshot = service.controlsBinding(
+            selectedAgent: .pi,
+            permissionProfile: profile,
+            isSubagent: true,
+            externallyManagedReason: nil
+        )
+
+        XCTAssertEqual(profile, .mcpSafeDefaults)
+        XCTAssertEqual(snapshot.permission.displayName, PiAgentToolPreferences.PermissionLevel.managedDefault.displayName)
+        XCTAssertEqual(snapshot.runtimePermission.piPermissionLevel, .managedDefault)
+        XCTAssertTrue(snapshot.runtimePermission.piRequiresApprovalForMutatingBuiltIns)
+        XCTAssertFalse(snapshot.runtimePermission.piAllowsMutatingBuiltInsWithoutApproval)
+    }
+
+    func testCustomPiOverrideWinsOverSafeManagedDefaults() throws {
+        let suiteName = "AgentRunMCPToolServiceStartDefaultTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.removePersistentDomain(forName: suiteName)
+        AgentModePermissionPreferences.setSubagentPermissionPolicy(.custom, defaults: defaults)
+        AgentModePermissionPreferences.setProviderSubagentPermissionLevel(
+            .pi(.readOnly),
+            for: .pi,
+            defaults: defaults
+        )
+        let service = makeBindingService(defaults: defaults)
+
+        let profile = service.permissionProfileForMCPActivation(isSubagent: true, provider: .pi)
+        let snapshot = service.controlsBinding(
+            selectedAgent: .pi,
+            permissionProfile: profile,
+            isSubagent: true,
+            externallyManagedReason: nil
+        )
+
+        XCTAssertEqual(profile, .providerOverride(.pi(.readOnly)))
+        XCTAssertEqual(snapshot.permission.displayName, PiAgentToolPreferences.PermissionLevel.readOnly.displayName)
+        XCTAssertEqual(snapshot.runtimePermission.piPermissionLevel, .readOnly)
+        XCTAssertTrue(snapshot.runtimePermission.piBlocksMutatingBuiltIns)
+    }
+
     func testInheritedRestrictiveCodexSettingsRemainRestrictive() throws {
         let suiteName = "AgentRunMCPToolServiceStartDefaultTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))

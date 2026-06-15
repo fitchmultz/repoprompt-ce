@@ -211,11 +211,13 @@ import XCTest
             agent: AgentProviderKind,
             modelString: String?,
             workspacePath: String?,
-            windowID: Int
+            windowID: Int,
+            runtimePermission: AgentProviderRuntimePermissionBinding
         ) -> HeadlessAgentProvider {
             _ = modelString
             _ = workspacePath
             _ = windowID
+            _ = runtimePermission
             guard let configuration else {
                 preconditionFailure("Nested Context Builder provider factory used before fixture configuration")
             }

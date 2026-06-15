@@ -1,17 +1,29 @@
 // RepoPrompt CE managed pi bridge extension
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { createHash } from "node:crypto";
+import type { ExtensionAPI, ExtensionContext, ToolCallEvent, ToolCallEventResult } from "@earendil-works/pi-coding-agent";
 
 const BRIDGE_VERSION = "__REPOPROMPT_BRIDGE_VERSION__";
 const REPOPROMPT_CLI = "__REPOPROMPT_CLI__";
 const REPOPROMPT_WINDOW_ID: string | undefined = "__REPOPROMPT_WINDOW_ID__";
 const REPOPROMPT_IS_MANAGED_WINDOW_BRIDGE = REPOPROMPT_WINDOW_ID !== undefined;
 const REPOPROMPT_MANAGED_RUN_ENV = "__REPOPROMPT_MANAGED_RUN_ENV__";
+const REPOPROMPT_PI_PERMISSION_LEVEL_ENV = "__REPOPROMPT_PI_PERMISSION_LEVEL_ENV__";
 const REPOPROMPT_SCHEMA_ARGS = JSON.parse("__REPOPROMPT_SCHEMA_ARGS_JSON__") as string[];
 const REPOPROMPT_TOOL_ARGS_PREFIX = JSON.parse("__REPOPROMPT_TOOL_ARGS_PREFIX_JSON__") as string[];
 const SCHEMA_LOAD_TIMEOUT_MS = 60_000;
 const TOOL_EXEC_TIMEOUT_MS = 600_000;
+const TOOL_APPROVAL_TIMEOUT_MS = 120_000;
 const MAX_RESULT_CHARS = 50 * 1024;
+const MAX_TOOL_INPUT_UI_CHARS = 1_200;
 type JSONRecord = Record<string, unknown>;
+type PiExecResult = Awaited<ReturnType<ExtensionAPI["exec"]>>;
+type PiBuiltInToolName = "bash" | "read" | "edit" | "write" | "grep" | "find" | "ls";
+type PiPermissionLevel = "readOnly" | "askBeforeWrite" | "autoReview" | "fullAccess";
+
+const PI_BUILT_IN_TOOLS = new Set<string>(["bash", "read", "edit", "write", "grep", "find", "ls"]);
+const PI_READ_ONLY_TOOLS = new Set<string>(["read", "grep", "find", "ls"]);
+const PI_MUTATING_TOOLS = new Set<string>(["bash", "edit", "write"]);
+const PI_SESSION_TOOL_GRANTS = new Set<string>();
 
 type RepoPromptToolEntry = {
   name: string;
@@ -194,6 +206,237 @@ async function callRepoPromptTool(
   };
 }
 
+function piPermissionLevelFromEnv(): PiPermissionLevel | undefined {
+  const raw = process.env[REPOPROMPT_PI_PERMISSION_LEVEL_ENV]?.trim();
+  switch (raw) {
+    case "readOnly":
+    case "askBeforeWrite":
+    case "autoReview":
+    case "fullAccess":
+      return raw;
+    default:
+      return undefined;
+  }
+}
+
+function isPiBuiltInToolName(toolName: string): toolName is PiBuiltInToolName {
+  return PI_BUILT_IN_TOOLS.has(toolName);
+}
+
+function redactValue(key: string, value: unknown): unknown {
+  const normalized = key.toLowerCase();
+  if (
+    normalized.includes("password")
+    || normalized.includes("token")
+    || normalized.includes("secret")
+    || normalized.includes("api_key")
+    || normalized.includes("apikey")
+    || normalized.includes("authorization")
+  ) {
+    return "[REDACTED]";
+  }
+  if (typeof value === "string" && value.length > MAX_TOOL_INPUT_UI_CHARS) {
+    return `${value.slice(0, MAX_TOOL_INPUT_UI_CHARS)}… [truncated ${value.length - MAX_TOOL_INPUT_UI_CHARS} chars]`;
+  }
+  return value;
+}
+
+function safeJSONString(value: unknown, maxChars: number): string {
+  let text: string;
+  try {
+    text = JSON.stringify(value, (key, nested) => redactValue(key, nested), 2) ?? "null";
+  } catch (error) {
+    text = `[unserializable input: ${String(error)}]`;
+  }
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, maxChars)}… [truncated ${text.length - maxChars} chars]`;
+}
+
+function canonicalizeForHash(value: unknown, seen: WeakSet<object> = new WeakSet()): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => canonicalizeForHash(item, seen));
+  }
+  if (isRecord(value)) {
+    if (seen.has(value)) throw new Error("cyclic tool input");
+    seen.add(value);
+    const sorted: JSONRecord = {};
+    for (const key of Object.keys(value).sort()) {
+      sorted[key] = canonicalizeForHash(value[key], seen);
+    }
+    seen.delete(value);
+    return sorted;
+  }
+  return value === undefined ? null : value;
+}
+
+function canonicalJSONString(value: unknown): string {
+  try {
+    return JSON.stringify(canonicalizeForHash(value)) ?? "null";
+  } catch (error) {
+    return `[unserializable input: ${String(error)}]`;
+  }
+}
+
+function sha256Hex(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function piToolSessionGrantKey(event: ToolCallEvent, ctx: ExtensionContext): string {
+  return [event.toolName, ctx.cwd, sha256Hex(canonicalJSONString(event.input))].join("\u{1f}");
+}
+
+function blockPiTool(reason: string): ToolCallEventResult {
+  return { block: true, reason };
+}
+
+function parseRepoPromptJSONOutput(stdout: string): unknown {
+  const trimmed = stdout.trim();
+  if (!trimmed) throw new Error("empty RepoPrompt approval response");
+  const parsed = JSON.parse(trimmed);
+  if (
+    isRecord(parsed)
+    && Array.isArray(parsed.content)
+    && parsed.content.length === 1
+    && isRecord(parsed.content[0])
+    && typeof parsed.content[0].text === "string"
+  ) {
+    return parseRepoPromptJSONOutput(parsed.content[0].text);
+  }
+  return parsed;
+}
+
+function approvalChoiceFromAskUserResponse(value: unknown): string | undefined {
+  if (!isRecord(value)) return undefined;
+  if (value.timed_out === true || value.skipped === true) return undefined;
+  const answers = value.answers;
+  if (!isRecord(answers)) return undefined;
+  const answer = answers.pi_tool_approval;
+  if (!isRecord(answer)) return undefined;
+  if (answer.skipped === true) return undefined;
+  if (Array.isArray(answer.selected_options) && typeof answer.selected_options[0] === "string") {
+    return answer.selected_options[0];
+  }
+  if (Array.isArray(answer.answers) && typeof answer.answers[0] === "string") {
+    return answer.answers[0];
+  }
+  return undefined;
+}
+
+async function requestRepoPromptPiToolApproval(
+  pi: ExtensionAPI,
+  event: ToolCallEvent,
+  ctx: ExtensionContext,
+  permissionLevel: PiPermissionLevel,
+  inputSummary: string,
+): Promise<ToolCallEventResult | void> {
+  const modeCopy = permissionLevel === "autoReview"
+    ? "Auto Review is not yet wired for pi built-ins, so RepoPrompt is routing this request to explicit app approval."
+    : "RepoPrompt asks before pi mutating built-ins run.";
+  const payload: JSONRecord = {
+    title: `RepoPrompt pi preflight approval: ${event.toolName}`,
+    context: [
+      modeCopy,
+      "This is a RepoPrompt policy gate before pi executes the built-in tool, not an OS sandbox.",
+      `Workspace: ${ctx.cwd || "unknown"}`,
+      "Input:",
+      inputSummary,
+    ].join("\n"),
+    timeout_seconds: Math.ceil(TOOL_APPROVAL_TIMEOUT_MS / 1000),
+    questions: [
+      {
+        id: "pi_tool_approval",
+        question: `Allow pi to run built-in ${event.toolName} before execution?`,
+        options: [
+          { label: "Allow once", description: "Allow only this tool call." },
+          { label: "Allow for session", description: "Allow matching tool calls for this pi run only." },
+          { label: "Deny", description: "Block this tool call before pi executes it." },
+        ],
+        allows_multiple: false,
+        allows_custom: false,
+      },
+    ],
+  };
+
+  let result: PiExecResult;
+  try {
+    result = await pi.exec(
+      REPOPROMPT_CLI,
+      repoPromptToolArgs("ask_user", payload),
+      { signal: ctx.signal, timeout: TOOL_APPROVAL_TIMEOUT_MS + 5_000 },
+    );
+  } catch (error) {
+    return blockPiTool(`RepoPrompt failed closed while requesting app approval for pi ${event.toolName}: ${String(error)}`);
+  }
+
+  const stdout = result.stdout.trim();
+  const stderr = result.stderr.trim();
+  if (result.code !== 0) {
+    const message = stderr || stdout || `RepoPrompt ask_user approval failed with exit code ${result.code}`;
+    const failureClass = classifyBridgeFailure(message, result.code);
+    return blockPiTool(`RepoPrompt blocked pi ${event.toolName}; app approval failed (class=${failureClass}, exitCode=${result.code}): ${message}`);
+  }
+
+  let choice: string | undefined;
+  try {
+    choice = approvalChoiceFromAskUserResponse(parseRepoPromptJSONOutput(stdout));
+  } catch (error) {
+    return blockPiTool(`RepoPrompt blocked pi ${event.toolName}; malformed approval response: ${String(error)}`);
+  }
+
+  switch (choice) {
+    case "Allow once":
+      return;
+    case "Allow for session":
+      PI_SESSION_TOOL_GRANTS.add(piToolSessionGrantKey(event, ctx));
+      return;
+    case "Deny":
+      return blockPiTool(`RepoPrompt denied pi ${event.toolName} before execution.`);
+    default:
+      return blockPiTool(`RepoPrompt cancelled or timed out waiting for pi ${event.toolName} approval.`);
+  }
+}
+
+async function evaluatePiBuiltInToolPolicy(
+  pi: ExtensionAPI,
+  event: ToolCallEvent,
+  ctx: ExtensionContext,
+): Promise<ToolCallEventResult | void> {
+  if (!isPiBuiltInToolName(event.toolName)) return;
+
+  const permissionLevel = piPermissionLevelFromEnv();
+  if (!permissionLevel) {
+    return blockPiTool("RepoPrompt blocked pi built-in tool call because the managed pi permission policy was missing or invalid.");
+  }
+
+  if (PI_READ_ONLY_TOOLS.has(event.toolName)) return;
+  if (!PI_MUTATING_TOOLS.has(event.toolName)) {
+    return blockPiTool(`RepoPrompt blocked unknown pi built-in tool '${event.toolName}'.`);
+  }
+
+  if (permissionLevel === "readOnly") {
+    return blockPiTool(`RepoPrompt pi Read Only policy blocks ${event.toolName} before execution.`);
+  }
+
+  if (permissionLevel === "fullAccess") return;
+
+  const grantKey = piToolSessionGrantKey(event, ctx);
+  if (PI_SESSION_TOOL_GRANTS.has(grantKey)) return;
+
+  const inputSummary = safeJSONString(event.input, MAX_TOOL_INPUT_UI_CHARS);
+  return await requestRepoPromptPiToolApproval(pi, event, ctx, permissionLevel, inputSummary);
+}
+
+function registerPiBuiltInToolPolicy(pi: ExtensionAPI) {
+  if (!REPOPROMPT_IS_MANAGED_WINDOW_BRIDGE) return;
+  pi.on("tool_call", async (event, ctx) => {
+    try {
+      return await evaluatePiBuiltInToolPolicy(pi, event, ctx);
+    } catch (error) {
+      return blockPiTool(`RepoPrompt failed closed while evaluating pi built-in tool policy: ${String(error)}`);
+    }
+  });
+}
+
 function registerRepoPromptBindContextTool(pi: ExtensionAPI) {
   if (!REPOPROMPT_IS_MANAGED_WINDOW_BRIDGE) return;
   pi.registerTool({
@@ -287,6 +530,7 @@ export default async function repoPromptBridge(pi: ExtensionAPI) {
     return;
   }
 
+  registerPiBuiltInToolPolicy(pi);
   registerRepoPromptBindContextTool(pi);
   registerRepoPromptWindowStatusTool(pi);
 

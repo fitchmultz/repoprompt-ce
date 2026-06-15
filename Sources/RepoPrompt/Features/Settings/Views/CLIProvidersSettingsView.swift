@@ -382,7 +382,8 @@ struct CLIProvidersSettingsView: View {
                 ? "ACP auto-approve: on"
                 : "ACP auto-approve: off"
         case .pi:
-            return "Bridge only · pi built-ins not sandboxed by RepoPrompt"
+            let level = PiAgentToolPreferences.permissionLevel(defaults: defaults, secureStore: secureStore)
+            return "Preflight gate: \(level.displayName)"
         }
     }
 
@@ -1920,7 +1921,7 @@ struct CLIProvidersSettingsView: View {
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
 
-                    Text("RepoPrompt-managed pi runs add a generated RepoPrompt bridge extension at launch. RepoPrompt permissions apply only to bridge tools; pi built-in read/bash/edit/write/search tools are not sandboxed by RepoPrompt and continue to use pi's own runtime and configuration.")
+                    Text("RepoPrompt-managed pi runs add a generated RepoPrompt bridge extension at launch. RepoPrompt applies a preflight policy gate to pi built-in bash/read/edit/write/search/list tools before execution. This is not an OS sandbox.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)

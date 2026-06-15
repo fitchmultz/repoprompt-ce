@@ -200,6 +200,18 @@ class LifecycleQueueTests(LifecycleTestCase):
         self.assertEqual(guarded_env["REPOPROMPT_GUARD_DELAYED_LAUNCH"], "1")
         self.assertEqual(conductor.operation_display_name("app", {"subcommand": "relaunch"}), "app relaunch")
 
+    def test_test_operations_default_to_bounded_ci_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = conductor.OperationRegistry(Path(tmp))
+            _argv, _lanes, _cwd, _env, timeout = registry.prepare({"operation": "test", "args": {}})
+            _provider_argv, _provider_lanes, _provider_cwd, _provider_env, provider_timeout = registry.prepare(
+                {"operation": "provider-test", "args": {}}
+            )
+
+        self.assertEqual(timeout, conductor.TEST_TIMEOUT_SECONDS)
+        self.assertEqual(provider_timeout, conductor.TEST_TIMEOUT_SECONDS)
+        self.assertLessEqual(timeout, 15 * 60)
+
     def test_release_artifact_delegates_release_script_with_release_lanes_and_timeout(self) -> None:
         tmp, state = self.make_state()
         self.addCleanup(tmp.cleanup)
@@ -733,6 +745,8 @@ class SmokeOperationTests(unittest.TestCase):
 
         def record_command(name: str, argv: list[str], *_args: object, **_kwargs: object) -> tuple[int, str, str]:
             calls.append((name, argv))
+            if name == "tree roots":
+                return 0, "## File Tree ✅\n- **Roots**: 1\n/tmp/repo\n", ""
             return 0, "", ""
 
         with mock.patch.object(conductor, "require_debug_cli", return_value="/tmp/rpce-cli-debug"), mock.patch.object(
@@ -779,6 +793,8 @@ class SmokeOperationTests(unittest.TestCase):
                     args = sys.argv[1:]
                     with open(os.environ["FAKE_CLI_LOG"], "a", encoding="utf-8") as log:
                         log.write(json.dumps(args) + "\\n")
+                    if "-e" in args and args[args.index("-e") + 1] == "tree --type roots":
+                        print("## File Tree ✅\\n- **Roots**: 1\\n/tmp/repo")
                     if "-c" in args and args[args.index("-c") + 1] == "agent_run":
                         payload = json.loads(args[args.index("-j") + 1])
                         if payload["op"] == "start":
@@ -830,6 +846,8 @@ class SmokeOperationTests(unittest.TestCase):
 
             def record_command(name: str, argv: list[str], *_args: object, **_kwargs: object) -> tuple[int, str, str]:
                 calls.append((name, argv))
+                if name == "tree roots":
+                    return 0, "## File Tree ✅\n- **Roots**: 1\n/tmp/repo\n", ""
                 return 0, "", ""
 
             with mock.patch.object(conductor, "debug_app_bundle_path", return_value=app), mock.patch.object(

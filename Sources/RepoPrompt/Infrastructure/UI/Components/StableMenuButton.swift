@@ -117,7 +117,13 @@ struct StableMenuItem {
         style: StableMenuItemStyle = .normal,
         items: [StableMenuItem]
     ) -> StableMenuItem {
-        StableMenuItem(title: title, kind: .submenu(items), imageSystemName: imageSystemName, style: style)
+        StableMenuItem(
+            title: title,
+            kind: .submenu(items),
+            isEnabled: !items.isEmpty,
+            imageSystemName: imageSystemName,
+            style: style
+        )
     }
 
     static func header(_ title: String) -> StableMenuItem {

@@ -334,7 +334,7 @@ struct AgentHandoffPopover: View {
     private func handoffModelMenuContent(for agent: AgentProviderKind) -> some View {
         let options = Self.visibleModelOptions(config.modelOptionsProvider(agent))
         if options.isEmpty {
-            Button("No models available") {}
+            Button(emptyModelMenuTitle(for: agent)) {}
                 .disabled(true)
         } else {
             AgentModelOptionsMenuContent(
@@ -345,6 +345,20 @@ struct AgentHandoffPopover: View {
             ) { agent, model in
                 selectHandoffModel(model, for: agent)
             }
+        }
+    }
+
+    private func emptyModelMenuTitle(for agent: AgentProviderKind) -> String {
+        Self.emptyModelMenuTitle(for: agent, piWorkspacePath: config.piWorkspacePathProvider())
+    }
+
+    static func emptyModelMenuTitle(for agent: AgentProviderKind, piWorkspacePath: String?) -> String {
+        guard agent == .pi else { return "No models available" }
+        switch AgentModelCatalog.piCatalogState(workspacePath: piWorkspacePath) {
+        case .loading:
+            return "Loading pi models…"
+        case .loaded, .unavailable:
+            return "No pi models available"
         }
     }
 

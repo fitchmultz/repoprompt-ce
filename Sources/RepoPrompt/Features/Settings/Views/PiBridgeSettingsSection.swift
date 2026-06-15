@@ -33,7 +33,7 @@ struct PiBridgeSettingsSection: View {
                 actionButton
             }
 
-            Text("Optional for pi chats started outside RepoPrompt. RepoPrompt-managed Agent Mode runs inject this bridge automatically. The bridge exposes RepoPrompt MCP tools to pi; it does not sandbox pi built-in tools, which continue to use pi's own config.")
+            Text("Optional for pi chats started outside RepoPrompt. RepoPrompt-managed Agent Mode runs inject a window-scoped bridge automatically; those managed runs expose RepoPrompt MCP tools and apply RepoPrompt's pi built-in preflight policy gate. The gate is not an OS sandbox.")
                 .font(fontPreset.captionFont)
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

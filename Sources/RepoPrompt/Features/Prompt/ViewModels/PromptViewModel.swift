@@ -401,18 +401,6 @@ class PromptViewModel: ObservableObject {
     @Published var contextBuilderAgent: AgentProviderKind = .claudeCode {
         didSet {
             guard oldValue != contextBuilderAgent else { return }
-            // DEBUG_PROBE_H1_1 — remove in cleanup
-            DebugModeProbe.log(
-                hypothesisId: "H1",
-                location: "PromptViewModel.contextBuilderAgent.didSet",
-                message: "context builder agent changed",
-                data: [
-                    "oldAgent": oldValue.rawValue,
-                    "newAgent": contextBuilderAgent.rawValue,
-                    "modelRaw": contextBuilderAgentModelRaw,
-                    "isSyncingSettings": isSyncingSettings
-                ]
-            )
             if isSyncingSettings { return }
             if !isContextBuilderModelRawValidForAgent(contextBuilderAgentModelRaw, agent: contextBuilderAgent) {
                 contextBuilderAgentModelRaw = defaultModelRaw(for: contextBuilderAgent)
@@ -431,19 +419,6 @@ class PromptViewModel: ObservableObject {
         didSet {
             let normalized = contextBuilderAgentModelRaw.trimmingCharacters(in: .whitespacesAndNewlines)
             let effectiveRaw = normalized.isEmpty ? defaultModelRaw(for: contextBuilderAgent) : normalized
-            // DEBUG_PROBE_H1_2 — remove in cleanup
-            DebugModeProbe.log(
-                hypothesisId: "H1",
-                location: "PromptViewModel.contextBuilderAgentModelRaw.didSet",
-                message: "context builder model raw changed",
-                data: [
-                    "oldModelRaw": oldValue,
-                    "newModelRaw": contextBuilderAgentModelRaw,
-                    "effectiveRaw": effectiveRaw,
-                    "agent": contextBuilderAgent.rawValue,
-                    "isSyncingSettings": isSyncingSettings
-                ]
-            )
             guard oldValue.caseInsensitiveCompare(effectiveRaw) != .orderedSame else { return }
             if contextBuilderAgentModelRaw != effectiveRaw {
                 contextBuilderAgentModelRaw = effectiveRaw
@@ -494,22 +469,7 @@ class PromptViewModel: ObservableObject {
     }
 
     func contextBuilderModelOptions(for agentKind: AgentProviderKind) -> [AgentModelOption] {
-        let options = AgentModelCatalog.options(for: agentKind, availability: agentAvailabilityContext)
-        if agentKind == .pi {
-            // DEBUG_PROBE_H4_6 — remove in cleanup
-            DebugModeProbe.log(
-                hypothesisId: "H4",
-                location: "PromptViewModel.contextBuilderModelOptions",
-                message: "context builder pi options requested",
-                data: [
-                    "currentWorkspace": DebugModeProbe.workspaceLabel(currentWorkspacePath),
-                    "selectedAgent": contextBuilderAgent.rawValue,
-                    "selectedModelRaw": contextBuilderAgentModelRaw,
-                    "options": DebugModeProbe.optionSummary(options)
-                ]
-            )
-        }
-        return options
+        AgentModelCatalog.options(for: agentKind, availability: agentAvailabilityContext)
     }
 
     private var agentAvailabilityContext: AgentModelCatalog.AvailabilityContext {
@@ -567,25 +527,7 @@ class PromptViewModel: ObservableObject {
 
     private func handleAgentProviderAvailabilityChanged(reason: String) {
         refreshAvailableAgentKinds()
-        let persisted = settingsManager.persistedGlobalContextBuilderAgentSelection()
         let normalizedContextBuilder = resolvedPersistedContextBuilderSelection()
-        // DEBUG_PROBE_H2_11 — remove in cleanup
-        DebugModeProbe.log(
-            hypothesisId: "H2",
-            location: "PromptViewModel.handleAgentProviderAvailabilityChanged",
-            message: "agent provider availability changed",
-            data: [
-                "reason": reason,
-                "persistedAgent": persisted.agentRaw as Any,
-                "persistedModel": persisted.modelRaw as Any,
-                "normalizedAgent": normalizedContextBuilder?.agent.rawValue as Any,
-                "normalizedModel": normalizedContextBuilder?.modelRaw as Any,
-                "currentAgent": contextBuilderAgent.rawValue,
-                "currentModel": contextBuilderAgentModelRaw,
-                "availableAgents": availableAgentKinds.map(\.rawValue),
-                "piOptions": DebugModeProbe.optionSummary(AgentModelCatalog.options(for: .pi, availability: agentAvailabilityContext))
-            ]
-        )
         guard let normalizedContextBuilder else { return }
         if normalizedContextBuilder.agent != contextBuilderAgent ||
             normalizedContextBuilder.modelRaw.caseInsensitiveCompare(contextBuilderAgentModelRaw) != .orderedSame
@@ -600,13 +542,6 @@ class PromptViewModel: ObservableObject {
 
     /// Force-commit context builder settings to the global store so other components (like recommendation engine) see them.
     func commitContextBuilderSettings() {
-        // DEBUG_PROBE_H1_4 — remove in cleanup
-        DebugModeProbe.log(
-            hypothesisId: "H1",
-            location: "PromptViewModel.commitContextBuilderSettings",
-            message: "committing global context builder settings",
-            data: ["agent": contextBuilderAgent.rawValue, "modelRaw": contextBuilderAgentModelRaw]
-        )
         settingsManager.setGlobalContextBuilderAgentSelection(
             agentRaw: contextBuilderAgent.rawValue,
             modelRaw: contextBuilderAgentModelRaw,
@@ -917,20 +852,6 @@ class PromptViewModel: ObservableObject {
     }
 
     func syncSettingsFromSettingsManager() {
-        // DEBUG_PROBE_H1_3 — remove in cleanup
-        DebugModeProbe.log(
-            hypothesisId: "H1",
-            location: "PromptViewModel.syncSettingsFromSettingsManager",
-            message: "sync settings requested",
-            data: [
-                "hasWorkspaceID": currentWorkspaceID != nil,
-                "currentWorkspace": DebugModeProbe.workspaceLabel(currentWorkspacePath),
-                "globalSelection": [
-                    "agent": settingsManager.globalContextBuilderAgentSelection().agentRaw as Any,
-                    "model": settingsManager.globalContextBuilderAgentSelection().modelRaw as Any
-                ]
-            ]
-        )
         guard let workspaceID = currentWorkspaceID else { return }
 
         let copySettings = settingsManager.copySettings(for: workspaceID)
@@ -992,18 +913,6 @@ class PromptViewModel: ObservableObject {
         // Sync Context Builder agent/model from global Context Builder settings (single source of truth)
         refreshAvailableAgentKinds()
         if let normalizedContextBuilder = resolvedPersistedContextBuilderSelection() {
-            // DEBUG_PROBE_H2_10 — remove in cleanup
-            DebugModeProbe.log(
-                hypothesisId: "H2",
-                location: "PromptViewModel.syncSettingsFromSettingsManager",
-                message: "resolved persisted context builder during sync",
-                data: [
-                    "normalizedAgent": normalizedContextBuilder.agent.rawValue,
-                    "normalizedModelRaw": normalizedContextBuilder.modelRaw,
-                    "availableAgents": availableAgentKinds.map(\.rawValue),
-                    "piOptions": DebugModeProbe.optionSummary(contextBuilderModelOptions(for: .pi))
-                ]
-            )
             if Self.debugLoggingEnabled { print("[PromptVM] syncSettings - normalized context builder agent: \(normalizedContextBuilder.agent.rawValue)") }
             contextBuilderAgent = normalizedContextBuilder.agent
             contextBuilderAgentModelRaw = normalizedContextBuilder.modelRaw

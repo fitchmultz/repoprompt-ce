@@ -268,7 +268,7 @@ final class ContextBuilderMCPProgressTimelineTests: XCTestCase {
             let provider = ContextBuilderImmediateCompletionProvider()
             let previousAutoStart = GlobalSettingsStore.shared.mcpAutoStart()
             GlobalSettingsStore.shared.setMCPAutoStart(false, commit: false)
-            let window = WindowState { _, _, _, _ in provider }
+            let window = WindowState { _, _, _, _, _ in provider }
             GlobalSettingsStore.shared.setMCPAutoStart(previousAutoStart, commit: false)
             WindowStatesManager.shared.registerWindowState(window)
             defer { WindowStatesManager.shared.unregisterWindowState(window) }

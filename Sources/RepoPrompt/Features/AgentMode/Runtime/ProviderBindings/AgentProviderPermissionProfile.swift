@@ -144,6 +144,17 @@ extension AgentProviderPermissionProfile {
         }
     }
 
+    func piPermissionLevel(
+        userConfigured: PiAgentToolPreferences.PermissionLevel = PiAgentToolPreferences.permissionLevel()
+    ) -> PiAgentToolPreferences.PermissionLevel {
+        switch self {
+        case .userConfigured: userConfigured
+        case .mcpSafeDefaults: .managedDefault
+        case let .providerOverride(.pi(level)): level
+        case .providerOverride: .managedDefault
+        }
+    }
+
     func acpSessionModeID(for agent: AgentProviderKind) -> String? {
         switch agent {
         case .openCode:

@@ -180,21 +180,6 @@ final class AgentModelsSettingsViewModel: ObservableObject {
 
     /// Recompute the recommendation set and drift state.
     func refresh() {
-        // DEBUG_PROBE_H1_5 — remove in cleanup
-        DebugModeProbe.log(
-            hypothesisId: "H1",
-            location: "AgentModelsSettingsViewModel.refresh",
-            message: "refreshing Agent Models settings state",
-            data: [
-                "hasWorkspaceID": promptVM.currentWorkspaceID != nil,
-                "promptContextBuilderAgent": promptVM.contextBuilderAgent.rawValue,
-                "promptContextBuilderModel": promptVM.contextBuilderAgentModelRaw,
-                "globalSelection": [
-                    "agent": settingsStore.globalContextBuilderAgentSelection().agentRaw as Any,
-                    "model": settingsStore.globalContextBuilderAgentSelection().modelRaw as Any
-                ]
-            ]
-        )
         guard let workspaceID = promptVM.currentWorkspaceID else {
             recommendations = RecommendationSet()
             contextBuilderDrift = nil
@@ -357,26 +342,14 @@ final class AgentModelsSettingsViewModel: ObservableObject {
     // MARK: - Context Builder Menu
 
     func contextBuilderAgentModelMenuItems(windowID: Int) -> [StableMenuItem] {
-        // DEBUG_PROBE_H4_7 — remove in cleanup
-        DebugModeProbe.log(
-            hypothesisId: "H4",
-            location: "AgentModelsSettingsViewModel.contextBuilderAgentModelMenuItems",
-            message: "building context builder agent model menu",
-            data: [
-                "windowID": windowID,
-                "availableAgents": promptVM.availableAgentKinds.map(\.rawValue),
-                "selectedAgent": promptVM.contextBuilderAgent.rawValue,
-                "selectedModel": promptVM.contextBuilderAgentModelRaw,
-                "piOptions": DebugModeProbe.optionSummary(promptVM.contextBuilderModelOptions(for: .pi))
-            ]
-        )
         var items = promptVM.availableAgentKinds.map { agent in
             AgentModelStableMenuItems.agentSubmenu(
                 agentKind: agent,
                 options: promptVM.contextBuilderModelOptions(for: agent),
                 selectedAgent: promptVM.contextBuilderAgent,
                 selectedModelRaw: promptVM.contextBuilderAgentModelRaw,
-                includePiThinkingLevelOptions: true
+                includePiThinkingLevelOptions: true,
+                piCatalogState: agent == .pi ? AgentModelCatalog.piCatalogState(workspacePath: availability.piWorkspacePath) : nil
             ) { [weak self] selectedAgent, selectedOption in
                 guard let self else { return }
                 promptVM.contextBuilderAgent = selectedAgent
@@ -405,7 +378,8 @@ final class AgentModelsSettingsViewModel: ObservableObject {
                 includePlaceholderDefault: false,
                 flattenSingleCodexGroups: true,
                 groupOpenCode: false,
-                includePiThinkingLevelOptions: true
+                includePiThinkingLevelOptions: true,
+                piCatalogState: agent == .pi ? AgentModelCatalog.piCatalogState(workspacePath: availability.piWorkspacePath) : nil
             ) { [weak self] selectedAgent, selectedOption in
                 guard let self else { return }
                 let selection = AgentModelCatalog.NormalizedAgentSelection(
@@ -458,19 +432,6 @@ final class AgentModelsSettingsViewModel: ObservableObject {
         let settings = settingsStore.chatSettings(for: workspaceID)
         let workspaceAgentRaw = settings.contextBuilderAgentRaw
         let workspaceModelRaw = settings.contextBuilderAgentModelRaw
-        // DEBUG_PROBE_H1_6 — remove in cleanup
-        DebugModeProbe.log(
-            hypothesisId: "H1",
-            location: "AgentModelsSettingsViewModel.computeContextBuilderDrift",
-            message: "comparing global and workspace context builder selections",
-            data: [
-                "globalAgent": globalAgentRaw as Any,
-                "globalModel": globalModelRaw as Any,
-                "workspaceAgent": workspaceAgentRaw as Any,
-                "workspaceModel": workspaceModelRaw as Any,
-                "workspaceDidUserSetContextBuilderDefaults": settings.didUserSetContextBuilderDefaults
-            ]
-        )
 
         // Drift is only meaningful when both scopes hold a value — otherwise
         // the workspace is simply delegating to the global default.

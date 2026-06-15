@@ -285,8 +285,8 @@ final class ClaudeContextUsageEstimator: ContextUsageEstimating {
     ) -> ContextUsageSnapshot? {
         let next = ContextUsageSnapshot.fromAgentContextUsage(
             usage,
-            source: source,
-            confidence: confidence,
+            source: agent == .pi ? .piBestEffortEstimate : source,
+            confidence: agent == .pi && confidence == .exact ? .bestEffort : confidence,
             compactedAt: session.contextCompactedAt
         )
         if session.contextUsageSnapshot != next {

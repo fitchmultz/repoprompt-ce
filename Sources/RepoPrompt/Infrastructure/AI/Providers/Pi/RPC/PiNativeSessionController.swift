@@ -37,6 +37,7 @@ actor PiNativeSessionController {
         var requestTimeout: TimeInterval?
         var enableDebugLogging: Bool
         var launchArguments: [String]
+        var environmentOverrides: [String: String]
         var pendingMessageStopRecoveryGraceInterval: TimeInterval
         var terminalCompletionGraceInterval: TimeInterval
 
@@ -45,6 +46,7 @@ actor PiNativeSessionController {
             requestTimeout: TimeInterval? = 30,
             enableDebugLogging: Bool = false,
             launchArguments: [String] = PiIntegrationConfiguration.managedRPCLaunchArguments(),
+            environmentOverrides: [String: String] = PiIntegrationConfiguration.managedRunEnvironment(),
             pendingMessageStopRecoveryGraceInterval: TimeInterval = Self.defaultPendingMessageStopRecoveryGraceInterval,
             terminalCompletionGraceInterval: TimeInterval = Self.defaultTerminalCompletionGraceInterval
         ) {
@@ -52,6 +54,7 @@ actor PiNativeSessionController {
             self.requestTimeout = requestTimeout
             self.enableDebugLogging = enableDebugLogging
             self.launchArguments = launchArguments
+            self.environmentOverrides = environmentOverrides
             self.pendingMessageStopRecoveryGraceInterval = pendingMessageStopRecoveryGraceInterval
             self.terminalCompletionGraceInterval = terminalCompletionGraceInterval
         }
@@ -133,7 +136,8 @@ actor PiNativeSessionController {
             enableDebugLogging: options.enableDebugLogging,
             requestTimeout: options.requestTimeout,
             workingDirectory: workspacePath,
-            launchArguments: options.launchArguments
+            launchArguments: options.launchArguments,
+            environmentOverrides: options.environmentOverrides
         ))
         self.init(client: client, options: options, workspacePath: workspacePath, recoverySleeper: recoverySleeper)
     }

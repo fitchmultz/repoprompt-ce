@@ -961,6 +961,10 @@ final class AgentModeViewModel: ObservableObject {
         piWorkspacePath(for: activeSession)
     }
 
+    func piModelCatalogState() -> PiModelCatalogState {
+        AgentModelCatalog.piCatalogState(workspacePath: piModelCatalogWorkspacePath())
+    }
+
     private func normalizePiThinkingSelectionForSession(_ session: TabSession) {
         guard session.selectedAgent == .pi,
               let selectedLevel = PiThinkingLevel.parse(session.selectedReasoningEffortRaw)
@@ -1245,21 +1249,7 @@ final class AgentModeViewModel: ObservableObject {
 
     private func updatePiModelPolling() {
         let availability = agentAvailabilityContext
-        let workspacePath = piWorkspacePath(for: activeSession)
         let isPiAvailable = AgentModelCatalog.isAgentAvailable(.pi, availability: availability)
-        // DEBUG_PROBE_H6_1 — remove in cleanup
-        DebugModeProbe.log(
-            hypothesisId: "H6",
-            location: "AgentModeViewModel.updatePiModelPolling",
-            message: "evaluating agent mode pi model polling",
-            data: [
-                "selectedAgent": selectedAgent.rawValue,
-                "activeWorkspace": DebugModeProbe.workspaceLabel(workspacePath),
-                "availabilityWorkspace": DebugModeProbe.workspaceLabel(availability.piWorkspacePath),
-                "piAvailable": isPiAvailable,
-                "existingSubscriptionWorkspace": DebugModeProbe.workspaceLabel(piModelsSubscribedWorkspacePath)
-            ]
-        )
         guard isPiAvailable else {
             stopPiModelsSubscription()
             return
@@ -1271,26 +1261,9 @@ final class AgentModeViewModel: ObservableObject {
         let workspacePath = AgentPiModelRegistry.canonicalWorkspacePath(piWorkspacePath(for: activeSession))
         if piModelsSubscriptionTask != nil {
             guard piModelsSubscribedWorkspacePath != workspacePath else { return }
-            // DEBUG_PROBE_H6_2 — remove in cleanup
-            DebugModeProbe.log(
-                hypothesisId: "H6",
-                location: "AgentModeViewModel.startPiModelsSubscriptionIfNeeded",
-                message: "switching agent mode pi model subscription workspace",
-                data: [
-                    "oldWorkspace": DebugModeProbe.workspaceLabel(piModelsSubscribedWorkspacePath),
-                    "newWorkspace": DebugModeProbe.workspaceLabel(workspacePath)
-                ]
-            )
             stopPiModelsSubscription()
         }
         piModelsSubscribedWorkspacePath = workspacePath
-        // DEBUG_PROBE_H6_3 — remove in cleanup
-        DebugModeProbe.log(
-            hypothesisId: "H6",
-            location: "AgentModeViewModel.startPiModelsSubscriptionIfNeeded",
-            message: "starting agent mode pi model subscription",
-            data: ["workspace": DebugModeProbe.workspaceLabel(workspacePath)]
-        )
         let pollingService = piModelPollingService
         piModelsSubscriptionTask = Task { [weak self, pollingService, workspacePath] in
             let stream = await pollingService.subscribe(workspacePath: workspacePath)
@@ -1298,30 +1271,7 @@ final class AgentModeViewModel: ObservableObject {
                 guard !Task.isCancelled else { return }
                 await MainActor.run { [weak self] in
                     guard let self else { return }
-                    // DEBUG_PROBE_H6_4 — remove in cleanup
-                    switch event {
-                    case let .snapshot(snapshot):
-                        DebugModeProbe.log(
-                            hypothesisId: "H6",
-                            location: "AgentModeViewModel.startPiModelsSubscriptionIfNeeded",
-                            message: "agent mode pi model subscription yielded snapshot",
-                            data: [
-                                "workspace": DebugModeProbe.workspaceLabel(workspacePath),
-                                "snapshot": DebugModeProbe.optionSummary(snapshot.models.options),
-                                "currentModelRaw": snapshot.models.currentModelRaw as Any
-                            ]
-                        )
-                    case let .failure(failure):
-                        DebugModeProbe.log(
-                            hypothesisId: "H6",
-                            location: "AgentModeViewModel.startPiModelsSubscriptionIfNeeded",
-                            message: "agent mode pi model subscription yielded failure",
-                            data: [
-                                "workspace": DebugModeProbe.workspaceLabel(workspacePath),
-                                "message": failure.message
-                            ]
-                        )
-                    }
+                    _ = event
                     acpDynamicModelRevision &+= 1
                     if let session = activeSession {
                         normalizePiThinkingSelectionForSession(session)

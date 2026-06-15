@@ -19,6 +19,8 @@ struct AgentRunSpec {
     let restrictedTools: Set<String>
     /// Provider-specific MCP connection behavior for this run.
     let connectionPolicyProfile: AgentMCPConnectionPolicyProfile
+    /// Provider-native runtime permissions captured for this run.
+    let runtimePermission: AgentProviderRuntimePermissionBinding
 }
 
 /// Shared coordinator for preparing, launching, and cleaning up headless agent runs.
@@ -95,14 +97,16 @@ final class AgentRunCoordinator {
         modelString: String?,
         runType: AgentRunType = .discover,
         workspacePath: String? = nil,
-        windowID: Int? = nil
+        windowID: Int? = nil,
+        runtimePermission: AgentProviderRuntimePermissionBinding? = nil
     ) -> HeadlessAgentProvider {
         AgentRuntimeProviderService.shared.makeProvider(
             for: agentKind,
             modelString: modelString,
             runType: runType,
             workspacePath: workspacePath,
-            windowID: windowID
+            windowID: windowID,
+            runtimePermission: runtimePermission
         )
     }
 

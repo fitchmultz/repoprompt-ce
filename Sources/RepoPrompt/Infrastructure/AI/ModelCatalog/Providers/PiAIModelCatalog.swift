@@ -156,6 +156,17 @@ enum PiModelWorkspaceScope: Hashable {
     }
 }
 
+enum PiModelCatalogState: Equatable {
+    case loading
+    case loaded(PiDiscoveredModels)
+    case unavailable
+
+    var models: PiDiscoveredModels? {
+        if case let .loaded(models) = self { return models }
+        return nil
+    }
+}
+
 enum PiDynamicModelStore {
     private static let storageKey = "PiDynamicModelSnapshot"
     private static let workspaceStorageKey = "PiDynamicModelSnapshotsByWorkspace"
@@ -396,6 +407,8 @@ final class AgentPiModelRegistry {
     private var liveSnapshots: [PiModelWorkspaceScope: PiDiscoveredModels] = [:]
     private var liveSignatures: [PiModelWorkspaceScope: PiDynamicModelSnapshotRecord] = [:]
     private var persistedSnapshots: [PiModelWorkspaceScope: PiDiscoveredModels] = [:]
+    private var refreshInFlightScopes: Set<PiModelWorkspaceScope> = []
+    private var settledScopes: Set<PiModelWorkspaceScope> = []
     private var standardStoreWarmTasks: [PiModelWorkspaceScope: Task<PiDiscoveredModels?, Never>] = [:]
     private var warmedStandardStoreScopes: Set<PiModelWorkspaceScope> = []
     private var standardStoreWarmGeneration: UInt64 = 0
@@ -410,19 +423,6 @@ final class AgentPiModelRegistry {
     func updateDiscoveredModels(_ snapshot: PiDiscoveredModels, workspacePath: String? = nil) -> Bool {
         let scope = PiModelWorkspaceScope(workspacePath: workspacePath)
         let piModelSnapshot = snapshot.retainingPiReportedModelOptions()
-        // DEBUG_PROBE_H3_4 — remove in cleanup
-        DebugModeProbe.log(
-            hypothesisId: "H3",
-            location: "AgentPiModelRegistry.updateDiscoveredModels",
-            message: "normalizing discovered pi snapshot",
-            data: [
-                "scope": DebugModeProbe.workspaceLabel(scope.workspacePath),
-                "incoming": DebugModeProbe.optionSummary(snapshot.options),
-                "retained": DebugModeProbe.optionSummary(piModelSnapshot?.options ?? []),
-                "incomingCurrentRaw": snapshot.currentModelRaw as Any,
-                "retainedCurrentRaw": piModelSnapshot?.currentModelRaw as Any
-            ]
-        )
         guard let piModelSnapshot,
               let record = PiDynamicModelStore.snapshotRecord(from: piModelSnapshot),
               let normalizedSnapshot = PiDynamicModelStore.snapshot(from: record)
@@ -446,18 +446,13 @@ final class AgentPiModelRegistry {
     @discardableResult
     func clearDiscoveredModels(workspacePath: String? = nil) -> Bool {
         let scope = PiModelWorkspaceScope(workspacePath: workspacePath)
-        // DEBUG_PROBE_H5_9 — remove in cleanup
-        DebugModeProbe.log(
-            hypothesisId: "H5",
-            location: "AgentPiModelRegistry.clearDiscoveredModels",
-            message: "clearing registry snapshot",
-            data: ["scope": DebugModeProbe.workspaceLabel(scope.workspacePath)]
-        )
         lock.lock()
         let removedLiveSnapshot = liveSnapshots.removeValue(forKey: scope) != nil
         let removedPersistedSnapshot = persistedSnapshots.removeValue(forKey: scope) != nil
         let removedSignature = liveSignatures.removeValue(forKey: scope) != nil
         let hadSnapshot = removedLiveSnapshot || removedPersistedSnapshot || removedSignature
+        refreshInFlightScopes.remove(scope)
+        settledScopes.remove(scope)
         warmedStandardStoreScopes.remove(scope)
         standardStoreWarmTasks.removeValue(forKey: scope)?.cancel()
         lock.unlock()
@@ -473,7 +468,36 @@ final class AgentPiModelRegistry {
     }
 
     func resolvedSnapshot(workspacePath: String? = nil) -> PiDiscoveredModels? {
-        snapshotFromMemory(scope: PiModelWorkspaceScope(workspacePath: workspacePath))
+        snapshotAfterSynchronousWarmIfNeeded(scope: PiModelWorkspaceScope(workspacePath: workspacePath))
+    }
+
+    func catalogState(workspacePath: String? = nil) -> PiModelCatalogState {
+        let scope = PiModelWorkspaceScope(workspacePath: workspacePath)
+        if let snapshot = snapshotAfterSynchronousWarmIfNeeded(scope: scope) {
+            return .loaded(snapshot)
+        }
+        lock.lock()
+        let isLoading = refreshInFlightScopes.contains(scope) || !settledScopes.contains(scope)
+        lock.unlock()
+        return isLoading ? .loading : .unavailable
+    }
+
+    func setRefreshInFlight(_ inFlight: Bool, workspacePath: String? = nil) {
+        let scope = PiModelWorkspaceScope(workspacePath: workspacePath)
+        lock.lock()
+        if inFlight {
+            refreshInFlightScopes.insert(scope)
+        } else {
+            refreshInFlightScopes.remove(scope)
+        }
+        lock.unlock()
+    }
+
+    func markRefreshSettled(workspacePath: String? = nil) {
+        let scope = PiModelWorkspaceScope(workspacePath: workspacePath)
+        lock.lock()
+        settledScopes.insert(scope)
+        lock.unlock()
     }
 
     func resolvedSnapshotAfterWarmingStandardStore(workspacePath: String? = nil) async -> PiDiscoveredModels? {
@@ -557,20 +581,8 @@ final class AgentPiModelRegistry {
                 supportedPiThinkingLevels: supportedThinkingLevels(for: model)
             ))
         }
-        // DEBUG_PROBE_H3_5 — remove in cleanup
-        DebugModeProbe.log(
-            hypothesisId: "H3",
-            location: "AgentPiModelRegistry.discoveredModels",
-            message: "normalized remote pi models",
-            data: [
-                "remoteCount": remoteModels.count,
-                "remoteProviders": DebugModeProbe.providerHistogram(remoteModels: remoteModels),
-                "accepted": DebugModeProbe.optionSummary(options),
-                "malformedRemoteModels": malformedRemoteModels,
-                "duplicateCount": duplicateRawModels.count,
-                "currentRaw": currentRaw as Any
-            ]
-        )
+        _ = malformedRemoteModels
+        _ = duplicateRawModels
         guard !options.isEmpty else { return nil }
         return PiDiscoveredModels(options: options, currentModelRaw: currentRaw)
     }
@@ -622,6 +634,39 @@ final class AgentPiModelRegistry {
         return (liveSnapshots[scope] ?? persistedSnapshots[scope])?.retainingPiReportedModelOptions()
     }
 
+    private func snapshotAfterSynchronousWarmIfNeeded(scope: PiModelWorkspaceScope) -> PiDiscoveredModels? {
+        lock.lock()
+        if let snapshot = (liveSnapshots[scope] ?? persistedSnapshots[scope])?.retainingPiReportedModelOptions() {
+            lock.unlock()
+            return snapshot
+        }
+        if warmedStandardStoreScopes.contains(scope) {
+            lock.unlock()
+            return nil
+        }
+        let generation = standardStoreWarmGeneration
+        let workspacePath = scope.workspacePath
+        lock.unlock()
+
+        let loadedSnapshot = PiDynamicModelStore.load(workspacePath: workspacePath)
+
+        lock.lock()
+        guard generation == standardStoreWarmGeneration else {
+            let snapshot = (liveSnapshots[scope] ?? persistedSnapshots[scope])?.retainingPiReportedModelOptions()
+            lock.unlock()
+            return snapshot
+        }
+        if let loadedSnapshot {
+            persistedSnapshots[scope] = loadedSnapshot
+        } else {
+            persistedSnapshots.removeValue(forKey: scope)
+        }
+        warmedStandardStoreScopes.insert(scope)
+        let snapshot = (liveSnapshots[scope] ?? persistedSnapshots[scope])?.retainingPiReportedModelOptions()
+        lock.unlock()
+        return snapshot
+    }
+
     private static func normalizedOptionalString(_ value: String?) -> String? {
         guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
             return nil
@@ -635,6 +680,8 @@ final class AgentPiModelRegistry {
             liveSnapshots.removeAll()
             liveSignatures.removeAll()
             persistedSnapshots.removeAll()
+            refreshInFlightScopes.removeAll()
+            settledScopes.removeAll()
             for task in standardStoreWarmTasks.values {
                 task.cancel()
             }
@@ -650,6 +697,8 @@ final class AgentPiModelRegistry {
             liveSnapshots.removeAll()
             liveSignatures.removeAll()
             persistedSnapshots.removeAll()
+            refreshInFlightScopes.removeAll()
+            settledScopes.removeAll()
             for task in standardStoreWarmTasks.values {
                 task.cancel()
             }

@@ -49,7 +49,7 @@ enum PiRepoPromptBridgeExtensionInstaller {
         }
     }
 
-    static let extensionVersion = "7"
+    static let extensionVersion = "9"
     static let personalBridgeClientName = "repoprompt-pi-bridge"
     static let managedBridgeExecutionClientName = "pi-schema"
     private static let managedMarker = "// RepoPrompt CE managed pi bridge extension"
@@ -236,6 +236,7 @@ enum PiRepoPromptBridgeExtensionInstaller {
             "\"__REPOPROMPT_CLI__\"": jsonStringLiteral(cliPath),
             "\"__REPOPROMPT_WINDOW_ID__\"": windowID.map { jsonStringLiteral(String($0)) } ?? "undefined",
             "\"__REPOPROMPT_MANAGED_RUN_ENV__\"": jsonStringLiteral(PiIntegrationConfiguration.managedRunEnvironmentKey),
+            "\"__REPOPROMPT_PI_PERMISSION_LEVEL_ENV__\"": jsonStringLiteral(PiIntegrationConfiguration.permissionLevelEnvironmentKey),
             "\"__REPOPROMPT_SCHEMA_ARGS_JSON__\"": jsonStringLiteral(jsonStringArray(schemaArgs(windowID: windowID))),
             "\"__REPOPROMPT_TOOL_ARGS_PREFIX_JSON__\"": jsonStringLiteral(jsonStringArray(toolArgsPrefix(windowID: windowID)))
         ]

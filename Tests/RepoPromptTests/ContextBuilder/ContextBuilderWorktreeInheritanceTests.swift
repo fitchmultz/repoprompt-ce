@@ -480,10 +480,12 @@ import XCTest
             agent: AgentProviderKind,
             modelString: String?,
             workspacePath: String?,
-            windowID: Int
+            windowID: Int,
+            runtimePermission: AgentProviderRuntimePermissionBinding
         ) -> HeadlessAgentProvider {
             _ = modelString
             _ = windowID
+            _ = runtimePermission
             state.recordProviderCreation()
             guard let configuration else {
                 preconditionFailure("Context Builder probe provider used before configuration")

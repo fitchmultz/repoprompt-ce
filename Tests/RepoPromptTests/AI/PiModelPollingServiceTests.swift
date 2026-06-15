@@ -86,6 +86,25 @@ final class PiModelPollingServiceTests: XCTestCase {
         XCTAssertEqual(callCount, 1)
     }
 
+    func testRefreshRecordsRegistryLoadingAndUnavailableStates() async throws {
+        let workspace = "/tmp/pi-model-polling-state"
+        let client = DelayedNilPiModelDiscoveryClient(delayNanoseconds: 150_000_000)
+        let service = PiModelPollingService(
+            client: client,
+            intervalNanos: 3_600_000_000_000,
+            startsPollingOnSubscribe: false
+        )
+        defer { Task { await service.shutdown() } }
+
+        let refresh = Task { try await service.discoverOnce(workspacePath: workspace) }
+        await client.waitUntilCalled()
+        XCTAssertEqual(AgentPiModelRegistry.shared.catalogState(workspacePath: workspace), .loading)
+
+        let snapshot = try await refresh.value
+        XCTAssertNil(snapshot)
+        XCTAssertEqual(AgentPiModelRegistry.shared.catalogState(workspacePath: workspace), .unavailable)
+    }
+
     func testWorkspaceScopedPollingDoesNotCrossContaminateSubscribersOrRegistry() async throws {
         let workspaceA = "/tmp/pi-model-polling-a"
         let workspaceB = "/tmp/pi-model-polling-b"
@@ -218,6 +237,28 @@ private actor DelayedCountingPiModelDiscoveryClient: PiModelDiscoveryClient {
 
     func callCount() -> Int {
         calls
+    }
+}
+
+private actor DelayedNilPiModelDiscoveryClient: PiModelDiscoveryClient {
+    private let delayNanoseconds: UInt64
+    private var calls = 0
+
+    init(delayNanoseconds: UInt64) {
+        self.delayNanoseconds = delayNanoseconds
+    }
+
+    func discoverModels(workspacePath: String?) async throws -> PiDiscoveredModels? {
+        _ = workspacePath
+        calls += 1
+        try await Task.sleep(nanoseconds: delayNanoseconds)
+        return nil
+    }
+
+    func waitUntilCalled() async {
+        while calls == 0 {
+            await Task.yield()
+        }
     }
 }
 

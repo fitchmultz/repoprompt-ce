@@ -9,6 +9,7 @@ enum AgentPermissionSecureDomain: String, CaseIterable, Hashable {
     case claude
     case openCode
     case cursor
+    case pi
 
     var secureStorageAccount: SecureStorageAccount {
         switch self {
@@ -22,6 +23,8 @@ enum AgentPermissionSecureDomain: String, CaseIterable, Hashable {
             .agentPermissionOpenCodeDocument
         case .cursor:
             .agentPermissionCursorDocument
+        case .pi:
+            .agentPermissionPiDocument
         }
     }
 
@@ -280,6 +283,32 @@ struct SecureCursorPermissionDocument: Codable, Equatable {
     }
 }
 
+struct SecurePiPermissionDocument: Codable, Equatable {
+    static let currentSchemaVersion = 1
+
+    var schemaVersion: Int
+    var updatedAt: Date
+    var permissionLevelRaw: String?
+
+    init(
+        schemaVersion: Int = currentSchemaVersion,
+        updatedAt: Date = Date(),
+        permissionLevelRaw: String? = PiAgentToolPreferences.PermissionLevel.managedDefault.rawValue
+    ) {
+        self.schemaVersion = schemaVersion
+        self.updatedAt = updatedAt
+        self.permissionLevelRaw = permissionLevelRaw
+    }
+
+    static func failClosedDocument(now: Date = Date()) -> SecurePiPermissionDocument {
+        SecurePiPermissionDocument(updatedAt: now)
+    }
+
+    func permissionLevel() -> PiAgentToolPreferences.PermissionLevel {
+        PiAgentToolPreferences.PermissionLevel.from(rawValue: permissionLevelRaw)
+    }
+}
+
 final class AgentPermissionSecureStore {
     static let shared = AgentPermissionSecureStore(secureStrings: SecureKeysService())
 
@@ -295,6 +324,7 @@ final class AgentPermissionSecureStore {
     private var claudeCache: SecureClaudePermissionDocument?
     private var openCodeCache: SecureOpenCodePermissionDocument?
     private var cursorCache: SecureCursorPermissionDocument?
+    private var piCache: SecurePiPermissionDocument?
     private var diagnosticsByDomain: [AgentPermissionSecureDomain: AgentPermissionStorageDiagnostic] = [:]
     private let permissionDecisionAccessMode: KeychainAccessMode = .nonInteractive(reason: .permissionDecision)
 
@@ -342,6 +372,7 @@ final class AgentPermissionSecureStore {
             claudeCache = nil
             openCodeCache = nil
             cursorCache = nil
+            piCache = nil
         }
     }
 
@@ -379,6 +410,10 @@ final class AgentPermissionSecureStore {
             var cursor = SecureCursorPermissionDocument.failClosedDocument(now: resetDate)
             _ = normalizeCursor(&cursor)
             record(.cursor, resetLocked(cursor, domain: .cursor, cache: &cursorCache, deferred: &effects))
+
+            var pi = SecurePiPermissionDocument.failClosedDocument(now: resetDate)
+            _ = normalizePi(&pi)
+            record(.pi, resetLocked(pi, domain: .pi, cache: &piCache, deferred: &effects))
 
             return AgentPermissionStorageResetResult(
                 succeededDomains: succeededDomains,
@@ -430,6 +465,12 @@ final class AgentPermissionSecureStore {
     func cursorPermissions() -> SecureCursorPermissionDocument {
         withLockAndDeferredSideEffects { effects in
             loadCursorPermissionsLocked(deferred: &effects)
+        }
+    }
+
+    func piPermissions() -> SecurePiPermissionDocument {
+        withLockAndDeferredSideEffects { effects in
+            loadPiPermissionsLocked(deferred: &effects)
         }
     }
 
@@ -491,6 +532,17 @@ final class AgentPermissionSecureStore {
     }
 
     @discardableResult
+    func updatePiPermissions(_ mutation: (inout SecurePiPermissionDocument) -> Void) -> Bool {
+        withLockAndDeferredSideEffects { effects in
+            var document = loadPiPermissionsLocked(deferred: &effects)
+            mutation(&document)
+            normalizePi(&document)
+            document.updatedAt = now()
+            return saveLocked(document, domain: .pi, cache: &piCache, deferred: &effects)
+        }
+    }
+
+    @discardableResult
     func setCodexPermissionLevel(_ level: CodexAgentToolPreferences.PermissionLevel) -> Bool {
         updateCodexPermissions { document in
             document.approvalPolicyRaw = level.approvalPolicy.persistedValue
@@ -516,6 +568,13 @@ final class AgentPermissionSecureStore {
     @discardableResult
     func setCursorPermissionLevel(_ level: CursorAgentToolPreferences.PermissionLevel) -> Bool {
         updateCursorPermissions { document in
+            document.permissionLevelRaw = level.rawValue
+        }
+    }
+
+    @discardableResult
+    func setPiPermissionLevel(_ level: PiAgentToolPreferences.PermissionLevel) -> Bool {
+        updatePiPermissions { document in
             document.permissionLevelRaw = level.rawValue
         }
     }
@@ -569,6 +628,16 @@ final class AgentPermissionSecureStore {
             cache: &cursorCache,
             failClosedDocument: SecureCursorPermissionDocument.failClosedDocument(now: now()),
             normalize: normalizeCursor,
+            deferred: &effects
+        )
+    }
+
+    private func loadPiPermissionsLocked(deferred effects: inout DeferredSideEffects) -> SecurePiPermissionDocument {
+        loadLocked(
+            domain: .pi,
+            cache: &piCache,
+            failClosedDocument: SecurePiPermissionDocument.failClosedDocument(now: now()),
+            normalize: normalizePi,
             deferred: &effects
         )
     }
@@ -893,6 +962,21 @@ final class AgentPermissionSecureStore {
         return changed
     }
 
+    @discardableResult
+    private func normalizePi(_ document: inout SecurePiPermissionDocument) -> Bool {
+        var changed = false
+        if document.schemaVersion != SecurePiPermissionDocument.currentSchemaVersion {
+            document.schemaVersion = SecurePiPermissionDocument.currentSchemaVersion
+            changed = true
+        }
+        let level = PiAgentToolPreferences.PermissionLevel.from(rawValue: document.permissionLevelRaw)
+        if document.permissionLevelRaw != level.rawValue {
+            document.permissionLevelRaw = level.rawValue
+            changed = true
+        }
+        return changed
+    }
+
     // MARK: - Helpers
 
     private func supportedSchemaVersion(of document: some Any) -> Int {
@@ -907,6 +991,8 @@ final class AgentPermissionSecureStore {
             SecureOpenCodePermissionDocument.currentSchemaVersion
         case _ as SecureCursorPermissionDocument:
             SecureCursorPermissionDocument.currentSchemaVersion
+        case _ as SecurePiPermissionDocument:
+            SecurePiPermissionDocument.currentSchemaVersion
         default:
             1
         }
@@ -923,6 +1009,8 @@ final class AgentPermissionSecureStore {
         case let value as SecureOpenCodePermissionDocument:
             value.schemaVersion
         case let value as SecureCursorPermissionDocument:
+            value.schemaVersion
+        case let value as SecurePiPermissionDocument:
             value.schemaVersion
         default:
             1
@@ -941,6 +1029,8 @@ final class AgentPermissionSecureStore {
             SecureOpenCodePermissionDocument.failClosedDocument(now: now())
         case .cursor:
             SecureCursorPermissionDocument.failClosedDocument(now: now())
+        case .pi:
+            SecurePiPermissionDocument.failClosedDocument(now: now())
         }
     }
 

@@ -103,20 +103,27 @@ struct AgentModelOptionsMenuContent: View {
         } else if agentKind == .pi {
             let piKnownModelIDs = AgentModelCatalog.piKnownModelIDs(from: options)
             let piMenu = AgentModelCatalog.piMenu(for: options, knownModelIDs: piKnownModelIDs)
+            if options.isEmpty {
+                Button(piCatalogEmptyTitle(state: AgentModelCatalog.piCatalogState())) {}
+                    .disabled(true)
+            }
             if let defaultOption = piMenu.defaultOption {
                 modelOptionButton(defaultOption)
             }
             ForEach(piMenu.providerGroups) { providerGroup in
-                Menu(providerGroup.displayName) {
-                    ForEach(providerGroup.groups) { group in
-                        if group.rendersAsSubmenu {
-                            Menu(group.displayName) {
-                                ForEach(group.options) { menuOption in
-                                    modelOptionButton(menuOption.option, title: menuOption.displayName)
+                let groupItems = providerGroup.groups.filter { !$0.options.isEmpty }
+                if !groupItems.isEmpty {
+                    Menu(providerGroup.displayName) {
+                        ForEach(groupItems) { group in
+                            if group.rendersAsSubmenu {
+                                Menu(group.displayName) {
+                                    ForEach(group.options) { menuOption in
+                                        modelOptionButton(menuOption.option, title: menuOption.displayName)
+                                    }
                                 }
+                            } else if let menuOption = group.options.first {
+                                modelOptionButton(menuOption.option, title: menuOption.displayName)
                             }
-                        } else if let menuOption = group.options.first {
-                            modelOptionButton(menuOption.option, title: menuOption.displayName)
                         }
                     }
                 }
@@ -170,6 +177,15 @@ struct AgentModelOptionsMenuContent: View {
         ClaudeModelSpecifier(raw: option.rawValue).effortLevel?.displayName ?? option.displayName
     }
 
+    private func piCatalogEmptyTitle(state: PiModelCatalogState) -> String {
+        switch state {
+        case .loading:
+            "Loading pi models…"
+        case .loaded, .unavailable:
+            "No pi models available"
+        }
+    }
+
     private func warningAwareMenuLabel(title: String, showsWarning: Bool) -> some View {
         HStack(spacing: 4) {
             if showsWarning {
@@ -199,6 +215,7 @@ enum AgentModelStableMenuItems {
         flattenSingleCodexGroups: Bool = false,
         groupOpenCode: Bool = true,
         includePiThinkingLevelOptions: Bool = false,
+        piCatalogState: PiModelCatalogState? = nil,
         onSelect: @escaping (AgentProviderKind, AgentModelOption) -> Void
     ) -> StableMenuItem {
         StableMenuItem.submenu(
@@ -212,6 +229,7 @@ enum AgentModelStableMenuItems {
                 flattenSingleCodexGroups: flattenSingleCodexGroups,
                 groupOpenCode: groupOpenCode,
                 includePiThinkingLevelOptions: includePiThinkingLevelOptions,
+                piCatalogState: piCatalogState,
                 onSelect: onSelect
             )
         )
@@ -226,6 +244,7 @@ enum AgentModelStableMenuItems {
         flattenSingleCodexGroups: Bool = false,
         groupOpenCode: Bool = true,
         includePiThinkingLevelOptions: Bool = false,
+        piCatalogState: PiModelCatalogState? = nil,
         onSelect: @escaping (AgentProviderKind, AgentModelOption) -> Void
     ) -> [StableMenuItem] {
         if agentKind == .codexExec {
@@ -272,6 +291,7 @@ enum AgentModelStableMenuItems {
                 selectedAgent: selectedAgent,
                 selectedModelRaw: selectedModelRaw,
                 includeThinkingLevelOptions: includePiThinkingLevelOptions,
+                catalogState: piCatalogState,
                 onSelect: onSelect
             )
         }
@@ -429,8 +449,12 @@ enum AgentModelStableMenuItems {
         selectedAgent: AgentProviderKind,
         selectedModelRaw: String,
         includeThinkingLevelOptions: Bool,
+        catalogState: PiModelCatalogState?,
         onSelect: @escaping (AgentProviderKind, AgentModelOption) -> Void
     ) -> [StableMenuItem] {
+        guard !options.isEmpty else {
+            return [.message(piCatalogEmptyTitle(state: catalogState ?? AgentModelCatalog.piCatalogState()))]
+        }
         let piKnownModelIDs = AgentModelCatalog.piKnownModelIDs(from: options)
         let piMenu = AgentModelCatalog.piMenu(
             for: options,
@@ -449,19 +473,22 @@ enum AgentModelStableMenuItems {
                 )
             )
         }
-        items.append(contentsOf: piMenu.providerGroups.map { providerGroup in
-            StableMenuItem.submenu(
+        items.append(contentsOf: piMenu.providerGroups.compactMap { providerGroup in
+            let childItems = providerGroup.groups.compactMap { group -> StableMenuItem? in
+                guard !group.options.isEmpty else { return nil }
+                return piModelGroupItem(
+                    agentKind: agentKind,
+                    group: group,
+                    selectedAgent: selectedAgent,
+                    selectedModelRaw: selectedModelRaw,
+                    knownModelIDs: piKnownModelIDs,
+                    onSelect: onSelect
+                )
+            }
+            guard !childItems.isEmpty else { return nil }
+            return StableMenuItem.submenu(
                 providerGroup.displayName,
-                items: providerGroup.groups.map { group in
-                    piModelGroupItem(
-                        agentKind: agentKind,
-                        group: group,
-                        selectedAgent: selectedAgent,
-                        selectedModelRaw: selectedModelRaw,
-                        knownModelIDs: piKnownModelIDs,
-                        onSelect: onSelect
-                    )
-                }
+                items: childItems
             )
         })
         return items
@@ -535,6 +562,15 @@ enum AgentModelStableMenuItems {
 
     private static func claudeEffortMenuTitle(for option: AgentModelOption) -> String {
         ClaudeModelSpecifier(raw: option.rawValue).effortLevel?.displayName ?? option.displayName
+    }
+
+    private static func piCatalogEmptyTitle(state: PiModelCatalogState) -> String {
+        switch state {
+        case .loading:
+            "Loading pi models…"
+        case .loaded, .unavailable:
+            "No pi models available"
+        }
     }
 
     private static func visibleOptions(

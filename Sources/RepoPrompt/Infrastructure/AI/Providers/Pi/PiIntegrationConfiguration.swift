@@ -68,6 +68,7 @@ enum PiIntegrationConfiguration {
     private static let supportedVersionCache = SupportedVersionCache()
     static let managedRunEnvironmentKey = "REPOPROMPT_PI_MANAGED_RUN"
     static let managedRunEnvironmentValue = "1"
+    static let permissionLevelEnvironmentKey = "REPOPROMPT_PI_PERMISSION_LEVEL"
 
     /// A pi model is eligible for RepoPrompt when pi reports a non-empty model
     /// identifier. RepoPrompt must not maintain its own provider allowlist: if a
@@ -100,8 +101,14 @@ enum PiIntegrationConfiguration {
         managedRPCLaunchArguments() + ["--no-session", "--no-tools"]
     }
 
-    static func managedRunEnvironment() -> [String: String] {
-        [managedRunEnvironmentKey: managedRunEnvironmentValue]
+    static func managedRunEnvironment(
+        permissionLevel: PiAgentToolPreferences.PermissionLevel? = nil
+    ) -> [String: String] {
+        var environment = [managedRunEnvironmentKey: managedRunEnvironmentValue]
+        if let permissionLevel {
+            environment[permissionLevelEnvironmentKey] = permissionLevel.rawValue
+        }
+        return environment
     }
 
     static func processConfiguration(

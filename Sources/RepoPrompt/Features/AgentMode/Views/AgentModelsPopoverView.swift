@@ -219,7 +219,8 @@ struct AgentModelsPopoverView: View {
                 options: promptViewModel.contextBuilderModelOptions(for: agent),
                 selectedAgent: promptViewModel.contextBuilderAgent,
                 selectedModelRaw: promptViewModel.contextBuilderAgentModelRaw,
-                includePiThinkingLevelOptions: true
+                includePiThinkingLevelOptions: true,
+                piCatalogState: agent == .pi ? AgentModelCatalog.piCatalogState(workspacePath: availability.piWorkspacePath) : nil
             ) { selectedAgent, selectedOption in
                 promptViewModel.contextBuilderAgent = selectedAgent
                 promptViewModel.selectContextBuilderAgentModel(rawModel: selectedOption.rawValue)
@@ -353,7 +354,8 @@ struct AgentModelsPopoverView: View {
                 includePlaceholderDefault: false,
                 flattenSingleCodexGroups: true,
                 groupOpenCode: false,
-                includePiThinkingLevelOptions: true
+                includePiThinkingLevelOptions: true,
+                piCatalogState: agent == .pi ? AgentModelCatalog.piCatalogState(workspacePath: availability.piWorkspacePath) : nil
             ) { selectedAgent, selectedOption in
                 let selection = AgentModelCatalog.NormalizedAgentSelection(
                     agent: selectedAgent,

@@ -59,6 +59,7 @@ APP_STOP_CONFIRM_TIMEOUT_SECONDS = 8.0
 APP_STOP_DELAYED_LAUNCH_CONFIRM_TIMEOUT_SECONDS = 25.0
 
 SHORT_TIMEOUT_SECONDS = 5 * 60
+TEST_TIMEOUT_SECONDS = 15 * 60
 MEDIUM_TIMEOUT_SECONDS = 60 * 60
 RELEASE_TIMEOUT_SECONDS = 2 * 60 * 60
 SMOKE_AGENT_WAIT_SECONDS = 120.0
@@ -1038,6 +1039,8 @@ class OperationRegistry:
             return SHORT_TIMEOUT_SECONDS
         if operation in {"package", "release"} and (args.get("config") == "release" or args.get("subcommand") in {"artifact", "package", "local-install"}):
             return RELEASE_TIMEOUT_SECONDS
+        if operation in {"test", "provider-test"}:
+            return TEST_TIMEOUT_SECONDS
         if operation == "smoke" and args.get("agentRun"):
             return MEDIUM_TIMEOUT_SECONDS
         if operation == "diagnostics":
@@ -2810,6 +2813,35 @@ def operation_release_preflight_missing(_repo_root: Path) -> int:
     return 1
 
 
+def smoke_tree_roots_ready(stdout: str) -> bool:
+    lower = stdout.lower()
+    if "no workspace is currently loaded" in lower:
+        return False
+    if "**roots**: 0" in lower or "roots: 0" in lower:
+        return False
+    return bool(stdout.strip())
+
+
+def wait_for_smoke_workspace_roots(
+    cli: str,
+    window_id: int,
+    repo_root: Path,
+    env: Dict[str, str],
+    deadline: float,
+) -> int:
+    argv = [cli, "-w", str(window_id), "-e", "tree --type roots"]
+    while True:
+        code, stdout, _stderr = run_operation_command("tree roots", argv, repo_root, env=env)
+        if code != 0:
+            return code
+        if smoke_tree_roots_ready(stdout):
+            return 0
+        if now() >= deadline:
+            print("ERROR: timed out waiting for workspace roots after workspace switch", flush=True)
+            return 1
+        time.sleep(1.0)
+
+
 def operation_smoke(repo_root: Path, args: Dict[str, Any]) -> int:
     env = os.environ.copy()
     packaged_app = args.get("packagedApp")
@@ -2863,17 +2895,11 @@ def operation_smoke(repo_root: Path, args: Dict[str, Any]) -> int:
                 return code or 1
             time.sleep(2.0)
 
-    stages = [
+    pre_root_stages = [
         ("windows", [cli, "-e", "windows"]),
         ("workspace switch", [cli, "-w", str(window_id), "-e", f"workspace switch {workspace}"]),
-        ("tree roots", [cli, "-w", str(window_id), "-e", "tree --type roots"]),
-        ("manage_worktree list", [cli, "-w", str(window_id), "-e", "manage_worktree op=list"]),
-        (
-            "agent_manage roles",
-            routed_structured_cli_argv(cli, window_id, "agent_manage", {"op": "list_agents", "roles_only": True}),
-        ),
     ]
-    for name, argv in stages:
+    for name, argv in pre_root_stages:
         allow_exit_codes = {0, 1} if name == "workspace switch" else None
         code, _stdout, stderr = run_operation_command(name, argv, repo_root, env=env, allow_exit_codes=allow_exit_codes)
         if name == "workspace switch" and code == 1 and is_already_on_workspace(stderr, workspace):
@@ -2882,6 +2908,22 @@ def operation_smoke(repo_root: Path, args: Dict[str, Any]) -> int:
         if code != 0:
             if name == "workspace switch" and code == 1:
                 print(f"FAILED stage '{name}' with status {code}", flush=True)
+            return code
+
+    code = wait_for_smoke_workspace_roots(cli, window_id, repo_root, env, deadline)
+    if code != 0:
+        return code
+
+    post_root_stages = [
+        ("manage_worktree list", [cli, "-w", str(window_id), "-e", "manage_worktree op=list"]),
+        (
+            "agent_manage roles",
+            routed_structured_cli_argv(cli, window_id, "agent_manage", {"op": "list_agents", "roles_only": True}),
+        ),
+    ]
+    for name, argv in post_root_stages:
+        code, _stdout, _stderr = run_operation_command(name, argv, repo_root, env=env)
+        if code != 0:
             return code
 
     if args.get("agentRun"):

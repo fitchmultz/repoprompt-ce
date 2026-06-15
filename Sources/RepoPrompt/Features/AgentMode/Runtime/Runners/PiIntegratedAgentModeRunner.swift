@@ -23,6 +23,7 @@ final class PiIntegratedAgentModeRunner {
         initialMessageForRun: String,
         attachments: [AgentImageAttachment],
         workspacePath: String?,
+        runtimePermission: AgentProviderRuntimePermissionBinding,
         makeLease: (_ runID: UUID) -> MCPBootstrapLease
     ) async {
         let attachmentReservationID = hooks.reserveAttachmentsForTurn(attachments, session)
@@ -78,6 +79,9 @@ final class PiIntegratedAgentModeRunner {
                 modelRaw: session.selectedModelRaw,
                 launchArguments: PiIntegrationConfiguration.managedRPCLaunchArguments(
                     bridgeExtensionPath: bridgeExtensionURL.path
+                ),
+                environmentOverrides: PiIntegrationConfiguration.managedRunEnvironment(
+                    permissionLevel: runtimePermission.piPermissionLevel ?? .managedDefault
                 )
             )
         )

@@ -29,6 +29,7 @@ struct AgentComposerActions {
     let selectReasoningEffort: (_ effort: CodexReasoningEffort?) -> Void
     let piThinkingLevelOptions: () -> [PiThinkingLevel]
     let piModelSpecifier: (_ raw: String?) -> PiModelSpecifier?
+    let piModelCatalogState: () -> PiModelCatalogState
     let selectPiThinkingLevel: (_ level: PiThinkingLevel?) -> Void
     let setAutoEditEnabled: (_ enabled: Bool) -> Void
     let setProviderPermissionLevel: (_ id: AgentProviderPermissionLevelID) -> Void
@@ -163,6 +164,7 @@ struct AgentInputBar: View {
             piModelSpecifier: { raw in
                 AgentModelCatalog.piModelSpecifier(raw: raw, workspacePath: agentModeVM.piModelCatalogWorkspacePath())
             },
+            piModelCatalogState: { agentModeVM.piModelCatalogState() },
             selectPiThinkingLevel: { level in
                 if let specifier = AgentModelCatalog.piModelSpecifier(
                     raw: agentModeVM.selectedModelRaw,
@@ -887,7 +889,8 @@ struct AgentComposerView: View, Equatable {
                 options: options,
                 selectedAgent: props.selectedAgent,
                 selectedModelRaw: props.selectedModelRaw,
-                includePlaceholderDefault: false
+                includePlaceholderDefault: false,
+                piCatalogState: actions.piModelCatalogState()
             ) { selectedAgent, selectedOption in
                 actions.selectAgentModel(selectedAgent, selectedOption.rawValue)
             }
@@ -957,17 +960,6 @@ struct AgentComposerView: View, Equatable {
         for agent in props.availableAgents {
             snapshot[agent] = actions.modelOptions(agent, !agent.usesClaudeTooling)
         }
-        // DEBUG_PROBE_H6_5 — remove in cleanup
-        DebugModeProbe.log(
-            hypothesisId: "H6",
-            location: "AgentInputBar.captureModelMenuSnapshot",
-            message: "captured agent provider model menu snapshot",
-            data: [
-                "availableAgents": props.availableAgents.map(\.rawValue),
-                "selectedAgent": props.selectedAgent.rawValue,
-                "piOptions": DebugModeProbe.optionSummary(snapshot[.pi] ?? [])
-            ]
-        )
         modelMenuSnapshotByAgent = snapshot
         modelMenuSnapshotReleaseTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 1_500_000_000)

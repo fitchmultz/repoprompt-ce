@@ -114,7 +114,8 @@ final class ContextBuilderAgentViewModel: ObservableObject {
         _ agent: AgentProviderKind,
         _ modelString: String?,
         _ workspacePath: String?,
-        _ windowID: Int
+        _ windowID: Int,
+        _ runtimePermission: AgentProviderRuntimePermissionBinding
     ) -> HeadlessAgentProvider
 
     private func debugLog(_ message: @autoclosure () -> String) {
@@ -847,6 +848,7 @@ final class ContextBuilderAgentViewModel: ObservableObject {
     private let maxHistoryCount = 5
     private var isRestoringState = false
     private let settingsManager = GlobalSettingsStore.shared
+    private let providerBindingService = AgentModeProviderBindingService()
     private var cancellables = Set<AnyCancellable>()
 
     private var currentWorkspaceID: UUID? {
@@ -879,12 +881,13 @@ final class ContextBuilderAgentViewModel: ObservableObject {
         self.workspaceManager = workspaceManager
         self.mcpServer = mcpServer
         self.oracleViewModel = oracleViewModel
-        self.providerFactory = providerFactory ?? { agent, modelString, workspacePath, windowID in
+        self.providerFactory = providerFactory ?? { agent, modelString, workspacePath, windowID, runtimePermission in
             AgentRuntimeProviderService.shared.makeProvider(
                 for: agent,
                 modelString: modelString,
                 workspacePath: workspacePath,
-                windowID: windowID
+                windowID: windowID,
+                runtimePermission: runtimePermission
             )
         }
         refreshAvailableAgents()
@@ -2199,6 +2202,8 @@ final class ContextBuilderAgentViewModel: ObservableObject {
             debugLog("Acquiring headless run lease (gate + policy)...")
             let additionalTools = additionalToolsForContextBuilderAgent(tabID: record.tabID)
             let windowID = mcpServer.windowID
+            let permissionProfile = permissionProfileForContextBuilderRun(record)
+            let runtimePermission = providerBindingService.runtimePermission(for: record.agentKind, profile: permissionProfile)
             let spec = AgentRunSpec(
                 type: .discover,
                 runID: runID,
@@ -2209,7 +2214,8 @@ final class ContextBuilderAgentViewModel: ObservableObject {
                 connectionPolicyProfile: .headless(
                     agent: record.agentKind,
                     requestedTTL: ContextBuilderDefaults.mcpBootstrapConnectionTTL
-                )
+                ),
+                runtimePermission: runtimePermission
             )
 
             let lease: MCPBootstrapLease
@@ -2255,7 +2261,7 @@ final class ContextBuilderAgentViewModel: ObservableObject {
 
             let modelString = record.modelRaw == AgentModel.defaultModel.rawValue ? nil : record.modelRaw
             let providerWorkspacePath = record.workspaceContext?.providerWorkspacePath ?? currentWorkspacePath
-            let provider = providerFactory(record.agentKind, modelString, providerWorkspacePath, windowID)
+            let provider = providerFactory(record.agentKind, modelString, providerWorkspacePath, windowID, spec.runtimePermission)
             guard record.installProvider(provider) else {
                 await provider.dispose()
                 await lease.failAndCleanup()
@@ -2512,6 +2518,16 @@ final class ContextBuilderAgentViewModel: ObservableObject {
     }
 
     // MARK: - MCP tool restrictions
+
+    private func permissionProfileForContextBuilderRun(_ record: ContextBuilderRunRecord) -> AgentProviderPermissionProfile {
+        if record.origin.isMCP {
+            return providerBindingService.permissionProfileForMCPActivation(
+                isSubagent: true,
+                provider: record.agentKind.providerBindingID
+            )
+        }
+        return .mcpSafeDefaults
+    }
 
     private func additionalToolsForContextBuilderAgent(tabID: UUID) -> Set<String>? {
         let sessionIsMCP = sessions[tabID]?.isMCPControlledRun ?? false

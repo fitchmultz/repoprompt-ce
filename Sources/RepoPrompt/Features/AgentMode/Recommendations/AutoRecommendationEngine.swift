@@ -189,7 +189,7 @@ final class AutoRecommendationEngine {
                 tradeoffs: [
                     "• Dynamic model discovery from your pi configuration",
                     "• Native RPC sessions and RepoPrompt bridge tools",
-                    "• pi built-in tools remain governed by pi runtime settings"
+                    "• RepoPrompt preflight policy gate for pi built-in tools"
                 ]
             )
         }
@@ -294,7 +294,7 @@ final class AutoRecommendationEngine {
                 tradeoffs: [
                     "• Uses your configured pi model/provider",
                     "• Native RPC integration with RepoPrompt bridge tools",
-                    "• RepoPrompt controls bridge tools; pi built-ins use pi config"
+                    "• RepoPrompt-managed runs gate pi built-ins before execution"
                 ]
             )
         }
@@ -352,7 +352,7 @@ final class AutoRecommendationEngine {
         status: ProviderStatusSnapshot
     ) -> ContextBuilderRecommendation? {
         // Priority: Codex CLI (requires CLI) > Claude Code > pi > Cursor CLI.
-        // pi and Cursor are fallbacks only; they do not take priority over existing recommended providers.
+        // pi is a first-class peer candidate when its native runtime and usable model catalog are ready.
         // Note: codexExec agent requires Codex CLI specifically, not just OpenAI API key
         if status.codexCLI == .ready {
             return ContextBuilderRecommendation(
@@ -371,14 +371,14 @@ final class AutoRecommendationEngine {
             return ContextBuilderRecommendation(
                 recommendedAgent: .pi,
                 recommendedModel: .defaultModel,
-                rationale: "pi can build RepoPrompt context through its native RPC session and managed RepoPrompt bridge when the preferred Codex or Claude Code providers are not configured.",
-                upgradeHint: "For best context building, connect Codex CLI with GPT-5.5 Low or Claude Code with Sonnet."
+                rationale: "pi can build RepoPrompt context through its native RPC session, configured model catalog, and managed RepoPrompt bridge.",
+                upgradeHint: "For best context building, compare pi's configured default model with Codex CLI GPT-5.5 Low or Claude Code Sonnet."
             )
         } else if status.cursorCLI == .ready {
             return ContextBuilderRecommendation(
                 recommendedAgent: .cursor,
                 recommendedModel: .cursorComposer2,
-                rationale: "Cursor CLI with Composer 2 can handle context building when the preferred Codex or Claude Code providers are not configured.",
+                rationale: "Cursor CLI with Composer 2 can handle context building when higher-ranked peer providers are not configured.",
                 upgradeHint: "For best context building, connect Codex CLI with GPT-5.5 Low, Claude Code with Sonnet, or pi with its configured default model."
             )
         }
@@ -394,25 +394,6 @@ final class AutoRecommendationEngine {
         availability: AgentModelCatalog.AvailabilityContext,
         enabledRecommendationProviders: Set<RecommendationProviderKind> = Set(RecommendationProviderKind.allCases)
     ) -> AgentModelCatalog.NormalizedAgentSelection? {
-        // DEBUG_PROBE_H2_12 — remove in cleanup
-        DebugModeProbe.log(
-            hypothesisId: "H2",
-            location: "AutoRecommendationEngine.resolveContextBuilderSelection",
-            message: "resolving persisted context builder selection",
-            data: [
-                "persistedAgent": persistedAgentRaw as Any,
-                "persistedModel": persistedModelRaw as Any,
-                "availability": [
-                    "claude": availability.claudeCodeAvailable,
-                    "codex": availability.codexAvailable,
-                    "openCode": availability.openCodeAvailable,
-                    "cursor": availability.cursorAvailable,
-                    "pi": availability.piAvailable,
-                    "piWorkspace": DebugModeProbe.workspaceLabel(availability.piWorkspacePath)
-                ],
-                "piOptions": DebugModeProbe.optionSummary(AgentModelCatalog.options(for: .pi, availability: availability))
-            ]
-        )
         if let agentRaw = persistedAgentRaw?.trimmingCharacters(in: .whitespacesAndNewlines),
            let modelRaw = persistedModelRaw?.trimmingCharacters(in: .whitespacesAndNewlines),
            let agent = AgentProviderKind(rawValue: agentRaw),
@@ -420,19 +401,11 @@ final class AutoRecommendationEngine {
            AgentModelCatalog.isAgentAvailable(agent, availability: availability),
            isValidPersistedContextBuilderModel(modelRaw, for: agent, availability: availability)
         {
-            let resolved = AgentModelCatalog.normalizeSelection(
+            return AgentModelCatalog.normalizeSelection(
                 agentRaw: agent.rawValue,
                 modelRaw: modelRaw,
                 availability: availability
             )
-            // DEBUG_PROBE_H2_13 — remove in cleanup
-            DebugModeProbe.log(
-                hypothesisId: "H2",
-                location: "AutoRecommendationEngine.resolveContextBuilderSelection",
-                message: "using persisted context builder selection",
-                data: ["agent": resolved.agent.rawValue, "model": resolved.modelRaw]
-            )
-            return resolved
         }
 
         let status = ProviderStatusSnapshot(
@@ -449,23 +422,13 @@ final class AutoRecommendationEngine {
                 modelRaw: recommendation.recommendedModel.rawValue,
                 availability: availability
             )
-            // DEBUG_PROBE_H2_14 — remove in cleanup
-            DebugModeProbe.log(
-                hypothesisId: "H2",
-                location: "AutoRecommendationEngine.resolveContextBuilderSelection",
-                message: "falling back to context builder recommendation",
-                data: [
-                    "recommendedAgent": recommendation.recommendedAgent.rawValue,
-                    "recommendedModel": recommendation.recommendedModel.rawValue,
-                    "resolvedAgent": resolved.agent.rawValue,
-                    "resolvedModel": resolved.modelRaw
-                ]
-            )
-            return resolved
+            if AgentModelCatalog.isValid(rawModel: resolved.modelRaw, for: resolved.agent, availability: availability) {
+                return resolved
+            }
         }
 
-        guard let availableAgent = AgentModelCatalog.selectableAgents(availability: availability).first(where: {
-            switch $0 {
+        for availableAgent in AgentModelCatalog.selectableAgents(availability: availability) {
+            let providerAllowed = switch availableAgent {
             case .claudeCode:
                 enabledRecommendationProviders.contains(.claudeCode)
             case .codexExec:
@@ -477,22 +440,17 @@ final class AutoRecommendationEngine {
             case .openCode, .claudeCodeGLM, .kimiCode, .customClaudeCompatible:
                 true
             }
-        }) else {
-            return nil
+            guard providerAllowed else { continue }
+            let resolved = AgentModelCatalog.normalizeSelection(
+                agentRaw: availableAgent.rawValue,
+                modelRaw: nil,
+                availability: availability
+            )
+            if AgentModelCatalog.isValid(rawModel: resolved.modelRaw, for: resolved.agent, availability: availability) {
+                return resolved
+            }
         }
-        let resolved = AgentModelCatalog.normalizeSelection(
-            agentRaw: availableAgent.rawValue,
-            modelRaw: nil,
-            availability: availability
-        )
-        // DEBUG_PROBE_H2_15 — remove in cleanup
-        DebugModeProbe.log(
-            hypothesisId: "H2",
-            location: "AutoRecommendationEngine.resolveContextBuilderSelection",
-            message: "falling back to first selectable agent",
-            data: ["availableAgent": availableAgent.rawValue, "resolvedAgent": resolved.agent.rawValue, "resolvedModel": resolved.modelRaw]
-        )
-        return resolved
+        return nil
     }
 
     private static func isValidPersistedContextBuilderModel(

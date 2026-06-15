@@ -354,7 +354,7 @@ final class WorktreeAPISmokeHarnessTests: XCTestCase {
             let provider = WorktreeContextBuilderImmediateCompletionProvider()
             let window = try await Self.makeWindow(
                 root: fixture.repo,
-                contextBuilderProviderFactory: { _, _, _, _ in provider }
+                contextBuilderProviderFactory: { _, _, _, _, _ in provider }
             )
             defer { WindowStatesManager.shared.unregisterWindowState(window) }
             let manageWorktree = try await Self.windowTool(named: MCPWindowToolName.manageWorktree, in: window)

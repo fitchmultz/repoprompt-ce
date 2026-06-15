@@ -1132,7 +1132,7 @@ private struct ProvidersStepView: View {
                 HStack(alignment: .top, spacing: 8) {
                     Image(systemName: "info.circle")
                         .foregroundColor(.secondary)
-                    Text("pi models are discovered from pi at runtime. RepoPrompt permissions apply only to managed bridge tools; pi built-ins are not sandboxed by RepoPrompt and still use pi's own runtime configuration.")
+                    Text("pi models are discovered from pi at runtime. RepoPrompt-managed runs apply a preflight policy gate to pi built-ins before execution; this is not an OS sandbox.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)

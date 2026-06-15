@@ -29,41 +29,13 @@ struct PiRPCModelDiscoveryClient: PiModelDiscoveryClient {
     func discoverModels(workspacePath: String?) async throws -> PiDiscoveredModels? {
         let client = clientFactory(workspacePath)
         do {
-            // DEBUG_PROBE_H3_1 — remove in cleanup
-            DebugModeProbe.log(
-                hypothesisId: "H3",
-                location: "PiRPCModelDiscoveryClient.discoverModels",
-                message: "pi RPC model discovery starting",
-                data: ["workspace": DebugModeProbe.workspaceLabel(workspacePath)]
-            )
             try await client.startIfNeeded()
             let state = try? await client.getState()
             let remoteModels = try await client.getAvailableModels()
             let discovered = AgentPiModelRegistry.discoveredModels(from: remoteModels, currentModel: state?.model)
-            // DEBUG_PROBE_H3_2 — remove in cleanup
-            DebugModeProbe.log(
-                hypothesisId: "H3",
-                location: "PiRPCModelDiscoveryClient.discoverModels",
-                message: "pi RPC model discovery completed",
-                data: [
-                    "workspace": DebugModeProbe.workspaceLabel(workspacePath),
-                    "remoteCount": remoteModels.count,
-                    "remoteProviders": DebugModeProbe.providerHistogram(remoteModels: remoteModels),
-                    "stateCurrentRaw": state?.model.flatMap(AgentPiModelRegistry.rawModel) as Any,
-                    "accepted": DebugModeProbe.optionSummary(discovered?.options ?? []),
-                    "acceptedCurrentRaw": discovered?.currentModelRaw as Any
-                ]
-            )
             await client.shutdown()
             return discovered
         } catch {
-            // DEBUG_PROBE_H3_3 — remove in cleanup
-            DebugModeProbe.log(
-                hypothesisId: "H3",
-                location: "PiRPCModelDiscoveryClient.discoverModels",
-                message: "pi RPC model discovery failed",
-                data: ["workspace": DebugModeProbe.workspaceLabel(workspacePath), "error": error.localizedDescription]
-            )
             await client.shutdown()
             throw error
         }
@@ -140,13 +112,6 @@ actor PiModelPollingService: PiModelPolling {
     func discoverOnce(workspacePath: String?) async throws -> Snapshot? {
         guard !isShutdown else { return nil }
         let scope = PiModelWorkspaceScope(workspacePath: workspacePath)
-        // DEBUG_PROBE_H5_6 — remove in cleanup
-        DebugModeProbe.log(
-            hypothesisId: "H5",
-            location: "PiModelPollingService.discoverOnce",
-            message: "discoverOnce requested",
-            data: ["scope": DebugModeProbe.workspaceLabel(scope.workspacePath)]
-        )
         let refresh = startRefreshIfNeeded(scope: scope)
         let result = await refresh.task.value
         clearInFlightRefresh(refresh, scope: scope)
@@ -215,6 +180,7 @@ actor PiModelPollingService: PiModelPolling {
         for scope in contexts.keys {
             contexts[scope]?.pollingTask?.cancel()
             contexts[scope]?.inFlightRefresh?.task.cancel()
+            AgentPiModelRegistry.shared.setRefreshInFlight(false, workspacePath: scope.workspacePath)
         }
         if finishSubscribers {
             let activeContinuations = contexts.values.flatMap(\.continuations.values)
@@ -276,6 +242,7 @@ actor PiModelPollingService: PiModelPolling {
         }
 
         let workspacePath = scope.workspacePath
+        AgentPiModelRegistry.shared.setRefreshInFlight(true, workspacePath: workspacePath)
         let task = Task<Result<Void, Error>, Never> { [weak self, scope, workspacePath] in
             guard let self else { return .success(()) }
             do {
@@ -297,21 +264,12 @@ actor PiModelPollingService: PiModelPolling {
     private func clearInFlightRefresh(_ refresh: InFlightRefresh, scope: PiModelWorkspaceScope) {
         guard contexts[scope]?.inFlightRefresh?.id == refresh.id else { return }
         contexts[scope]?.inFlightRefresh = nil
+        AgentPiModelRegistry.shared.setRefreshInFlight(false, workspacePath: scope.workspacePath)
+        AgentPiModelRegistry.shared.markRefreshSettled(workspacePath: scope.workspacePath)
     }
 
     private func applyRefreshResult(_ discovered: PiDiscoveredModels?, scope: PiModelWorkspaceScope) {
         guard !isShutdown else { return }
-        // DEBUG_PROBE_H5_7 — remove in cleanup
-        DebugModeProbe.log(
-            hypothesisId: "H5",
-            location: "PiModelPollingService.applyRefreshResult",
-            message: "applying refresh result",
-            data: [
-                "scope": DebugModeProbe.workspaceLabel(scope.workspacePath),
-                "discovered": DebugModeProbe.optionSummary(discovered?.options ?? []),
-                "discoveredCurrentRaw": discovered?.currentModelRaw as Any
-            ]
-        )
         guard let discovered else {
             applyMissingSupportedModels(scope: scope)
             return
@@ -340,20 +298,13 @@ actor PiModelPollingService: PiModelPolling {
     }
 
     private func applyMissingSupportedModels(scope: PiModelWorkspaceScope) {
-        // DEBUG_PROBE_H5_8 — remove in cleanup
-        DebugModeProbe.log(
-            hypothesisId: "H5",
-            location: "PiModelPollingService.applyMissingSupportedModels",
-            message: "clearing missing supported models",
-            data: ["scope": DebugModeProbe.workspaceLabel(scope.workspacePath)]
-        )
         _ = AgentPiModelRegistry.shared.clearDiscoveredModels(workspacePath: scope.workspacePath)
         var context = contexts[scope] ?? WorkspacePollingContext()
         context.latest = nil
         context.shouldPublishNextSuccessfulRefresh = true
         let continuations = context.continuations.values
         contexts[scope] = context
-        let failure = Failure(message: "pi did not return any supported openai-codex, Z.Ai, or DeepSeek models.")
+        let failure = Failure(message: "pi did not return any model options from its configured providers.")
         for continuation in continuations {
             continuation.yield(.failure(failure))
         }

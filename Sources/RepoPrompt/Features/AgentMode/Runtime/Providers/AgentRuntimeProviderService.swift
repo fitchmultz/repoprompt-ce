@@ -172,7 +172,7 @@ enum AgentProviderKind: String, CaseIterable, Hashable {
                 return "Claude Code routed through a custom Claude-compatible backend. Slots: Haiku → \(normalized.haiku), Sonnet → \(normalized.sonnet), Opus → \(normalized.opus)."
             }
         case .pi:
-            return "pi coding agent via native RPC. Preserves pi sessions, models, thinking levels, extensions, skills, and built-in tools while allowing RepoPrompt bridge tools when managed by Agent Mode. RepoPrompt permissions apply to bridge tools only; pi built-ins use pi's own runtime config."
+            return "pi coding agent via native RPC. Preserves pi sessions, models, thinking levels, extensions, skills, and built-in tools while adding RepoPrompt bridge tools and a managed preflight policy gate for pi built-ins. The gate is not an OS sandbox."
         }
     }
 
@@ -232,7 +232,8 @@ final class AgentRuntimeProviderService {
         modelString: String? = nil,
         runType: AgentRunType = .discover,
         workspacePath: String? = nil,
-        windowID: Int? = nil
+        windowID: Int? = nil,
+        runtimePermission: AgentProviderRuntimePermissionBinding? = nil
     ) -> HeadlessAgentProvider {
         if Self.enableDebugLogging {
             Self.logger.debug("Creating provider for agent: \(agent.displayName), model: \(modelString ?? "default"), runType: \(String(describing: runType))")
@@ -302,7 +303,8 @@ final class AgentRuntimeProviderService {
                 modelString: modelString,
                 workspacePath: workspacePath,
                 windowID: windowID,
-                enableDebugLogging: Self.enableDebugLogging
+                enableDebugLogging: Self.enableDebugLogging,
+                permissionLevel: runtimePermission?.piPermissionLevel ?? .managedDefault
             )
         case .cursor:
             let config = CursorAgentConfig(

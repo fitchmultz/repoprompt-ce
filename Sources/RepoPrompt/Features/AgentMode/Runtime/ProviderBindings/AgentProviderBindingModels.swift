@@ -189,6 +189,7 @@ struct AgentProviderRuntimePermissionBinding: Equatable {
     let acpSessionModeID: String?
     let autoApproveAllACPToolPermissions: Bool
     let acceptsPendingACPApprovalWhenActivated: Bool
+    let piPermissionLevel: PiAgentToolPreferences.PermissionLevel?
 
     init(
         codexSandboxMode: CodexAgentToolPreferences.SandboxMode? = nil,
@@ -197,7 +198,8 @@ struct AgentProviderRuntimePermissionBinding: Equatable {
         claudePermissionMode: String? = nil,
         acpSessionModeID: String? = nil,
         autoApproveAllACPToolPermissions: Bool = false,
-        acceptsPendingACPApprovalWhenActivated: Bool = false
+        acceptsPendingACPApprovalWhenActivated: Bool = false,
+        piPermissionLevel: PiAgentToolPreferences.PermissionLevel? = nil
     ) {
         self.codexSandboxMode = codexSandboxMode
         self.codexApprovalPolicy = codexApprovalPolicy
@@ -206,6 +208,23 @@ struct AgentProviderRuntimePermissionBinding: Equatable {
         self.acpSessionModeID = acpSessionModeID
         self.autoApproveAllACPToolPermissions = autoApproveAllACPToolPermissions
         self.acceptsPendingACPApprovalWhenActivated = acceptsPendingACPApprovalWhenActivated
+        self.piPermissionLevel = piPermissionLevel
+    }
+
+    var piAllowsReadOnlyBuiltIns: Bool {
+        piPermissionLevel?.allowsReadOnlyBuiltIns ?? false
+    }
+
+    var piAllowsMutatingBuiltInsWithoutApproval: Bool {
+        piPermissionLevel?.allowsMutatingBuiltInsWithoutApproval ?? false
+    }
+
+    var piRequiresApprovalForMutatingBuiltIns: Bool {
+        piPermissionLevel?.requiresApprovalForMutatingBuiltIns ?? false
+    }
+
+    var piBlocksMutatingBuiltIns: Bool {
+        piPermissionLevel?.blocksMutatingBuiltIns ?? true
     }
 }
 

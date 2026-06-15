@@ -112,6 +112,9 @@ final class AgentPermissionSecureStoreTests: XCTestCase {
         XCTAssertEqual(AgentModePermissionPreferences.subagentPermissionPolicy(defaults: defaults), .safeManaged)
         XCTAssertTrue(CodexAgentToolPreferences.bashToolEnabled(defaults: defaults))
         XCTAssertEqual(CodexAgentToolPreferences.permissionLevel(defaults: defaults), .autoReview)
+        XCTAssertEqual(PiAgentToolPreferences.permissionLevel(defaults: defaults), .managedDefault)
+        PiAgentToolPreferences.setPermissionLevel(.fullAccess, defaults: defaults)
+        XCTAssertEqual(PiAgentToolPreferences.permissionLevel(defaults: defaults), .fullAccess)
     }
 
     @MainActor
@@ -298,6 +301,66 @@ final class AgentPermissionSecureStoreTests: XCTestCase {
         XCTAssertEqual(restartedPermissions.permissionLevel(), .autoReview)
         XCTAssertEqual(restartedPermissions.bashToolEnabled, true)
         XCTAssertNil(restartedStore.diagnostic(for: .codex))
+    }
+
+    func testPiPermissionDocumentPersistsNormalizesAndFailsClosed() throws {
+        let secureStrings = FakeSecurePlainStringStore()
+        let key = AgentPermissionSecureDomain.pi.storageKey
+        secureStrings.plainValues[key] = try encode(
+            SecurePiPermissionDocument(permissionLevelRaw: PiAgentToolPreferences.PermissionLevel.fullAccess.rawValue)
+        )
+        let store = makeStore(secureStrings: secureStrings)
+
+        XCTAssertEqual(store.piPermissions().permissionLevel(), .fullAccess)
+        XCTAssertTrue(store.setPiPermissionLevel(.readOnly))
+        XCTAssertEqual(store.piPermissions().permissionLevel(), .readOnly)
+
+        let saved = try decode(SecurePiPermissionDocument.self, from: secureStrings.plainValues[key])
+        XCTAssertEqual(saved.permissionLevel(), .readOnly)
+
+        secureStrings.plainValues[key] = try encode(SecurePiPermissionDocument(permissionLevelRaw: "managed_bridge"))
+        store.clearCachedDocuments()
+        XCTAssertEqual(store.piPermissions().permissionLevel(), .managedDefault)
+        let normalized = try decode(SecurePiPermissionDocument.self, from: secureStrings.plainValues[key])
+        XCTAssertEqual(normalized.permissionLevelRaw, PiAgentToolPreferences.PermissionLevel.managedDefault.rawValue)
+
+        secureStrings.plainValues[key] = "{not-json"
+        store.clearCachedDocuments()
+        XCTAssertEqual(store.piPermissions().permissionLevel(), .managedDefault)
+        XCTAssertEqual(store.diagnostic(for: .pi)?.kind, .decodeFailed)
+    }
+
+    @MainActor
+    func testPiPermissionResolutionFlowsThroughSnapshots() throws {
+        let suiteName = "AgentPermissionSecureStoreTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.removePersistentDomain(forName: suiteName)
+
+        let secureStrings = FakeSecurePlainStringStore()
+        let secureStore = makeStore(secureStrings: secureStrings)
+        let snapshots = AgentProviderPreferenceSnapshotStore(
+            defaults: defaults,
+            securePermissions: secureStore,
+            codexMCPServerEntries: { [] }
+        )
+
+        let initial = snapshots.topLevelSettingsControlsBinding(providerID: .pi)
+        XCTAssertEqual(initial.runtimePermission.piPermissionLevel, .managedDefault)
+
+        snapshots.setPermissionLevel(.pi(.autoReview))
+        let direct = snapshots.topLevelSettingsControlsBinding(providerID: .pi)
+        XCTAssertEqual(direct.runtimePermission.piPermissionLevel, .autoReview)
+        XCTAssertEqual(direct.permission.displayName, PiAgentToolPreferences.PermissionLevel.autoReview.displayName)
+        XCTAssertEqual(snapshots.revision(for: .pi), 1)
+
+        let safe = snapshots.runtimePermission(for: .pi, profile: .mcpSafeDefaults)
+        XCTAssertEqual(safe.piPermissionLevel, .managedDefault)
+        XCTAssertTrue(safe.piRequiresApprovalForMutatingBuiltIns)
+
+        let custom = snapshots.runtimePermission(for: .pi, profile: .providerOverride(.pi(.readOnly)))
+        XCTAssertEqual(custom.piPermissionLevel, .readOnly)
+        XCTAssertTrue(custom.piBlocksMutatingBuiltIns)
     }
 
     func testUpdateWriteFailureForcesEffectiveCacheFailClosed() throws {

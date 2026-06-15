@@ -3,6 +3,49 @@ import XCTest
 
 @MainActor
 final class AgentModePiModelPickerMenuTests: XCTestCase {
+    override func tearDown() {
+        AgentPiModelRegistry.shared.test_reset()
+        super.tearDown()
+    }
+
+    func testPiMenuShowsLoadingOrUnavailableRowsInsteadOfEnabledEmptySubmenu() {
+        let loading = AgentModelStableMenuItems.agentSubmenu(
+            agentKind: .pi,
+            options: [],
+            selectedAgent: .pi,
+            selectedModelRaw: AgentModel.defaultModel.rawValue,
+            includePlaceholderDefault: false,
+            piCatalogState: .loading
+        ) { _, _ in }
+        XCTAssertTrue(loading.isEnabled)
+        XCTAssertEqual(loading.testSubmenuItems?.map(\.title), ["Loading pi models…"])
+        XCTAssertEqual(loading.testSubmenuItems?.first?.isEnabled, false)
+
+        let unavailable = AgentModelStableMenuItems.agentSubmenu(
+            agentKind: .pi,
+            options: [],
+            selectedAgent: .pi,
+            selectedModelRaw: AgentModel.defaultModel.rawValue,
+            includePlaceholderDefault: false,
+            piCatalogState: .unavailable
+        ) { _, _ in }
+        XCTAssertTrue(unavailable.isEnabled)
+        XCTAssertEqual(unavailable.testSubmenuItems?.map(\.title), ["No pi models available"])
+        XCTAssertEqual(unavailable.testSubmenuItems?.first?.isEnabled, false)
+
+        let emptyProvider = StableMenuItem.submenu("Empty Provider", items: [])
+        XCTAssertFalse(emptyProvider.isEnabled)
+    }
+
+    func testHandoffPiEmptyMenuTitleUsesWorkspaceScopedCatalogState() {
+        let workspace = NSTemporaryDirectory().appending("repoprompt-pi-handoff-workspace")
+        AgentPiModelRegistry.shared.markRefreshSettled()
+        AgentPiModelRegistry.shared.setRefreshInFlight(true, workspacePath: workspace)
+
+        XCTAssertEqual(AgentHandoffPopover.emptyModelMenuTitle(for: .pi, piWorkspacePath: nil), "No pi models available")
+        XCTAssertEqual(AgentHandoffPopover.emptyModelMenuTitle(for: .pi, piWorkspacePath: workspace), "Loading pi models…")
+    }
+
     func testInputBarPiMenuGroupsProviderThenModelWithoutThinkingLevelVariants() throws {
         let items = AgentModelStableMenuItems.modelItems(
             agentKind: .pi,

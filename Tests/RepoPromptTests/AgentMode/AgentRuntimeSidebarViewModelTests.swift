@@ -144,6 +144,25 @@ final class AgentRuntimeSidebarViewModelTests: XCTestCase {
         XCTAssertEqual(store.runtimeVM.snapshot.effectiveContextWindowTokens, 200_000)
     }
 
+    func testPiContextUsageIsLabeledEstimatedNotCodexLive() {
+        let store = AgentRuntimeMetricsUIStore()
+        store.update(
+            transcriptSnapshot: AgentTranscriptAnalyticsSnapshot(),
+            codexUsage: AgentContextUsage(
+                modelContextWindow: 200_000,
+                lastTotalTokens: 1200,
+                totalTotalTokens: nil
+            ),
+            liveSelectedFileCount: nil,
+            selectedAgent: .pi,
+            selectedModelRaw: "openai-codex/gpt-5.5"
+        )
+
+        XCTAssertEqual(store.runtimeVM.snapshot.usedTokens, 1200)
+        XCTAssertEqual(store.runtimeVM.snapshot.usageSource, .piEstimated)
+        XCTAssertEqual(store.runtimeVM.snapshot.usageSource.label, "Estimated (pi)")
+    }
+
     func testProviderReportedContextWindowWinsOverModelFallback() {
         let store = AgentRuntimeMetricsUIStore()
         store.update(

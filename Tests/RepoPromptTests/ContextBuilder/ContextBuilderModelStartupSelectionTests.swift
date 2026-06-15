@@ -83,6 +83,61 @@ final class ContextBuilderModelStartupSelectionTests: XCTestCase {
         ))
     }
 
+    func testContextBuilderStartupSelectsReadyPiAheadOfOpenCodeAndCursor() throws {
+        AgentPiModelRegistry.shared.test_reset()
+        addTeardownBlock { AgentPiModelRegistry.shared.test_reset() }
+        let piModelRaw = "openai-codex/gpt-5.5"
+        XCTAssertTrue(AgentPiModelRegistry.shared.updateDiscoveredModels(PiDiscoveredModels(
+            options: [AgentModelOption(rawValue: piModelRaw, displayName: "GPT 5.5", description: nil, isDefault: true)],
+            currentModelRaw: piModelRaw
+        )))
+
+        let resolved = try XCTUnwrap(AutoRecommendationEngine.resolveContextBuilderSelection(
+            persistedAgentRaw: nil,
+            persistedModelRaw: nil,
+            availability: .init(
+                claudeCodeAvailable: false,
+                codexAvailable: false,
+                openCodeAvailable: true,
+                cursorAvailable: true,
+                piAvailable: true
+            )
+        ))
+
+        XCTAssertEqual(resolved.agent, .pi)
+        XCTAssertEqual(resolved.modelRaw, piModelRaw)
+        let recommendation = try XCTUnwrap(AutoRecommendationEngine.contextBuilderRecommendation(status: ProviderStatusSnapshot(
+            claudeCodeCLI: .notConfigured,
+            codexCLI: .notConfigured,
+            cursorCLI: .ready,
+            piCLI: .ready,
+            openCodeCLI: .ready,
+            openAI: .notConfigured
+        )))
+        XCTAssertEqual(recommendation.recommendedAgent, .pi)
+        XCTAssertFalse(recommendation.rationale.localizedCaseInsensitiveContains("fallback"))
+    }
+
+    func testContextBuilderStartupSkipsReadyPiWithoutUsableModelCatalog() throws {
+        AgentPiModelRegistry.shared.test_reset()
+        addTeardownBlock { AgentPiModelRegistry.shared.test_reset() }
+
+        let resolved = try XCTUnwrap(AutoRecommendationEngine.resolveContextBuilderSelection(
+            persistedAgentRaw: nil,
+            persistedModelRaw: nil,
+            availability: .init(
+                claudeCodeAvailable: false,
+                codexAvailable: false,
+                openCodeAvailable: true,
+                cursorAvailable: true,
+                piAvailable: true
+            )
+        ))
+
+        XCTAssertNotEqual(resolved.agent, .pi)
+        XCTAssertTrue([AgentProviderKind.openCode, .cursor].contains(resolved.agent))
+    }
+
     func testUnavailablePersistedSelectionFallsBackToRecommendedAvailableProvider() throws {
         let resolved = try XCTUnwrap(AutoRecommendationEngine.resolveContextBuilderSelection(
             persistedAgentRaw: AgentProviderKind.claudeCode.rawValue,

@@ -67,6 +67,74 @@ final class PiAgentProviderKindTests: XCTestCase {
         XCTAssertEqual(explore?.modelRaw, "openai-codex/gpt-5.5")
     }
 
+    func testPiTaskLabelsResolveAheadOfOpenCodeAndCursorWhenReady() {
+        AgentPiModelRegistry.shared.test_reset()
+        AgentACPModelRegistry.shared.test_reset(providerID: .openCode)
+        defer {
+            AgentPiModelRegistry.shared.test_reset()
+            AgentACPModelRegistry.shared.test_reset(providerID: .openCode)
+        }
+        XCTAssertTrue(AgentPiModelRegistry.shared.updateDiscoveredModels(Self.piSnapshot()))
+        XCTAssertTrue(AgentACPModelRegistry.shared.updateDiscoveredModels(
+            ACPDiscoveredSessionModels(
+                options: [AgentModelOption(
+                    rawValue: "anthropic/claude-sonnet-4-5",
+                    displayName: "Claude Sonnet 4.5",
+                    description: nil,
+                    isPlaceholderDefault: false,
+                    isProviderDefault: true
+                )],
+                currentModelRaw: "anthropic/claude-sonnet-4-5"
+            ),
+            for: .openCode
+        ))
+        let availability = AgentModelCatalog.AvailabilityContext(
+            claudeCodeAvailable: false,
+            codexAvailable: false,
+            openCodeAvailable: true,
+            cursorAvailable: true,
+            piAvailable: true
+        )
+
+        let engineer = AgentModelCatalog.resolveTaskLabelKind(.engineer, availability: availability)
+        XCTAssertEqual(engineer?.agent, .pi)
+        XCTAssertEqual(engineer?.modelRaw, "openai-codex/gpt-5.5")
+    }
+
+    func testPiTaskLabelsSkipPiWhenReadyButNoUsableModelCatalog() {
+        AgentPiModelRegistry.shared.test_reset()
+        AgentACPModelRegistry.shared.test_reset(providerID: .openCode)
+        defer {
+            AgentPiModelRegistry.shared.test_reset()
+            AgentACPModelRegistry.shared.test_reset(providerID: .openCode)
+        }
+        XCTAssertTrue(AgentACPModelRegistry.shared.updateDiscoveredModels(
+            ACPDiscoveredSessionModels(
+                options: [AgentModelOption(
+                    rawValue: "anthropic/claude-sonnet-4-5",
+                    displayName: "Claude Sonnet 4.5",
+                    description: nil,
+                    isPlaceholderDefault: false,
+                    isProviderDefault: true
+                )],
+                currentModelRaw: "anthropic/claude-sonnet-4-5"
+            ),
+            for: .openCode
+        ))
+        let availability = AgentModelCatalog.AvailabilityContext(
+            claudeCodeAvailable: false,
+            codexAvailable: false,
+            openCodeAvailable: true,
+            cursorAvailable: true,
+            piAvailable: true
+        )
+
+        let engineer = AgentModelCatalog.resolveTaskLabelKind(.engineer, availability: availability)
+        XCTAssertEqual(engineer?.agent, .openCode)
+        XCTAssertEqual(engineer?.modelRaw, "anthropic/claude-sonnet-4-5")
+        XCTAssertFalse(AgentModelCatalog.isValid(rawModel: "openai-codex/gpt-5.5", for: .pi, availability: availability))
+    }
+
     func testOpenCodeParticipatesInRecommendationProviderFilteringAndRoleDefaults() {
         AgentACPModelRegistry.shared.test_reset(providerID: .openCode)
         defer { AgentACPModelRegistry.shared.test_reset(providerID: .openCode) }
@@ -110,7 +178,22 @@ final class PiAgentProviderKindTests: XCTestCase {
             workspacePath: "/tmp/repoprompt-ce",
             windowID: 7
         )
-        XCTAssertTrue(provider is PiHeadlessAgentProvider)
+        let piProvider = provider as? PiHeadlessAgentProvider
+        XCTAssertNotNil(piProvider)
+        XCTAssertEqual(piProvider?.permissionLevel, .managedDefault)
+    }
+
+    func testProviderFactoryPassesPiRuntimePermissionToHeadlessProvider() {
+        let provider = AgentRuntimeProviderService.shared.makeProvider(
+            for: .pi,
+            modelString: "openai-codex/gpt-5.5",
+            workspacePath: "/tmp/repoprompt-ce",
+            windowID: 7,
+            runtimePermission: AgentProviderRuntimePermissionBinding(piPermissionLevel: .readOnly)
+        )
+        let piProvider = provider as? PiHeadlessAgentProvider
+        XCTAssertNotNil(piProvider)
+        XCTAssertEqual(piProvider?.permissionLevel, .readOnly)
     }
 
     func testProviderFactoryRejectsPiHeadlessProviderWithoutWindowRouting() {

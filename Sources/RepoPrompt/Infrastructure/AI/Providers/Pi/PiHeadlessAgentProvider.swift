@@ -6,7 +6,8 @@ final class PiHeadlessAgentProvider: HeadlessAgentProvider {
         _ workspacePath: String?,
         _ modelString: String?,
         _ enableDebugLogging: Bool,
-        _ bridgeExtensionURL: URL
+        _ bridgeExtensionURL: URL,
+        _ permissionLevel: PiAgentToolPreferences.PermissionLevel
     ) -> PiNativeSessionController
 
     private let modelString: String?
@@ -15,6 +16,7 @@ final class PiHeadlessAgentProvider: HeadlessAgentProvider {
     private let enableDebugLogging: Bool
     private let bridgeInstaller: BridgeInstaller
     private let controllerFactory: ControllerFactory
+    let permissionLevel: PiAgentToolPreferences.PermissionLevel
 
     private var streamTask: Task<Void, Never>?
     private var controller: PiNativeSessionController?
@@ -24,8 +26,9 @@ final class PiHeadlessAgentProvider: HeadlessAgentProvider {
         workspacePath: String?,
         windowID: Int,
         enableDebugLogging: Bool = false,
+        permissionLevel: PiAgentToolPreferences.PermissionLevel = .managedDefault,
         bridgeInstaller: @escaping BridgeInstaller = { try PiRepoPromptBridgeExtensionInstaller.install(windowID: $0) },
-        controllerFactory: @escaping ControllerFactory = { workspacePath, modelString, enableDebugLogging, bridgeExtensionURL in
+        controllerFactory: @escaping ControllerFactory = { workspacePath, modelString, enableDebugLogging, bridgeExtensionURL, permissionLevel in
             PiNativeSessionController(
                 workspacePath: workspacePath,
                 options: .init(
@@ -33,7 +36,8 @@ final class PiHeadlessAgentProvider: HeadlessAgentProvider {
                     enableDebugLogging: enableDebugLogging,
                     launchArguments: PiIntegrationConfiguration.managedRPCLaunchArguments(
                         bridgeExtensionPath: bridgeExtensionURL.path
-                    )
+                    ),
+                    environmentOverrides: PiIntegrationConfiguration.managedRunEnvironment(permissionLevel: permissionLevel)
                 )
             )
         }
@@ -42,6 +46,7 @@ final class PiHeadlessAgentProvider: HeadlessAgentProvider {
         self.workspacePath = workspacePath
         self.windowID = windowID
         self.enableDebugLogging = enableDebugLogging
+        self.permissionLevel = permissionLevel
         self.bridgeInstaller = bridgeInstaller
         self.controllerFactory = controllerFactory
     }
@@ -52,7 +57,7 @@ final class PiHeadlessAgentProvider: HeadlessAgentProvider {
     ) async throws -> AsyncThrowingStream<AIStreamResult, Error> {
         let actualRunID = runID ?? UUID()
         let bridgeExtensionURL = try bridgeInstaller(windowID)
-        let controller = controllerFactory(workspacePath, modelString, enableDebugLogging, bridgeExtensionURL)
+        let controller = controllerFactory(workspacePath, modelString, enableDebugLogging, bridgeExtensionURL, permissionLevel)
         self.controller = controller
 
         return AsyncThrowingStream { continuation in

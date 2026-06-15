@@ -173,16 +173,20 @@ struct AgentPermissionCapabilitySummaryBuilder {
                 warnings: warnings
             )
         case .pi:
+            let level = piPermissionLevel(profile: profile)
+            let warnings = level == .fullAccess
+                ? ["Full Access lets pi built-ins run without RepoPrompt approval prompts for direct runs."]
+                : []
             return AgentPermissionCapabilitySummary(
                 providerID: providerID,
                 providerName: providerID.displayName,
                 isAvailable: isAvailable,
-                fileMutation: "RepoPrompt bridge tools only; pi built-ins use pi config",
-                shell: "pi built-in shell is not sandboxed by RepoPrompt",
+                fileMutation: "pi built-ins: \(level.displayName)",
+                shell: level.allowsMutatingBuiltInsWithoutApproval ? "Bash allowed" : "Bash gated before execution",
                 externalMCP: safeManaged ? "Bridge MCP: managed run only" : "Bridge MCP: RepoPrompt policy",
-                search: "pi built-ins use pi config",
-                approvalModeDescription: "Bridge permissions only: Managed Bridge",
-                warnings: ["RepoPrompt permissions do not sandbox pi built-in tools."]
+                search: "read/search/list built-ins allowed",
+                approvalModeDescription: "Preflight gate: \(level.displayName)",
+                warnings: warnings
             )
         }
     }
@@ -262,6 +266,19 @@ struct AgentPermissionCapabilitySummaryBuilder {
         case .mcpSafeDefaults:
             .managedDefault
         case let .providerOverride(.cursor(level)):
+            level
+        case .providerOverride:
+            .managedDefault
+        }
+    }
+
+    private func piPermissionLevel(profile: AgentProviderPermissionProfile) -> PiAgentToolPreferences.PermissionLevel {
+        switch profile {
+        case .userConfigured:
+            PiAgentToolPreferences.permissionLevel(defaults: defaults, secureStore: securePermissions)
+        case .mcpSafeDefaults:
+            .managedDefault
+        case let .providerOverride(.pi(level)):
             level
         case .providerOverride:
             .managedDefault

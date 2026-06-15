@@ -136,7 +136,10 @@ final class AgentProviderPreferenceSnapshotStore {
                 acceptsPendingACPApprovalWhenActivated: level.autoApprovesACPToolPermissions
             )
         case .pi:
-            return AgentProviderRuntimePermissionBinding()
+            let level = effectivePiPermissionLevel(profile: profile)
+            return AgentProviderRuntimePermissionBinding(
+                piPermissionLevel: level
+            )
         }
     }
 
@@ -151,8 +154,8 @@ final class AgentProviderPreferenceSnapshotStore {
             OpenCodeAgentToolPreferences.setPermissionLevel(level, defaults: defaults, secureStore: securePermissions)
         case let .cursor(level):
             CursorAgentToolPreferences.setPermissionLevel(level, defaults: defaults, secureStore: securePermissions)
-        case .pi:
-            break
+        case let .pi(level):
+            PiAgentToolPreferences.setPermissionLevel(level, defaults: defaults, secureStore: securePermissions)
         }
         bumpRevision(for: id.providerID)
         return id.providerID
@@ -505,7 +508,7 @@ final class AgentProviderPreferenceSnapshotStore {
     ) -> PiAgentToolPreferences.PermissionLevel {
         switch profile {
         case .userConfigured:
-            PiAgentToolPreferences.permissionLevel()
+            PiAgentToolPreferences.permissionLevel(defaults: defaults, secureStore: securePermissions)
         case .mcpSafeDefaults:
             .managedDefault
         case let .providerOverride(.pi(level)):

@@ -4,6 +4,7 @@ enum ContextUsageSnapshotSource: String, Codable, Equatable {
     case claudeUsageEvent
     case geminiUsageEvent
     case codexNativeUsage
+    case piBestEffortEstimate
     case turnFinalization
     case persistedTurns
     case compactionSignal

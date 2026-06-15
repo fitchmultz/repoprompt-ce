@@ -1326,26 +1326,11 @@ class GlobalSettingsStore: ObservableObject {
         guard let agentRaw = globalDefaults.discoverAgentRaw?.trimmingCharacters(in: .whitespacesAndNewlines),
               !agentRaw.isEmpty
         else {
-            // DEBUG_PROBE_H1_7 — remove in cleanup
-            DebugModeProbe.log(
-                hypothesisId: "H1",
-                location: "GlobalSettingsStore.persistedGlobalContextBuilderAgentSelection",
-                message: "read persisted global context builder selection empty",
-                data: ["rawAgent": globalDefaults.discoverAgentRaw as Any]
-            )
             return (nil, nil)
         }
         let modelRaw = globalDefaults.discoverModelsByAgent?[agentRaw]?
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        let result = (agentRaw, modelRaw?.isEmpty == false ? modelRaw : nil)
-        // DEBUG_PROBE_H1_8 — remove in cleanup
-        DebugModeProbe.log(
-            hypothesisId: "H1",
-            location: "GlobalSettingsStore.persistedGlobalContextBuilderAgentSelection",
-            message: "read persisted global context builder selection",
-            data: ["agent": result.0, "model": result.1 as Any]
-        )
-        return result
+        return (agentRaw, modelRaw?.isEmpty == false ? modelRaw : nil)
     }
 
     /// Promotes a pre-global workspace Context Builder selection into the global
@@ -1425,18 +1410,6 @@ class GlobalSettingsStore: ObservableObject {
             agentRaw: persisted.agentRaw,
             modelRaw: persisted.modelRaw
         )
-        // DEBUG_PROBE_H1_9 — remove in cleanup
-        DebugModeProbe.log(
-            hypothesisId: "H1",
-            location: "GlobalSettingsStore.globalContextBuilderAgentSelection",
-            message: "normalized global context builder selection",
-            data: [
-                "persistedAgent": persisted.agentRaw as Any,
-                "persistedModel": persisted.modelRaw as Any,
-                "normalizedAgent": normalized.agent.rawValue,
-                "normalizedModel": normalized.modelRaw
-            ]
-        )
         return (normalized.agent.rawValue, normalized.modelRaw)
     }
 
@@ -1473,22 +1446,6 @@ class GlobalSettingsStore: ObservableObject {
     ) {
         let oldSelection = globalContextBuilderAgentSelection()
         let normalized = AgentModelCatalog.normalizePersistedSelection(agentRaw: agentRaw, modelRaw: modelRaw)
-        // DEBUG_PROBE_H1_10 — remove in cleanup
-        DebugModeProbe.log(
-            hypothesisId: "H1",
-            location: "GlobalSettingsStore.setGlobalContextBuilderAgentSelection.nonOptionalModel",
-            message: "writing global context builder selection",
-            data: [
-                "oldAgent": oldSelection.agentRaw as Any,
-                "oldModel": oldSelection.modelRaw as Any,
-                "inputAgent": agentRaw,
-                "inputModel": modelRaw,
-                "normalizedAgent": normalized.agent.rawValue,
-                "normalizedModel": normalized.modelRaw,
-                "markUserDefined": markUserDefined,
-                "reason": reason as Any
-            ]
-        )
         globalDefaults.discoverAgentRaw = normalized.agent.rawValue
         if globalDefaults.discoverModelsByAgent == nil {
             globalDefaults.discoverModelsByAgent = [:]
@@ -1552,22 +1509,6 @@ class GlobalSettingsStore: ObservableObject {
         if markUserDefined {
             globalDefaults.didUserSetDiscoverAgentDefaults = true
         }
-        // DEBUG_PROBE_H1_11 — remove in cleanup
-        DebugModeProbe.log(
-            hypothesisId: "H1",
-            location: "GlobalSettingsStore.setGlobalContextBuilderAgentSelection.optionalModel",
-            message: "writing global context builder selection",
-            data: [
-                "oldAgent": oldSelection.agentRaw as Any,
-                "oldModel": oldSelection.modelRaw as Any,
-                "inputAgent": agentRaw,
-                "inputModel": modelRaw as Any,
-                "storedAgent": agent.rawValue,
-                "storedModel": newModelRaw as Any,
-                "markUserDefined": markUserDefined,
-                "reason": reason as Any
-            ]
-        )
         recordSettingsWriteDiagnostic(
             key: "globalContextBuilderAgentSelection",
             oldValue: oldSelection.agentRaw.flatMap { oldAgentRaw in

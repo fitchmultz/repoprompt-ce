@@ -28,11 +28,12 @@ final class PiHeadlessAgentProviderTests: XCTestCase {
                 XCTAssertEqual(windowID, 7)
                 return bridgeURL
             },
-            controllerFactory: { workspacePath, modelString, enableDebugLogging, installedBridgeURL in
+            controllerFactory: { workspacePath, modelString, enableDebugLogging, installedBridgeURL, permissionLevel in
                 XCTAssertEqual(workspacePath, directory.path)
                 XCTAssertEqual(modelString, "zai/glm-5.2:high")
                 XCTAssertFalse(enableDebugLogging)
                 XCTAssertEqual(installedBridgeURL, bridgeURL)
+                XCTAssertEqual(permissionLevel, .managedDefault)
                 let client = PiRPCClient(config: .init(
                     commandName: scriptURL.path,
                     additionalPathHints: [],

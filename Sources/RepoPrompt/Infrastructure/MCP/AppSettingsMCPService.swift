@@ -1447,22 +1447,6 @@ private enum AppSettingsMCPRegistry {
                 else { return nil }
                 return String(raw.dropFirst("pi_custom_".count))
             }
-            // DEBUG_PROBE_H4_8 — remove in cleanup
-            DebugModeProbe.log(
-                hypothesisId: "H4",
-                location: "AppSettingsMCPService.aiModelRawCandidates",
-                message: "built AIModel raw candidates",
-                data: [
-                    "key": request.key,
-                    "agentFilter": request.agentFilter?.rawValue as Any,
-                    "totalCandidateCount": allCandidates.count,
-                    "piCandidates": [
-                        "count": piRawModels.count,
-                        "providers": DebugModeProbe.providerHistogram(rawModels: piRawModels),
-                        "sample": Array(piRawModels.prefix(8))
-                    ]
-                ]
-            )
         }
 
         let totalCount = allCandidates.count
@@ -1559,22 +1543,6 @@ private enum AppSettingsMCPRegistry {
                 else { return nil }
                 return raw
             }
-            // DEBUG_PROBE_H4_9 — remove in cleanup
-            DebugModeProbe.log(
-                hypothesisId: "H4",
-                location: "AppSettingsMCPService.agentModelRawCandidates",
-                message: "built AgentModel raw candidates",
-                data: [
-                    "key": request.key,
-                    "agentFilter": request.agentFilter?.rawValue as Any,
-                    "totalCandidateCount": allCandidates.count,
-                    "piCandidates": [
-                        "count": piRawModels.count,
-                        "providers": DebugModeProbe.providerHistogram(rawModels: piRawModels),
-                        "sample": Array(piRawModels.prefix(8))
-                    ]
-                ]
-            )
         }
 
         let totalCount = allCandidates.count

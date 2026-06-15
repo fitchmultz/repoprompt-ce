@@ -49,6 +49,7 @@ pi is not a Claude-compatible provider plugin. It remains app-integrated because
 |   ▼                                                                        |
 | RepoPrompt pi bridge extension                                             |
 |   │                                                                        |
+|   │  pi.on("tool_call") preflight gate for pi built-ins                    |
 |   │  pi.exec(repoprompt-mcp --tools-schema / -c <tool> -j <json>)           |
 +---│------------------------------------------------------------------------+
     │
@@ -87,7 +88,24 @@ pi --mode rpc --approve [--extension <bridge.ts>]
 
 RepoPrompt sets `REPOPROMPT_PI_MANAGED_RUN=1` for managed runs. The global/window bridge uses this to avoid loading the global auto-discovered bridge inside RepoPrompt-managed runs where a window-specific bridge is supplied.
 
+RepoPrompt also sets `REPOPROMPT_PI_PERMISSION_LEVEL` for managed runs. The window-scoped bridge reads this value before pi built-in tools execute and applies RepoPrompt's preflight policy gate. This gate is a RepoPrompt approval/policy boundary; it is not an OS or kernel sandbox.
+
 Minimum supported pi version is currently `0.79.0`, enforced by `PiIntegrationConfiguration.checkManagedRPCAvailability` before managed RPC runs that require the supported-version check.
+
+### Built-in tool permission policy
+
+RepoPrompt-managed pi runs gate pi built-ins through the managed bridge `tool_call` extension hook for `bash`, `read`, `edit`, `write`, `grep`, `find`, and `ls`. RepoPrompt dynamic MCP tools are not intercepted by this hook; they continue through the RepoPrompt MCP policy path.
+
+Permission levels:
+
+| Level | Behavior |
+| --- | --- |
+| `readOnly` | Allows `read`, `grep`, `find`, and `ls`; blocks `bash`, `edit`, and `write` before pi executes them. |
+| `askBeforeWrite` | Allows read/search/list built-ins; asks before `bash`, `edit`, and `write`. |
+| `autoReview` | Uses the same preflight gate as `askBeforeWrite` until pi auto-review routing is wired, then should route eligible requests through reviewer policy. |
+| `fullAccess` | Allows built-ins without prompts for direct user-configured runs. MCP/Safe Managed policy can still override this at launch. |
+
+Safe Managed and headless Context Builder pi runs use `askBeforeWrite` by default. Mutating built-ins that require approval are routed back to the app through the managed `pi-schema` RepoPrompt MCP path and the `ask_user` interaction surface; endpoint failures, malformed responses, timeouts, lost routing, or unavailable UI all fail closed before pi executes the tool. Session grants use an unredacted canonical input hash, stay in memory, and are scoped to the current managed pi process.
 
 ### Session identity and persistence
 
@@ -120,6 +138,8 @@ pi --model <provider>/<modelID> --thinking high
 pi --model <provider>/<modelID>:high
 ```
 
+The pi catalog is workspace-scoped and state-aware. `AgentPiModelRegistry.catalogState` is the synchronous read model for menus and can be `loading`, `loaded(PiDiscoveredModels)`, or `unavailable`. Cold persisted snapshots are synchronously warmed on first read so the first menu open can show cached models. Menus must render loaded model rows, a disabled `Loading pi models…` row, or a disabled `No pi models available` row; no provider menu should be enabled with an empty child list.
+
 ### Image payloads
 
 RepoPrompt image attachments are converted by `PiRPCImageContentBuilder` into pi RPC image content blocks:
@@ -128,7 +148,11 @@ RepoPrompt image attachments are converted by `PiRPCImageContentBuilder` into pi
 {"type":"image","data":"<base64>","mimeType":"image/png"}
 ```
 
-Image forwarding must be preserved for initial prompts, steering messages, and follow-up messages.
+Image forwarding must be preserved for initial prompts, steering messages, and follow-up messages. Current pi RPC image support is local-file only. Remote image URLs fail explicitly with copy that asks the user to save the image locally before retrying; they must not be silently dropped or fetched without an explicit product decision.
+
+### Context usage
+
+pi does not currently expose a Codex-equivalent native context usage event through RepoPrompt's RPC mapping. RepoPrompt therefore uses the non-Codex estimator for pi and labels pi context usage as estimated/best-effort (`piBestEffortEstimate` / `Estimated (pi)`) rather than Codex live/exact usage. If pi later exposes native usage, add a pi-specific source and tests before changing that label.
 
 ### RPC framing and events
 
@@ -165,7 +189,9 @@ Bridge constants:
 | `BRIDGE_VERSION` | Must match `PiRepoPromptBridgeExtensionInstaller.extensionVersion`. |
 | `SCHEMA_LOAD_TIMEOUT_MS` | Timeout for `repoprompt-mcp --tools-schema --compact`. |
 | `TOOL_EXEC_TIMEOUT_MS` | Timeout for individual RepoPrompt MCP tool invocations. |
+| `TOOL_APPROVAL_TIMEOUT_MS` | Timeout for pi built-in preflight approval prompts. Timeout denies the tool before execution. |
 | `MAX_RESULT_CHARS` | Maximum returned text payload before bridge-side truncation. |
+| `MAX_TOOL_INPUT_UI_CHARS` | Maximum serialized pi built-in input shown in approval UI before redaction/truncation. |
 
 Bridge tool results include `details.bridgeVersion`, `details.tool`, `details.windowID`, `details.exitCode`, `details.truncated`, `details.cliPath`, `details.schemaArgs`, `details.toolArgsPrefix`, and `details.isManagedWindowBridge` for downstream rendering and diagnostics. The `repoprompt_bridge_status` tool also reports structured schema-load diagnostics: `schemaLoadStatus`, `schemaToolCount`, `failureClass`, and `error`.
 
@@ -177,9 +203,9 @@ The managed pi bridge registers an explicit read-only `bind_context` wrapper plu
 
 ### MCP routing and permissions
 
-RepoPrompt owns the MCP permission boundary for RepoPrompt tools. The pi bridge only exposes tools and calls `repoprompt-mcp`; RepoPrompt still controls routing, active window selection, auto-approval, and Agent Mode permission UI.
+RepoPrompt owns the MCP permission boundary for RepoPrompt tools and the preflight policy boundary for managed pi built-ins. The pi bridge exposes RepoPrompt tools, calls `repoprompt-mcp`, and intercepts only pi built-ins through `tool_call`; RepoPrompt still controls routing, active window selection, auto-approval, Agent Mode permission UI, and Safe Managed policy resolution.
 
-Managed Agent Mode runs register the expected pi process PID and acquire an MCP bootstrap/routing lease before pi starts tool execution. Terminal cleanup must release leases, clear client connection policy, clean run routing state, and shut down the pi controller.
+Managed Agent Mode runs register the expected pi process PID and acquire an MCP bootstrap/routing lease before pi starts tool execution. Terminal cleanup must release leases, clear client connection policy, clean run routing state, and shut down the pi controller, which clears in-process session grants.
 
 ### Extension UI
 

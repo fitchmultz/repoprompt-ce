@@ -5,6 +5,7 @@ import SwiftUI
 final class AgentRuntimeSidebarViewModel: ObservableObject {
     enum UsageSource: String, Equatable {
         case codexLive
+        case piEstimated
         case toolDerived
         case unavailable
 
@@ -12,6 +13,8 @@ final class AgentRuntimeSidebarViewModel: ObservableObject {
             switch self {
             case .codexLive:
                 "Live"
+            case .piEstimated:
+                "Estimated (pi)"
             case .toolDerived:
                 "Estimated (tools)"
             case .unavailable:
@@ -152,7 +155,7 @@ final class AgentRuntimeSidebarViewModel: ObservableObject {
             let used = last > 0 ? last : total
             next.usedTokens = used > 0 ? used : nil
             next.contextWindowTokens = codexUsage.modelContextWindow
-            next.usageSource = .codexLive
+            next.usageSource = selectedAgent == .pi ? .piEstimated : .codexLive
         } else if let toolTotalTokens {
             next.usedTokens = toolTotalTokens
             next.contextWindowTokens = nil
@@ -216,7 +219,7 @@ final class AgentRuntimeSidebarViewModel: ObservableObject {
             let used = last > 0 ? last : total
             next.usedTokens = used > 0 ? used : nil
             next.contextWindowTokens = codexUsage.modelContextWindow
-            next.usageSource = .codexLive
+            next.usageSource = selectedAgent == .pi ? .piEstimated : .codexLive
         } else if let toolTotalTokens {
             next.usedTokens = toolTotalTokens
             next.contextWindowTokens = nil

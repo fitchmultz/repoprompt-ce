@@ -452,6 +452,28 @@ final class PiModelCatalogTests: XCTestCase {
         XCTAssertEqual(loaded?.options.last?.supportedPiThinkingLevels, [.off, .low, .high])
     }
 
+    func testRegistryStateWarmsPersistedWorkspaceSnapshotSynchronouslyOnFirstRead() {
+        let workspace = "/tmp/pi-sync-warm-workspace"
+        let snapshot = Self.snapshot(rawValue: "openai-codex/gpt-5.5", displayName: "GPT 5.5")
+        XCTAssertTrue(AgentPiModelRegistry.shared.updateDiscoveredModels(snapshot, workspacePath: workspace))
+        AgentPiModelRegistry.shared.test_clearMemoryPreservingStore()
+
+        let state = AgentPiModelRegistry.shared.catalogState(workspacePath: workspace)
+        XCTAssertEqual(state, .loaded(snapshot))
+        XCTAssertEqual(
+            AgentModelCatalog.options(for: .pi, availability: .init(piAvailable: true, piWorkspacePath: workspace)).map(\.rawValue),
+            ["openai-codex/gpt-5.5"]
+        )
+    }
+
+    func testRegistryStateDistinguishesLoadingAndUnavailableWithoutModels() {
+        let workspace = "/tmp/pi-state-empty-workspace"
+        XCTAssertEqual(AgentPiModelRegistry.shared.catalogState(workspacePath: workspace), .loading)
+
+        AgentPiModelRegistry.shared.markRefreshSettled(workspacePath: workspace)
+        XCTAssertEqual(AgentPiModelRegistry.shared.catalogState(workspacePath: workspace), .unavailable)
+    }
+
     func testPiDynamicModelStorePersistsWorkspaceSnapshotsWithoutGlobalFallback() throws {
         let suiteName = "PiModelCatalogTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
