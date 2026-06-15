@@ -1,3 +1,4 @@
+import Darwin
 @testable import RepoPrompt
 import XCTest
 
@@ -410,6 +411,58 @@ final class PiRPCClientTests: XCTestCase {
         XCTAssertEqual(events[1].pid, events[0].pid)
         XCTAssertEqual(events[1].clientName, "pi")
         XCTAssertEqual(events[1].runID, runID)
+        let exitedProcessWasReaped = await eventually {
+            Self.processNoLongerExists(events[0].pid)
+        }
+        XCTAssertTrue(exitedProcessWasReaped, "PiRPCClient must reap the raw posix_spawn child after stdout EOF instead of leaving a zombie pi process.")
+    }
+
+    func testCommandAfterStdoutEOFStartsFreshRPCProcess() async throws {
+        let scriptURL = try makeFakePiExitAfterStateScript()
+        let recorder = ExpectedPIDRecorder()
+        let runID = UUID()
+        let registrar = PiRPCClient.ExpectedAgentPIDRegistrar(
+            register: { pid, clientName, runID in
+                await recorder.record(.register, pid: pid, clientName: clientName, runID: runID)
+            },
+            clear: { pid, clientName, runID in
+                await recorder.record(.clear, pid: pid, clientName: clientName, runID: runID)
+            }
+        )
+        let client = PiRPCClient(
+            config: .init(
+                commandName: scriptURL.path,
+                additionalPathHints: [],
+                requestTimeout: 2,
+                launchArguments: [],
+                requiresSupportedVersionCheck: false
+            ),
+            expectedAgentPIDRegistrar: registrar
+        )
+        addTeardownBlock { await client.shutdown() }
+
+        await client.setExpectedAgentPIDRegistration(.init(clientName: "pi", runID: runID))
+        let firstState = try await client.getState()
+        XCTAssertEqual(firstState.sessionID, "session-exit")
+        let firstExitCleared = await eventually {
+            let events = await recorder.events()
+            return events.count == 2 && events[1].kind == .clear && Self.processNoLongerExists(events[0].pid)
+        }
+        XCTAssertTrue(firstExitCleared)
+
+        let secondState = try await client.getState()
+        XCTAssertEqual(secondState.sessionID, "session-exit")
+        let secondExitCleared = await eventually {
+            let events = await recorder.events()
+            return events.count == 4 && events[3].kind == .clear && Self.processNoLongerExists(events[2].pid)
+        }
+        let events = await recorder.events()
+        XCTAssertTrue(secondExitCleared)
+        XCTAssertEqual(events.map(\.kind), [.register, .clear, .register, .clear])
+        XCTAssertEqual(events[0].clientName, "pi")
+        XCTAssertEqual(events[2].clientName, "pi")
+        XCTAssertEqual(events[0].runID, runID)
+        XCTAssertEqual(events[2].runID, runID)
     }
 
     func testExtensionUIResponsePreservesOriginalRequestID() async throws {
@@ -782,6 +835,11 @@ final class PiRPCClientTests: XCTestCase {
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
         return await condition()
+    }
+
+    private static func processNoLongerExists(_ pid: pid_t) -> Bool {
+        errno = 0
+        return kill(pid, 0) == -1 && errno == ESRCH
     }
 
     private func waitForRecordedObjects(at url: URL, count: Int) async throws -> [[String: Any]] {

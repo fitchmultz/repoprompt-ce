@@ -1,6 +1,6 @@
 # pi Integration Architecture
 
-Current as of 2026-06-14. This document is contributor-facing: use it when editing RepoPrompt CE's pi provider, managed pi RPC runs, model discovery, Agent Mode runner, or RepoPrompt MCP bridge extension.
+Current as of 2026-06-15 for pi 0.79.4. This document is contributor-facing: use it when editing RepoPrompt CE's pi provider, managed pi RPC runs, model discovery, Agent Mode runner, or RepoPrompt MCP bridge extension.
 
 ## Scope and goals
 
@@ -90,7 +90,7 @@ RepoPrompt sets `REPOPROMPT_PI_MANAGED_RUN=1` for managed runs. The global/windo
 
 RepoPrompt also sets `REPOPROMPT_PI_PERMISSION_LEVEL` for managed runs. The window-scoped bridge reads this value before pi built-in tools execute and applies RepoPrompt's preflight policy gate. This gate is a RepoPrompt approval/policy boundary; it is not an OS or kernel sandbox.
 
-Minimum supported pi version is currently `0.79.0`, enforced by `PiIntegrationConfiguration.checkManagedRPCAvailability` before managed RPC runs that require the supported-version check.
+Minimum supported pi version is currently `0.79.0`, enforced by `PiIntegrationConfiguration.checkManagedRPCAvailability` before managed RPC runs that require the supported-version check. RepoPrompt is validated against pi 0.79.4. The 0.79.4 changelog does not require a launch-argument or RPC protocol change for RepoPrompt: first-run theme detection is interactive-only, release `SHA256SUMS` files matter only if RepoPrompt later downloads standalone pi binaries, and package-command handle cleanup does not remove RepoPrompt's responsibility to keep its bridge factory bounded and session-scoped state cleaned up.
 
 ### Built-in tool permission policy
 
@@ -105,7 +105,7 @@ Permission levels:
 | `autoReview` | Uses the same preflight gate as `askBeforeWrite` until pi auto-review routing is wired, then should route eligible requests through reviewer policy. |
 | `fullAccess` | Allows built-ins without prompts for direct user-configured runs. MCP/Safe Managed policy can still override this at launch. |
 
-Safe Managed and headless Context Builder pi runs use `askBeforeWrite` by default. Mutating built-ins that require approval are routed back to the app through the managed `pi-schema` RepoPrompt MCP path and the `ask_user` interaction surface; endpoint failures, malformed responses, timeouts, lost routing, or unavailable UI all fail closed before pi executes the tool. Session grants use an unredacted canonical input hash, stay in memory, and are scoped to the current managed pi process.
+Safe Managed and headless Context Builder pi runs use `askBeforeWrite` by default. Mutating built-ins that require approval are routed back to the app through the managed `pi-schema` RepoPrompt MCP path and the `ask_user` interaction surface; endpoint failures, malformed responses, timeouts, lost routing, or unavailable UI all fail closed before pi executes the tool. Session grants use an unredacted canonical input hash, stay in memory, and are scoped to the current managed pi process/session. The bridge clears these grants on pi `session_shutdown` so `Allow for session` cannot silently cross reload, resume, fork, new-session, or quit boundaries if pi reuses an extension runtime.
 
 ### Session identity and persistence
 
@@ -162,7 +162,7 @@ pi RPC is JSON Lines over stdin/stdout. RepoPrompt splits only on LF, trims ASCI
 - `extension_ui_request` payloads to Agent Mode user interactions;
 - agent, turn, message, tool, queue, compaction, and extension events to `PiNativeSessionController.Event`.
 
-Unknown event types should remain non-fatal. Protocol drift should produce bounded diagnostics rather than crashing normal runs or silently losing all evidence.
+Unknown event types should remain non-fatal. Protocol drift should produce bounded diagnostics rather than crashing normal runs or silently losing all evidence. When stdout closes, RepoPrompt must clear expected-pi PID registration, fail pending requests, emit transport closure, close file handles, and reap or terminate the raw `posix_spawn` child. Dropping the pid without `waitpid` can leave zombie or orphaned pi processes and violates the managed-run lifecycle contract.
 
 ### Request timeout policy
 
@@ -193,7 +193,7 @@ Bridge constants:
 | `MAX_RESULT_CHARS` | Maximum returned text payload before bridge-side truncation. |
 | `MAX_TOOL_INPUT_UI_CHARS` | Maximum serialized pi built-in input shown in approval UI before redaction/truncation. |
 
-Bridge tool results include `details.bridgeVersion`, `details.tool`, `details.windowID`, `details.exitCode`, `details.truncated`, `details.cliPath`, `details.schemaArgs`, `details.toolArgsPrefix`, and `details.isManagedWindowBridge` for downstream rendering and diagnostics. The `repoprompt_bridge_status` tool also reports structured schema-load diagnostics: `schemaLoadStatus`, `schemaToolCount`, `failureClass`, and `error`.
+Bridge tool results include `details.bridgeVersion`, `details.tool`, `details.windowID`, `details.exitCode`, `details.truncated`, `details.cliPath`, `details.schemaArgs`, `details.toolArgsPrefix`, and `details.isManagedWindowBridge` for downstream rendering and diagnostics. The `repoprompt_bridge_status` tool also reports structured schema-load/registration diagnostics: `schemaLoadStatus`, `schemaToolCount`, `registeredToolCount`, `registrationFailureCount`, `registrationFailures`, `failureClass`, and `error`. Dynamic tool schema export failure should degrade to the status tool; an individual dynamic tool registration failure should skip that tool and report degraded status rather than crash the whole bridge.
 
 The bridge also registers a fixed read-only `repoprompt_window_status` tool. It calls RepoPrompt MCP `bind_context` with `op=list` and exists as a stable pi-facing routing discovery tool when provider/tool adapters fail to expose or select the raw `bind_context` name. Agents should use `repoprompt_window_status` instead of shelling out to `repoprompt-mcp` when they need the current RepoPrompt window, tab, workspace, or binding status.
 

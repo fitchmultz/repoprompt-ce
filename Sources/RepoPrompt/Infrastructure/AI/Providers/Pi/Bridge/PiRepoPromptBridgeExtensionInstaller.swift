@@ -49,7 +49,7 @@ enum PiRepoPromptBridgeExtensionInstaller {
         }
     }
 
-    static let extensionVersion = "9"
+    static let extensionVersion = "10"
     static let personalBridgeClientName = "repoprompt-pi-bridge"
     static let managedBridgeExecutionClientName = "pi-schema"
     private static let managedMarker = "// RepoPrompt CE managed pi bridge extension"

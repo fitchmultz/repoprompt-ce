@@ -39,14 +39,18 @@ type RepoPromptBridgeFailureClass =
   | "app_unavailable"
   | "connection_closed"
   | "schema_parse_failure"
+  | "tool_registration_failure"
   | "routing_rejection"
   | "timeout"
   | "cli_failure"
   | "unknown";
 
 type RepoPromptSchemaLoadDiagnostics = {
-  status: "loaded" | "failed";
+  status: "loaded" | "degraded" | "failed";
   toolCount: number;
+  registeredToolCount: number;
+  registrationFailureCount?: number;
+  registrationFailures?: string[];
   failureClass?: RepoPromptBridgeFailureClass;
   error?: string;
 };
@@ -63,6 +67,9 @@ type RepoPromptBridgeDetails = {
   isManagedWindowBridge: boolean;
   schemaLoadStatus?: RepoPromptSchemaLoadDiagnostics["status"];
   schemaToolCount?: number;
+  registeredToolCount?: number;
+  registrationFailureCount?: number;
+  registrationFailures?: string[];
   failureClass?: RepoPromptBridgeFailureClass;
   error?: string;
 };
@@ -114,6 +121,19 @@ function classifyBridgeFailure(message: string, exitCode?: number): RepoPromptBr
   }
   if (exitCode !== undefined && exitCode !== 0) return "cli_failure";
   return "unknown";
+}
+
+function recordToolRegistrationFailure(
+  diagnostics: RepoPromptSchemaLoadDiagnostics,
+  toolName: string,
+  error: unknown,
+) {
+  const message = `Tool ${toolName}: ${String(error instanceof Error ? error.message : error)}`;
+  diagnostics.status = diagnostics.status === "failed" ? "failed" : "degraded";
+  diagnostics.failureClass = diagnostics.failureClass ?? "tool_registration_failure";
+  diagnostics.registrationFailureCount = (diagnostics.registrationFailureCount ?? 0) + 1;
+  diagnostics.registrationFailures = [...(diagnostics.registrationFailures ?? []), message].slice(0, 10);
+  diagnostics.error = diagnostics.error ? `${diagnostics.error}; ${message}` : message;
 }
 
 function parseToolsSchema(stdout: string): RepoPromptToolEntry[] {
@@ -428,6 +448,9 @@ async function evaluatePiBuiltInToolPolicy(
 
 function registerPiBuiltInToolPolicy(pi: ExtensionAPI) {
   if (!REPOPROMPT_IS_MANAGED_WINDOW_BRIDGE) return;
+  pi.on("session_shutdown", () => {
+    PI_SESSION_TOOL_GRANTS.clear();
+  });
   pi.on("tool_call", async (event, ctx) => {
     try {
       return await evaluatePiBuiltInToolPolicy(pi, event, ctx);
@@ -480,8 +503,10 @@ function registerRepoPromptBridgeStatusTool(pi: ExtensionAPI, schemaDiagnostics:
     },
     async execute() {
       const status = schemaDiagnostics.status === "loaded"
-        ? `RepoPrompt bridge ${BRIDGE_VERSION} loaded ${schemaDiagnostics.toolCount} dynamic tool schema(s).`
-        : `RepoPrompt bridge ${BRIDGE_VERSION} could not load dynamic tool schemas (class=${schemaDiagnostics.failureClass ?? "unknown"}): ${schemaDiagnostics.error ?? "unknown error"}`;
+        ? `RepoPrompt bridge ${BRIDGE_VERSION} loaded ${schemaDiagnostics.registeredToolCount} dynamic tool schema(s).`
+        : schemaDiagnostics.status === "degraded"
+          ? `RepoPrompt bridge ${BRIDGE_VERSION} loaded ${schemaDiagnostics.registeredToolCount}/${schemaDiagnostics.toolCount} dynamic tool schema(s); ${schemaDiagnostics.registrationFailureCount ?? 0} failed registration(s): ${schemaDiagnostics.error ?? "unknown error"}`
+          : `RepoPrompt bridge ${BRIDGE_VERSION} could not load dynamic tool schemas (class=${schemaDiagnostics.failureClass ?? "unknown"}): ${schemaDiagnostics.error ?? "unknown error"}`;
       return {
         content: [{ type: "text" as const, text: status }],
         details: {
@@ -496,6 +521,9 @@ function registerRepoPromptBridgeStatusTool(pi: ExtensionAPI, schemaDiagnostics:
           isManagedWindowBridge: REPOPROMPT_IS_MANAGED_WINDOW_BRIDGE,
           schemaLoadStatus: schemaDiagnostics.status,
           schemaToolCount: schemaDiagnostics.toolCount,
+          registeredToolCount: schemaDiagnostics.registeredToolCount,
+          registrationFailureCount: schemaDiagnostics.registrationFailureCount,
+          registrationFailures: schemaDiagnostics.registrationFailures,
           failureClass: schemaDiagnostics.failureClass,
           error: schemaDiagnostics.error,
         },
@@ -535,15 +563,16 @@ export default async function repoPromptBridge(pi: ExtensionAPI) {
   registerRepoPromptWindowStatusTool(pi);
 
   let tools: RepoPromptToolEntry[] = [];
-  let schemaDiagnostics: RepoPromptSchemaLoadDiagnostics = { status: "loaded", toolCount: 0 };
+  let schemaDiagnostics: RepoPromptSchemaLoadDiagnostics = { status: "loaded", toolCount: 0, registeredToolCount: 0 };
   try {
     tools = await loadRepoPromptTools(pi);
-    schemaDiagnostics = { status: "loaded", toolCount: tools.length };
+    schemaDiagnostics = { status: "loaded", toolCount: tools.length, registeredToolCount: 0 };
   } catch (error) {
     const errorMessage = String(error instanceof Error ? error.message : error);
     schemaDiagnostics = {
       status: "failed",
       toolCount: 0,
+      registeredToolCount: 0,
       failureClass: classifyBridgeFailure(errorMessage),
       error: errorMessage,
     };
@@ -555,19 +584,24 @@ export default async function repoPromptBridge(pi: ExtensionAPI) {
       continue;
     }
     const description = tool.description?.trim() || `Call RepoPrompt MCP tool ${toolName} through the current RepoPrompt CE window.`;
-    pi.registerTool({
-      name: toolName,
-      label: toolName,
-      description,
-      promptSnippet: `RepoPrompt: ${description}`,
-      promptGuidelines: [
-        `Use ${toolName} when RepoPrompt workspace context, selection, editing, user interaction, or Agent Mode control requires this RepoPrompt MCP tool.`,
-        "RepoPrompt bridge tools are routed to the current RepoPrompt CE window and governed by RepoPrompt Agent Mode permissions.",
-      ],
-      parameters: asParameterSchema(tool.inputSchema),
-      async execute(_toolCallId: string, params: unknown, signal?: AbortSignal) {
-        return await callRepoPromptTool(pi, toolName, isRecord(params) ? params : {}, signal);
-      },
-    });
+    try {
+      pi.registerTool({
+        name: toolName,
+        label: toolName,
+        description,
+        promptSnippet: `RepoPrompt: ${description}`,
+        promptGuidelines: [
+          `Use ${toolName} when RepoPrompt workspace context, selection, editing, user interaction, or Agent Mode control requires this RepoPrompt MCP tool.`,
+          "RepoPrompt bridge tools are routed to the current RepoPrompt CE window and governed by RepoPrompt Agent Mode permissions.",
+        ],
+        parameters: asParameterSchema(tool.inputSchema),
+        async execute(_toolCallId: string, params: unknown, signal?: AbortSignal) {
+          return await callRepoPromptTool(pi, toolName, isRecord(params) ? params : {}, signal);
+        },
+      });
+      schemaDiagnostics.registeredToolCount += 1;
+    } catch (error) {
+      recordToolRegistrationFailure(schemaDiagnostics, toolName, error);
+    }
   }
 }

@@ -726,14 +726,37 @@ actor PiRPCClient {
     }
 
     private func handleStdoutEOF() async {
-        guard process != nil else { return }
+        guard let activeProcess = process else { return }
         let stderr = String(data: stderrTail, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
         let reason = stderr?.isEmpty == false ? "pi RPC stdout closed. stderr: \(stderr!)" : "pi RPC stdout closed."
+        let expectedAgentPIDToClear = takeRegisteredExpectedAgentPIDForDeferredClear()
         process = nil
         didPassSupportedVersionCheck = false
-        await clearRegisteredExpectedAgentPIDIfNeeded()
+        stdoutConsumerTask = nil
+        stderrConsumerTask?.cancel()
+        stderrConsumerTask = nil
+        stdoutChunkChannel = nil
+        stderrChunkChannel?.finish()
+        stderrChunkChannel = nil
+        activeProcess.stdout.readabilityHandler = nil
+        activeProcess.stderr.readabilityHandler = nil
+        activeProcess.stdin?.closeFile()
         failAllPendingRequests(ClientError.transportClosed(reason))
         emit(.transportClosed(reason: reason))
+        if let expectedAgentPIDToClear {
+            await expectedAgentPIDRegistrar.clear(
+                expectedAgentPIDToClear.pid,
+                expectedAgentPIDToClear.clientName,
+                expectedAgentPIDToClear.runID
+            )
+        }
+        let exitCode = await ProcessTermination.terminateAndReap(
+            pid: activeProcess.pid,
+            logger: config.enableDebugLogging ? { print("[PiRPCClient] \($0)") } : { _ in }
+        )
+        if config.enableDebugLogging {
+            print("[PiRPCClient] reaped pid=\(activeProcess.pid) after stdout EOF with exitCode=\(exitCode)")
+        }
     }
 
     private func failAllPendingRequests(_ error: Error) {
