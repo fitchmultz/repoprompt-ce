@@ -545,42 +545,51 @@ final class AgentPiModelRegistry {
 
     func warmStandardStoreIfNeeded(workspacePath: String? = nil) async {
         let scope = PiModelWorkspaceScope(workspacePath: workspacePath)
+        guard let plan = standardStoreWarmPlan(scope: scope) else { return }
+
+        let loadedSnapshot = await plan.task.value
+        #if DEBUG
+            beforeApplyPersistedWarmHookSnapshot()?(scope.workspacePath)
+        #endif
+        applyStandardStoreWarmResult(loadedSnapshot, scope: scope, generation: plan.generation)
+    }
+
+    private struct StandardStoreWarmPlan {
         let task: Task<PiDiscoveredModels?, Never>
         let generation: UInt64
+    }
 
+    private func standardStoreWarmPlan(scope: PiModelWorkspaceScope) -> StandardStoreWarmPlan? {
         lock.lock()
-        if warmedStandardStoreScopes.contains(scope) {
-            lock.unlock()
-            return
-        }
-        generation = standardStoreWarmGeneration
+        defer { lock.unlock() }
+        guard !warmedStandardStoreScopes.contains(scope) else { return nil }
+
+        let generation = standardStoreWarmGeneration
         if let existing = standardStoreWarmTasks[scope] {
-            task = existing
-        } else {
-            let workspacePath = scope.workspacePath
-            let newTask = Task.detached(priority: .utility) { [weak self] in
-                self?.loadPersistedSnapshot(workspacePath: workspacePath)
-            }
-            standardStoreWarmTasks[scope] = newTask
-            task = newTask
+            return StandardStoreWarmPlan(task: existing, generation: generation)
         }
-        lock.unlock()
 
-        let loadedSnapshot = await task.value
-        #if DEBUG
-            let beforeApplyWarmHook: ((String?) -> Void)? = {
-                lock.lock()
-                defer { lock.unlock() }
-                return beforeApplyPersistedWarmHook
-            }()
-            beforeApplyWarmHook?(scope.workspacePath)
-        #endif
+        let workspacePath = scope.workspacePath
+        let task = Task.detached(priority: .utility) { [weak self] in
+            self?.loadPersistedSnapshot(workspacePath: workspacePath)
+        }
+        standardStoreWarmTasks[scope] = task
+        return StandardStoreWarmPlan(task: task, generation: generation)
+    }
 
+    #if DEBUG
+        private func beforeApplyPersistedWarmHookSnapshot() -> ((String?) -> Void)? {
+            lock.lock()
+            defer { lock.unlock() }
+            return beforeApplyPersistedWarmHook
+        }
+    #endif
+
+    private func applyStandardStoreWarmResult(_ loadedSnapshot: PiDiscoveredModels?, scope: PiModelWorkspaceScope, generation: UInt64) {
         lock.lock()
-        guard generation == standardStoreWarmGeneration else {
-            lock.unlock()
-            return
-        }
+        defer { lock.unlock() }
+        guard generation == standardStoreWarmGeneration else { return }
+
         if let loadedSnapshot {
             persistedSnapshots[scope] = loadedSnapshot
         } else {
@@ -588,7 +597,6 @@ final class AgentPiModelRegistry {
         }
         warmedStandardStoreScopes.insert(scope)
         standardStoreWarmTasks.removeValue(forKey: scope)
-        lock.unlock()
     }
 
     static func discoveredModels(from remoteModels: [PiRPCClient.RemoteModel], currentModel: PiRPCClient.RemoteModel?) -> PiDiscoveredModels? {
@@ -630,11 +638,7 @@ final class AgentPiModelRegistry {
     }
 
     static func rawModel(_ model: PiRPCClient.RemoteModel) -> String? {
-        let id = model.id.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !id.isEmpty else { return nil }
-        guard let provider = normalizedOptionalString(model.provider) else { return id }
-        if id.hasPrefix("\(provider)/") { return id }
-        return "\(provider)/\(id)"
+        PiModelSelectionContract.selectableRawValue(provider: model.provider, id: model.id)
     }
 
     static func supportedThinkingLevels(for model: PiRPCClient.RemoteModel) -> [PiThinkingLevel] {
@@ -771,6 +775,26 @@ final class AgentPiModelRegistry {
         let snapshot = (liveSnapshots[scope] ?? persistedSnapshots[scope])?.retainingPiReportedModelOptions()
         lock.unlock()
         return snapshot
+    }
+
+    func clearAllDiscoveredModels() {
+        persistenceLock.lock()
+        lock.lock()
+        liveSnapshots.removeAll()
+        liveSignatures.removeAll()
+        persistedSnapshots.removeAll()
+        refreshInFlightScopes.removeAll()
+        settledScopes.removeAll()
+        for task in standardStoreWarmTasks.values {
+            task.cancel()
+        }
+        standardStoreWarmTasks.removeAll()
+        warmedStandardStoreScopes.removeAll()
+        standardStoreWarmGeneration &+= 1
+        persistenceGeneration &+= 1
+        lock.unlock()
+        PiDynamicModelStore.remove()
+        persistenceLock.unlock()
     }
 
     private static func normalizedOptionalString(_ value: String?) -> String? {

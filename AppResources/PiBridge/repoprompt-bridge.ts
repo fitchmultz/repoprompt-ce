@@ -10,7 +10,9 @@ const REPOPROMPT_MANAGED_RUN_ENV = "__REPOPROMPT_MANAGED_RUN_ENV__";
 const REPOPROMPT_PI_PERMISSION_LEVEL_ENV = "__REPOPROMPT_PI_PERMISSION_LEVEL_ENV__";
 const REPOPROMPT_SCHEMA_ARGS = JSON.parse("__REPOPROMPT_SCHEMA_ARGS_JSON__") as string[];
 const REPOPROMPT_TOOL_ARGS_PREFIX = JSON.parse("__REPOPROMPT_TOOL_ARGS_PREFIX_JSON__") as string[];
-const SCHEMA_LOAD_TIMEOUT_MS = 60_000;
+const MANAGED_SCHEMA_LOAD_TIMEOUT_MS = 60_000;
+const DEFAULT_GLOBAL_SCHEMA_LOAD_TIMEOUT_MS = 10_000;
+const GLOBAL_SCHEMA_LOAD_TIMEOUT_ENV = "REPOPROMPT_PI_GLOBAL_BRIDGE_SCHEMA_TIMEOUT_MS";
 const TOOL_EXEC_TIMEOUT_MS = 600_000;
 const TOOL_APPROVAL_TIMEOUT_MS = 120_000;
 const MAX_RESULT_CHARS = 50 * 1024;
@@ -157,11 +159,23 @@ function repoPromptSchemaArgs(): string[] {
   return [...REPOPROMPT_SCHEMA_ARGS];
 }
 
+function positiveIntegerEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function schemaLoadTimeoutMS(): number {
+  if (REPOPROMPT_IS_MANAGED_WINDOW_BRIDGE) return MANAGED_SCHEMA_LOAD_TIMEOUT_MS;
+  return positiveIntegerEnv(GLOBAL_SCHEMA_LOAD_TIMEOUT_ENV, DEFAULT_GLOBAL_SCHEMA_LOAD_TIMEOUT_MS);
+}
+
 async function loadRepoPromptTools(pi: ExtensionAPI): Promise<RepoPromptToolEntry[]> {
   const result = await pi.exec(
     REPOPROMPT_CLI,
     repoPromptSchemaArgs(),
-    { timeout: SCHEMA_LOAD_TIMEOUT_MS },
+    { timeout: schemaLoadTimeoutMS() },
   );
   const stdout = result.stdout.trim();
   const stderr = result.stderr.trim();

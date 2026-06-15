@@ -43,7 +43,7 @@ pi is not a Claude-compatible provider plugin. It remains app-integrated because
     │
     ▼
 +---------------------------- pi CLI process --------------------------------+
-| pi --mode rpc --approve [--extension <RepoPrompt bridge>]                 |
+| pi --mode rpc --approve [--no-extensions] [--extension <RepoPrompt bridge>] |
 |   │                                                                        |
 |   │  loads trusted project inputs, runs model/provider loop, emits events   |
 |   ▼                                                                        |
@@ -64,6 +64,7 @@ pi is not a Claude-compatible provider plugin. It remains app-integrated because
 | Concern | Owner path |
 | --- | --- |
 | pi availability, version gate, managed launch args/env | `Sources/RepoPrompt/Infrastructure/AI/Providers/Pi/PiIntegrationConfiguration.swift` |
+| Managed-run extension-discovery user setting and launch-policy store | `Sources/RepoPrompt/Features/Settings/Models/GlobalSettingsManager.swift` |
 | JSONL RPC transport, request ids, process lifecycle, event parsing | `Sources/RepoPrompt/Infrastructure/AI/Providers/Pi/RPC/PiRPCClient.swift` |
 | Native session mapping, model/thinking apply, stream conversion | `Sources/RepoPrompt/Infrastructure/AI/Providers/Pi/RPC/PiNativeSessionController.swift` |
 | Agent Mode lifecycle, MCP routing lease, extension UI mapping, terminal commit | `Sources/RepoPrompt/Features/AgentMode/Runtime/Runners/PiIntegratedAgentModeRunner.swift` |
@@ -81,10 +82,12 @@ Follow `docs/architecture/source-layout.md` for placement. Keep new pi provider 
 RepoPrompt-managed pi runs use:
 
 ```text
-pi --mode rpc --approve [--extension <bridge.ts>]
+pi --mode rpc --approve [--no-extensions] [--extension <bridge.ts>]
 ```
 
-`--approve` is intentional. pi 0.79+ treats project trust as an input-loading gate for project-local `.pi` resources, settings, packages, extensions, and `.agents/skills`. RepoPrompt-managed runs are explicit user actions for the selected workspace, so the run must load the workspace inputs that a normal trusted pi session would load. Do not replace this with a more conservative default unless product behavior changes explicitly.
+`--approve` is intentional. pi 0.79+ treats project trust as an input-loading gate for project-local `.pi` resources, settings, packages, extensions, and `.agents/skills`. RepoPrompt-managed runs are explicit user actions for the selected workspace, so they still load trusted project inputs needed by pi. By default, RepoPrompt preserves pi's normal extension-discovery behavior for compatibility with extension-provided providers, models, and tools. When users turn off **Load discovered pi extensions in managed runs** in CLI Providers settings, RepoPrompt adds `--no-extensions` and still passes its generated managed bridge explicitly with `--extension <bridge.ts>` when bridge tools are required; pi 0.79.4 keeps explicit extension paths enabled under `--no-extensions`.
+
+Changing the extension-discovery setting is an app-layer operation: RepoPrompt cancels pi preflight/model polling, clears pi model snapshots, persists the new policy, and re-runs model discovery if pi is connected. The setting remains visible even when pi is disconnected so users can recover from policy/model-discovery mismatches.
 
 RepoPrompt sets `REPOPROMPT_PI_MANAGED_RUN=1` for managed runs. The global/window bridge uses this to avoid loading the global auto-discovered bridge inside RepoPrompt-managed runs where a window-specific bridge is supplied.
 
@@ -120,7 +123,7 @@ After `get_state` or `agent_end`, RepoPrompt applies pi session state back to th
 
 ### Model and thinking format
 
-RepoPrompt must expose the user's pi model catalog without its own provider or model allowlist. If `pi` reports a model in `get_available_models` / `pi --list-models`, RepoPrompt and MitchPrompt should show that model in pi pickers and MCP settings. Provider/model names used in tests, docs, or smoke commands are examples for cost control, not a product allowlist.
+RepoPrompt must expose the user's pi model catalog without its own provider or model allowlist. If `pi` reports a selectable provider-qualified model in `get_available_models` / `pi --list-models`, RepoPrompt and MitchPrompt should show that model in pi pickers and MCP settings. Provider/model names used in tests, docs, or smoke commands are examples for cost control, not a product allowlist. `PiModelSelectionContract` is the source of truth for selectability: provider-qualified raw values (`provider/model`) are selectable; providerless no-slash IDs are not selectable through the current pi RPC `set_model` command and must be hidden instead of presented as menu choices that fail at run start.
 
 Persisted model selection uses provider-qualified raw values when possible:
 
@@ -187,7 +190,9 @@ Bridge constants:
 | Constant | Contract |
 | --- | --- |
 | `BRIDGE_VERSION` | Must match `PiRepoPromptBridgeExtensionInstaller.extensionVersion`. |
-| `SCHEMA_LOAD_TIMEOUT_MS` | Timeout for `repoprompt-mcp --tools-schema --compact`. |
+| `MANAGED_SCHEMA_LOAD_TIMEOUT_MS` | Timeout for managed window bridge `repoprompt-mcp --tools-schema --compact`; keep long enough for cold app/MCP startup. |
+| `DEFAULT_GLOBAL_SCHEMA_LOAD_TIMEOUT_MS` | Default timeout for the global/personal bridge schema probe. It is deliberately shorter than the managed window budget so a globally installed bridge does not stall pi startup when RepoPrompt is not running. |
+| `GLOBAL_SCHEMA_LOAD_TIMEOUT_ENV` | Environment override (`REPOPROMPT_PI_GLOBAL_BRIDGE_SCHEMA_TIMEOUT_MS`) for the global/personal bridge schema budget. Invalid, empty, or non-positive values fall back to `DEFAULT_GLOBAL_SCHEMA_LOAD_TIMEOUT_MS`. |
 | `TOOL_EXEC_TIMEOUT_MS` | Timeout for individual RepoPrompt MCP tool invocations. |
 | `TOOL_APPROVAL_TIMEOUT_MS` | Timeout for pi built-in preflight approval prompts. Timeout denies the tool before execution. |
 | `MAX_RESULT_CHARS` | Maximum returned text payload before bridge-side truncation. |

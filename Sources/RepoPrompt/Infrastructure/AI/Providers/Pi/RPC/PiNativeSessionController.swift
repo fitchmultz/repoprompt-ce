@@ -45,7 +45,7 @@ actor PiNativeSessionController {
             modelRaw: String? = nil,
             requestTimeout: TimeInterval? = 30,
             enableDebugLogging: Bool = false,
-            launchArguments: [String] = PiIntegrationConfiguration.managedRPCLaunchArguments(),
+            launchArguments: [String] = PiIntegrationConfiguration.managedRPCLaunchArguments(launchPolicy: .defaultPolicy),
             environmentOverrides: [String: String] = PiIntegrationConfiguration.managedRunEnvironment(),
             pendingMessageStopRecoveryGraceInterval: TimeInterval = Self.defaultPendingMessageStopRecoveryGraceInterval,
             terminalCompletionGraceInterval: TimeInterval = Self.defaultTerminalCompletionGraceInterval
@@ -116,7 +116,7 @@ actor PiNativeSessionController {
         client: PiRPCClient,
         options: Options = Options(),
         workspacePath: String? = nil,
-        recoverySleeper: @escaping @Sendable (TimeInterval) async -> Void = PiNativeSessionController.defaultRecoverySleep
+        recoverySleeper: @escaping @Sendable (TimeInterval) async -> Void = PiNativeSessionController.defaultRecoverySleeper
     ) {
         self.client = client
         self.workspacePath = AgentPiModelRegistry.canonicalWorkspacePath(workspacePath)
@@ -127,10 +127,10 @@ actor PiNativeSessionController {
         eventsContinuation = stream.continuation
     }
 
-    convenience init(
+    init(
         workspacePath: String?,
         options: Options = Options(),
-        recoverySleeper: @escaping @Sendable (TimeInterval) async -> Void = PiNativeSessionController.defaultRecoverySleep
+        recoverySleeper: @escaping @Sendable (TimeInterval) async -> Void = PiNativeSessionController.defaultRecoverySleeper
     ) {
         let client = PiRPCClient(config: .init(
             enableDebugLogging: options.enableDebugLogging,
@@ -701,7 +701,7 @@ actor PiNativeSessionController {
         }
     }
 
-    private static func defaultRecoverySleep(_ graceInterval: TimeInterval) async {
+    private static let defaultRecoverySleeper: @Sendable (TimeInterval) async -> Void = { graceInterval in
         let nanoseconds = UInt64(min(graceInterval, TimeInterval(UInt64.max) / 1_000_000_000) * 1_000_000_000)
         if nanoseconds > 0 {
             try? await Task.sleep(nanoseconds: nanoseconds)

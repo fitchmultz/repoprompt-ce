@@ -3,15 +3,18 @@ import Foundation
 @MainActor
 final class PiIntegratedAgentModeRunner {
     private let windowID: Int
+    private let launchPolicyProvider: () -> PiManagedRunLaunchPolicy
     private let hooks: AgentModeRunService.Hooks
     private let terminalCommitBarrier: AgentRunTerminalCommitBarrier
 
     init(
         windowID: Int,
+        launchPolicyProvider: @escaping () -> PiManagedRunLaunchPolicy = { .defaultPolicy },
         hooks: AgentModeRunService.Hooks,
         terminalCommitBarrier: AgentRunTerminalCommitBarrier
     ) {
         self.windowID = windowID
+        self.launchPolicyProvider = launchPolicyProvider
         self.hooks = hooks
         self.terminalCommitBarrier = terminalCommitBarrier
     }
@@ -78,7 +81,8 @@ final class PiIntegratedAgentModeRunner {
             options: .init(
                 modelRaw: session.selectedModelRaw,
                 launchArguments: PiIntegrationConfiguration.managedRPCLaunchArguments(
-                    bridgeExtensionPath: bridgeExtensionURL.path
+                    bridgeExtensionPath: bridgeExtensionURL.path,
+                    launchPolicy: launchPolicyProvider()
                 ),
                 environmentOverrides: PiIntegrationConfiguration.managedRunEnvironment(
                     permissionLevel: runtimePermission.piPermissionLevel ?? .managedDefault

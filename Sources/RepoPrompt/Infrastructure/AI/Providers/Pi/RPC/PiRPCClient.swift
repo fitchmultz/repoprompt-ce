@@ -18,7 +18,7 @@ actor PiRPCClient {
             enableDebugLogging: Bool = false,
             requestTimeout: TimeInterval? = 30,
             workingDirectory: String? = nil,
-            launchArguments: [String] = PiIntegrationConfiguration.managedRPCLaunchArguments(),
+            launchArguments: [String] = PiIntegrationConfiguration.managedRPCLaunchArguments(launchPolicy: .defaultPolicy),
             environmentOverrides: [String: String] = PiIntegrationConfiguration.managedRunEnvironment(),
             requiresSupportedVersionCheck: Bool = true
         ) {

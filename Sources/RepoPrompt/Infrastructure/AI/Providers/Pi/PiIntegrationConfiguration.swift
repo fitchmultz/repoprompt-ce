@@ -1,5 +1,50 @@
 import Foundation
 
+enum PiModelSelectionContract {
+    static func selectableRawValue(provider rawProvider: String?, id rawID: String) -> String? {
+        let id = rawID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty else { return nil }
+        guard let provider = normalizedNonEmpty(rawProvider) else {
+            return isSelectableRawValue(id) ? id : nil
+        }
+        if id.hasPrefix("\(provider)/") {
+            return isSelectableRawValue(id) ? id : nil
+        }
+        return selectableRawValue("\(provider)/\(id)")
+    }
+
+    static func selectableRawValue(_ rawModel: String) -> String? {
+        let trimmed = rawModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        return isSelectableRawValue(trimmed) ? trimmed : nil
+    }
+
+    static func isSelectableRawValue(_ rawModel: String) -> Bool {
+        let trimmed = rawModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let components = trimmed.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
+        guard components.count == 2 else { return false }
+        return !components[0].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !components[1].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private static func normalizedNonEmpty(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else { return nil }
+        return trimmed
+    }
+}
+
+enum PiManagedRunLaunchPolicy: Equatable {
+    /// Add `--no-extensions` while still allowing RepoPrompt's explicit `--extension <bridge>` path.
+    case disableDiscoveredExtensions
+    /// Preserve pi's default extension discovery for compatibility with extension-provided providers/models/tools.
+    case allowDiscoveredExtensions
+
+    static let defaultPolicy: Self = .allowDiscoveredExtensions
+
+    var allowsDiscoveredExtensions: Bool {
+        self == .allowDiscoveredExtensions
+    }
+}
+
 enum PiIntegrationConfiguration {
     struct Availability: Equatable {
         enum FailureKind: Equatable {
@@ -71,34 +116,41 @@ enum PiIntegrationConfiguration {
     static let permissionLevelEnvironmentKey = "REPOPROMPT_PI_PERMISSION_LEVEL"
 
     /// A pi model is eligible for RepoPrompt when pi reports a non-empty model
-    /// identifier. RepoPrompt must not maintain its own provider allowlist: if a
-    /// model appears in the user's pi model catalog, it should appear in RepoPrompt
-    /// and MitchPrompt pickers as-is.
+    /// identifier that can be selected by pi's RPC `set_model` contract. RepoPrompt
+    /// must not maintain its own provider allowlist, but concrete pi model selections
+    /// need a provider-qualified raw value (`provider/model`). Providerless no-slash
+    /// IDs are hidden rather than exposed as broken menu choices.
     static func isExposableModelProviderID(_ rawProvider: String?) -> Bool {
         guard let rawProvider else { return false }
         return !rawProvider.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     static func isExposableModelRaw(_ rawModel: String) -> Bool {
-        !rawModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        PiModelSelectionContract.isSelectableRawValue(rawModel)
     }
 
     /// RepoPrompt-managed pi RPC runs are explicit user actions for the selected workspace.
     /// pi 0.79+ otherwise ignores project-local AGENTS.md/.pi inputs in non-interactive RPC mode.
-    static func managedRPCLaunchArguments(bridgeExtensionPath: String? = nil) -> [String] {
+    static func managedRPCLaunchArguments(
+        bridgeExtensionPath: String? = nil,
+        launchPolicy: PiManagedRunLaunchPolicy
+    ) -> [String] {
         var arguments = ["--mode", "rpc", "--approve"]
+        if !launchPolicy.allowsDiscoveredExtensions {
+            arguments.append("--no-extensions")
+        }
         if let bridgeExtensionPath {
             arguments.append(contentsOf: ["--extension", bridgeExtensionPath])
         }
         return arguments
     }
 
-    static func managedRPCModelDiscoveryLaunchArguments() -> [String] {
-        managedRPCLaunchArguments() + ["--no-session", "--no-tools"]
+    static func managedRPCModelDiscoveryLaunchArguments(launchPolicy: PiManagedRunLaunchPolicy) -> [String] {
+        managedRPCLaunchArguments(launchPolicy: launchPolicy) + ["--no-session", "--no-tools"]
     }
 
-    static func managedRPCPromptOnlyLaunchArguments() -> [String] {
-        managedRPCLaunchArguments() + ["--no-session", "--no-tools"]
+    static func managedRPCPromptOnlyLaunchArguments(launchPolicy: PiManagedRunLaunchPolicy) -> [String] {
+        managedRPCLaunchArguments(launchPolicy: launchPolicy) + ["--no-session", "--no-tools"]
     }
 
     static func managedRunEnvironment(

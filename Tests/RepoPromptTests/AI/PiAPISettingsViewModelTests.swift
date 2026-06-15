@@ -108,6 +108,54 @@ final class PiAPISettingsViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.availablePiModelOptions, [])
     }
 
+    func testManagedRunExtensionDiscoverySettingInitializesFromDefaults() {
+        PiManagedRunExtensionDiscoverySettings.setAllowsDiscoveredExtensions(true, defaults: piConnectionDefaults)
+        let viewModel = makeViewModel(polling: FakePiModelPolling(snapshot: Self.piSnapshot()))
+
+        XCTAssertTrue(viewModel.piManagedRunsAllowDiscoveredExtensions)
+    }
+
+    func testChangingManagedRunExtensionDiscoveryPolicyClearsStaleSnapshotsAndRestartsDiscoveryWhenConnected() async {
+        let staleWorkspace = "/tmp/pi-policy-stale-\(UUID().uuidString)"
+        XCTAssertTrue(AgentPiModelRegistry.shared.updateDiscoveredModels(Self.piSnapshot().models, workspacePath: staleWorkspace))
+        XCTAssertNotNil(AgentPiModelRegistry.shared.resolvedSnapshot(workspacePath: staleWorkspace))
+        piConnectionDefaults.set(true, forKey: "PiCLIConnected")
+        PiManagedRunExtensionDiscoverySettings.setAllowsDiscoveredExtensions(false, defaults: piConnectionDefaults)
+        let polling = FakePiModelPolling(snapshot: Self.piSnapshot())
+        let viewModel = makeViewModel(polling: polling)
+        XCTAssertFalse(viewModel.piManagedRunsAllowDiscoveredExtensions)
+
+        viewModel.setPiManagedRunsAllowDiscoveredExtensions(true)
+        let didRefresh = await eventually {
+            await polling.discoveryCount() == 1
+        }
+
+        XCTAssertTrue(didRefresh)
+        XCTAssertTrue(viewModel.piManagedRunsAllowDiscoveredExtensions)
+        XCTAssertEqual(PiManagedRunExtensionDiscoverySettings.launchPolicy(defaults: piConnectionDefaults), .allowDiscoveredExtensions)
+        XCTAssertNil(AgentPiModelRegistry.shared.resolvedSnapshot(workspacePath: staleWorkspace))
+        XCTAssertTrue(viewModel.isPiConnected)
+        XCTAssertEqual(viewModel.availablePiModelOptions.map(\.rawValue), ["zai/glm-5.2"])
+    }
+
+    func testChangingManagedRunExtensionDiscoveryPolicyWhileDisconnectedDoesNotStartDiscovery() async {
+        PiManagedRunExtensionDiscoverySettings.setAllowsDiscoveredExtensions(false, defaults: piConnectionDefaults)
+        let polling = FakePiModelPolling(snapshot: Self.piSnapshot())
+        let viewModel = makeViewModel(polling: polling)
+        XCTAssertFalse(viewModel.piManagedRunsAllowDiscoveredExtensions)
+
+        viewModel.setPiManagedRunsAllowDiscoveredExtensions(true)
+        let stayedIdle = await remainsTrue {
+            let discoveryCount = await polling.discoveryCount()
+            let subscriptionCount = await polling.subscriptionCount()
+            return discoveryCount == 0 && subscriptionCount == 0
+        }
+
+        XCTAssertTrue(stayedIdle)
+        XCTAssertTrue(viewModel.piManagedRunsAllowDiscoveredExtensions)
+        XCTAssertEqual(PiManagedRunExtensionDiscoverySettings.launchPolicy(defaults: piConnectionDefaults), .allowDiscoveredExtensions)
+    }
+
     func testDisconnectPiPersistsOptOutAcrossSettingsReload() async throws {
         let polling = FakePiModelPolling(snapshot: Self.piSnapshot())
         let viewModel = makeViewModel(polling: polling)

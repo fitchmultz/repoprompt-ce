@@ -228,14 +228,14 @@ final class AIModelPreferenceRegressionTests: XCTestCase {
 
     func testPiOracleProviderLaunchesPromptOnlyRPC() throws {
         XCTAssertEqual(
-            PiIntegrationConfiguration.managedRPCPromptOnlyLaunchArguments(),
+            PiIntegrationConfiguration.managedRPCPromptOnlyLaunchArguments(launchPolicy: .defaultPolicy),
             ["--mode", "rpc", "--approve", "--no-session", "--no-tools"]
         )
 
         let repoRoot = try RepoRoot.url(filePath: #filePath)
         let sourcePath = "Sources/RepoPrompt/Infrastructure/AI/Providers/Pi/PiCLIProvider.swift"
         let contents = try String(contentsOf: repoRoot.appendingPathComponent(sourcePath), encoding: .utf8)
-        XCTAssertTrue(contents.contains("managedRPCPromptOnlyLaunchArguments()"), sourcePath)
+        XCTAssertTrue(contents.contains("managedRPCPromptOnlyLaunchArguments(launchPolicy: launchPolicyProvider())"), sourcePath)
         XCTAssertFalse(contents.contains("managedRPCLaunchArguments(bridgeExtensionPath:"), sourcePath)
     }
 

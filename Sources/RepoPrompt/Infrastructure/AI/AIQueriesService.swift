@@ -245,12 +245,16 @@ public class AIQueriesService {
 
     init(
         keyManager: KeyManager,
-        sendPromptOverride: SendPromptOverride? = nil
+        sendPromptOverride: SendPromptOverride? = nil,
+        piManagedRunLaunchPolicyProvider: @escaping @Sendable () -> PiManagedRunLaunchPolicy = { .defaultPolicy }
     ) {
         currentModel = .claude4Sonnet
         self.keyManager = keyManager
         self.sendPromptOverride = sendPromptOverride
-        providerPool = DisposableProviderPool(keyManager: keyManager)
+        providerPool = DisposableProviderPool(
+            keyManager: keyManager,
+            piManagedRunLaunchPolicyProvider: piManagedRunLaunchPolicyProvider
+        )
     }
 
     init(
@@ -258,12 +262,16 @@ public class AIQueriesService {
         ollamaURL: URL? = nil,
         azureConfiguration: AzureOpenAIConfiguration? = nil,
         keyManager: KeyManager,
-        sendPromptOverride: SendPromptOverride? = nil
+        sendPromptOverride: SendPromptOverride? = nil,
+        piManagedRunLaunchPolicyProvider: @escaping @Sendable () -> PiManagedRunLaunchPolicy = { .defaultPolicy }
     ) {
         currentModel = model
         self.keyManager = keyManager
         self.sendPromptOverride = sendPromptOverride
-        providerPool = DisposableProviderPool(keyManager: keyManager)
+        providerPool = DisposableProviderPool(
+            keyManager: keyManager,
+            piManagedRunLaunchPolicyProvider: piManagedRunLaunchPolicyProvider
+        )
     }
 
     /// Cancel all active streams. Prefer `cancelStream(id:)` for targeted cancellation.

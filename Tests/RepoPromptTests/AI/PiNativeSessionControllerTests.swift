@@ -2112,6 +2112,14 @@ final class PiNativeSessionControllerTests: XCTestCase {
             PiModelSpecifier(provider: "openai-codex", modelID: "gpt-5.5", thinkingLevel: "low")
         )
         XCTAssertEqual(
+            PiModelSpecifier(raw: "zai/glm-5.2:High", knownModelIDs: []),
+            PiModelSpecifier(provider: "zai", modelID: "glm-5.2", thinkingLevel: "high")
+        )
+        XCTAssertEqual(
+            PiModelSpecifier(raw: "zai/glm-5.2:XHIGH", knownModelIDs: []),
+            PiModelSpecifier(provider: "zai", modelID: "glm-5.2", thinkingLevel: "xhigh")
+        )
+        XCTAssertEqual(
             PiModelSpecifier(raw: "openai-codex/gpt-5.5:low", knownModelIDs: [])?.providerQualifiedModelRaw,
             "openai-codex/gpt-5.5"
         )

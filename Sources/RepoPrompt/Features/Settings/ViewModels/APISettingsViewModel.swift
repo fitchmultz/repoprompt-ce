@@ -303,6 +303,7 @@ public class APISettingsViewModel: ObservableObject {
     // pi RPC
     @Published var isPiConnected: Bool = false
     @Published var piError: String? = nil
+    @Published var piManagedRunsAllowDiscoveredExtensions: Bool = PiManagedRunExtensionDiscoverySettings.defaultAllowsDiscoveredExtensions
     @Published private(set) var availablePiModelOptions: [AgentModelOption] = []
     private var piLogCollector: CLIProcessLogCollector?
 
@@ -355,6 +356,7 @@ public class APISettingsViewModel: ObservableObject {
     private var openCodeModelsTask: Task<Void, Never>?
     private var cursorModelsTask: Task<Void, Never>?
     private var piPreflightTask: Task<Void, Never>?
+    private var piPolicyChangeTask: Task<Void, Never>?
     private var piModelsTask: Task<Void, Never>?
     private var piModelsSubscribedWorkspacePath: String?
     private var openRouterModelsTask: Task<Void, Never>?
@@ -1006,6 +1008,7 @@ public class APISettingsViewModel: ObservableObject {
         self.codexModelPollingService = codexModelPollingService
         self.storedDataLoadBoundary = storedDataLoadBoundary
         self.contextBuilderProviderValidationWillBegin = contextBuilderProviderValidationWillBegin
+        piManagedRunsAllowDiscoveredExtensions = PiManagedRunExtensionDiscoverySettings.launchPolicy(defaults: piConnectionDefaults).allowsDiscoveredExtensions
         isPiConnected = piConnectionDefaults.bool(forKey: "PiCLIConnected")
         installCLIConnectionObservers()
         installAgentAvailabilityObservers()
@@ -1040,6 +1043,8 @@ public class APISettingsViewModel: ObservableObject {
         openCodeModelsTask = nil
         cursorModelsTask?.cancel()
         cursorModelsTask = nil
+        piPolicyChangeTask?.cancel()
+        piPolicyChangeTask = nil
         openRouterModelsTask?.cancel()
         openRouterModelsTask = nil
         contextBuilderProviderValidationTask?.cancel()
@@ -1060,6 +1065,7 @@ public class APISettingsViewModel: ObservableObject {
         openCodeModelsTask?.cancel()
         cursorModelsTask?.cancel()
         piPreflightTask?.cancel()
+        piPolicyChangeTask?.cancel()
         piModelsTask?.cancel()
         openRouterModelsTask?.cancel()
         contextBuilderProviderValidationTask?.cancel()
@@ -1376,6 +1382,8 @@ public class APISettingsViewModel: ObservableObject {
         cursorModelsTask = nil
         piPreflightTask?.cancel()
         piPreflightTask = nil
+        piPolicyChangeTask?.cancel()
+        piPolicyChangeTask = nil
         piModelsTask?.cancel()
         piModelsTask = nil
         piModelsSubscribedWorkspacePath = nil
@@ -3524,7 +3532,33 @@ public class APISettingsViewModel: ObservableObject {
 
     // MARK: - pi RPC
 
-    @discardableResult
+    func setPiManagedRunsAllowDiscoveredExtensions(_ allow: Bool) {
+        guard piManagedRunsAllowDiscoveredExtensions != allow else { return }
+        piPreflightTask?.cancel()
+        piPreflightTask = nil
+        piPolicyChangeTask?.cancel()
+        piPolicyChangeTask = nil
+        stopPiModelsSubscription(clearModels: true)
+        AgentPiModelRegistry.shared.clearAllDiscoveredModels()
+        piManagedRunsAllowDiscoveredExtensions = allow
+        PiManagedRunExtensionDiscoverySettings.setAllowsDiscoveredExtensions(allow, defaults: piConnectionDefaults)
+        refreshAgentAvailability()
+
+        let shouldRestartDiscovery = isPiConnected || piConnectionDefaults.bool(forKey: "PiCLIConnected")
+        let pollingService = piModelPollingService
+        piPolicyChangeTask = Task { @MainActor [weak self, pollingService, shouldRestartDiscovery, allow] in
+            await pollingService.resetModelDiscoveryStateForLaunchPolicyChange()
+            guard let self,
+                  !Task.isCancelled,
+                  piManagedRunsAllowDiscoveredExtensions == allow
+            else { return }
+            piPolicyChangeTask = nil
+            if shouldRestartDiscovery {
+                startPiAvailabilityPreflightIfNeeded(workspacePath: nil)
+            }
+        }
+    }
+
     func testPiConnection() async throws -> Bool {
         let collector = CLIProcessLogCollector()
         collector.append("pi RPC connection test started")
@@ -3567,7 +3601,7 @@ public class APISettingsViewModel: ObservableObject {
                     collector: nil
                 )
                 if didConnect {
-                    await startPiModelsSubscriptionIfNeeded(workspacePath: workspacePath)
+                    startPiModelsSubscriptionIfNeeded(workspacePath: workspacePath)
                 }
             } catch {
                 await MainActor.run { [weak self] in
@@ -3629,7 +3663,7 @@ public class APISettingsViewModel: ObservableObject {
                 return
             }
             if didConnect {
-                await startPiModelsSubscriptionIfNeeded(workspacePath: workspacePath)
+                startPiModelsSubscriptionIfNeeded(workspacePath: workspacePath)
             }
             await MainActor.run { [weak self] in self?.piPreflightTask = nil }
         }

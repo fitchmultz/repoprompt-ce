@@ -86,6 +86,202 @@ final class PiModelPollingServiceTests: XCTestCase {
         XCTAssertEqual(callCount, 1)
     }
 
+    func testLaunchPolicyResetCancelsInFlightRefreshAndForcesFreshDiscovery() async throws {
+        let oldModels = Self.models(rawValue: "extension-provider/old-model", displayName: "Old Extension Model")
+        let newModels = Self.models(rawValue: "zai/glm-5.2", displayName: "GLM 5.2")
+        let client = SuspendedPiModelDiscoveryClient()
+        let service = PiModelPollingService(
+            client: client,
+            intervalNanos: 3_600_000_000_000,
+            startsPollingOnSubscribe: false
+        )
+        defer { Task { await service.shutdown() } }
+
+        let firstDiscovery = Task { try await service.discoverOnce(workspacePath: nil) }
+        guard await client.waitUntilCallCount(1) else {
+            firstDiscovery.cancel()
+            XCTFail("Expected first pi model discovery to start.")
+            return
+        }
+        XCTAssertEqual(AgentPiModelRegistry.shared.catalogState(), .loading)
+
+        await service.resetModelDiscoveryStateForLaunchPolicyChange()
+        let secondDiscovery = Task { try await service.discoverOnce(workspacePath: nil) }
+        guard await client.waitUntilCallCount(2) else {
+            firstDiscovery.cancel()
+            secondDiscovery.cancel()
+            XCTFail("Expected launch-policy reset to force a fresh pi model discovery instead of awaiting the old in-flight refresh.")
+            return
+        }
+
+        await client.resumeCall(index: 0, with: .success(oldModels))
+        let firstSnapshot = try await firstDiscovery.value
+        XCTAssertNil(firstSnapshot, "Cancelled pre-policy-change discovery must not apply or return stale models.")
+        XCTAssertNil(AgentPiModelRegistry.shared.resolvedSnapshot())
+
+        await client.resumeCall(index: 1, with: .success(newModels))
+        let secondSnapshot = try await secondDiscovery.value
+        XCTAssertEqual(secondSnapshot?.models, newModels)
+        XCTAssertEqual(AgentPiModelRegistry.shared.resolvedSnapshot(), newModels)
+    }
+
+    func testLaunchPolicyResetSuppressesStaleApplyAlreadyQueuedBeforeReset() async throws {
+        let oldModels = Self.models(rawValue: "extension-provider/old-model", displayName: "Old Extension Model")
+        let newModels = Self.models(rawValue: "zai/glm-5.2", displayName: "GLM 5.2")
+        let client = SuspendedPiModelDiscoveryClient()
+        let service = PiModelPollingService(
+            client: client,
+            intervalNanos: 3_600_000_000_000,
+            startsPollingOnSubscribe: false
+        )
+        let recorder = PiPollingEventRecorder()
+        let gate = ApplyPauseGate()
+        await service.test_setBeforeApplyRefreshResultHook { _, _ in
+            await gate.pauseFirstApply()
+        }
+        let stream = await service.subscribe(workspacePath: nil)
+        let collector = Task {
+            for await event in stream {
+                await recorder.append(event)
+            }
+        }
+        defer {
+            collector.cancel()
+            Task {
+                await service.test_setBeforeApplyRefreshResultHook(nil)
+                await service.shutdown()
+            }
+        }
+
+        let firstDiscovery = Task { try await service.discoverOnce(workspacePath: nil) }
+        guard await client.waitUntilCallCount(1) else {
+            firstDiscovery.cancel()
+            XCTFail("Expected first pi model discovery to start.")
+            return
+        }
+        await client.resumeCall(index: 0, with: .success(oldModels))
+        guard await gate.waitUntilPaused() else {
+            firstDiscovery.cancel()
+            XCTFail("Expected first discovery to pause after discovery returned but before apply.")
+            return
+        }
+
+        await service.resetModelDiscoveryStateForLaunchPolicyChange()
+        let secondDiscovery = Task { try await service.discoverOnce(workspacePath: nil) }
+        guard await client.waitUntilCallCount(2) else {
+            firstDiscovery.cancel()
+            secondDiscovery.cancel()
+            XCTFail("Expected reset to force a fresh discovery while old apply is paused.")
+            return
+        }
+        await client.resumeCall(index: 1, with: .success(newModels))
+
+        let event = try await nextEvent(from: recorder)
+        guard case let .snapshot(publishedSnapshot) = event else {
+            XCTFail("Expected fresh post-reset snapshot, got \(event)")
+            return
+        }
+        XCTAssertEqual(publishedSnapshot.models, newModels)
+        let secondSnapshot = try await secondDiscovery.value
+        XCTAssertEqual(secondSnapshot?.models, newModels)
+
+        await gate.release()
+        let firstSnapshot = try await firstDiscovery.value
+        XCTAssertEqual(firstSnapshot?.models, newModels)
+        XCTAssertEqual(AgentPiModelRegistry.shared.resolvedSnapshot(), newModels)
+        let didSuppressStaleApply = await recorder.isEmpty()
+        XCTAssertTrue(didSuppressStaleApply, "Queued pre-policy-change apply must not publish stale models after reset.")
+    }
+
+    func testLaunchPolicyResetSuppressesStalePollingRefreshFailure() async {
+        let client = SuspendedPiModelDiscoveryClient()
+        let service = PiModelPollingService(
+            client: client,
+            intervalNanos: 3_600_000_000_000,
+            startsPollingOnSubscribe: false
+        )
+        let recorder = PiPollingEventRecorder()
+        let stream = await service.subscribe(workspacePath: nil)
+        let collector = Task {
+            for await event in stream {
+                await recorder.append(event)
+            }
+        }
+        defer {
+            collector.cancel()
+            Task { await service.shutdown() }
+        }
+
+        let staleRefresh = Task { await service.refreshNow(workspacePath: nil) }
+        guard await client.waitUntilCallCount(1) else {
+            staleRefresh.cancel()
+            XCTFail("Expected first pi model refresh to start.")
+            return
+        }
+
+        await service.resetModelDiscoveryStateForLaunchPolicyChange()
+        await client.resumeCall(index: 0, with: .failure(PollingError(message: "old policy polling refresh failed")))
+        await staleRefresh.value
+
+        XCTAssertNil(AgentPiModelRegistry.shared.resolvedSnapshot())
+        let didSuppressStaleFailure = await recorder.isEmpty()
+        XCTAssertTrue(didSuppressStaleFailure, "Canceled pre-policy-change polling failures must not publish stale failure events.")
+    }
+
+    func testLaunchPolicyResetSuppressesStaleInFlightFailure() async throws {
+        let newModels = Self.models(rawValue: "zai/glm-5.2", displayName: "GLM 5.2")
+        let client = SuspendedPiModelDiscoveryClient()
+        let service = PiModelPollingService(
+            client: client,
+            intervalNanos: 3_600_000_000_000,
+            startsPollingOnSubscribe: false
+        )
+        let recorder = PiPollingEventRecorder()
+        let stream = await service.subscribe(workspacePath: nil)
+        let collector = Task {
+            for await event in stream {
+                await recorder.append(event)
+            }
+        }
+        defer {
+            collector.cancel()
+            Task { await service.shutdown() }
+        }
+
+        let firstDiscovery = Task { try await service.discoverOnce(workspacePath: nil) }
+        guard await client.waitUntilCallCount(1) else {
+            firstDiscovery.cancel()
+            XCTFail("Expected first pi model discovery to start.")
+            return
+        }
+
+        await service.resetModelDiscoveryStateForLaunchPolicyChange()
+        let secondDiscovery = Task { try await service.discoverOnce(workspacePath: nil) }
+        guard await client.waitUntilCallCount(2) else {
+            firstDiscovery.cancel()
+            secondDiscovery.cancel()
+            XCTFail("Expected reset to force a new discovery before old failure resolves.")
+            return
+        }
+
+        await client.resumeCall(index: 1, with: .success(newModels))
+        let secondSnapshot = try await secondDiscovery.value
+        XCTAssertEqual(secondSnapshot?.models, newModels)
+        let event = try await nextEvent(from: recorder)
+        guard case let .snapshot(publishedSnapshot) = event else {
+            XCTFail("Expected fresh post-reset snapshot, got \(event)")
+            return
+        }
+        XCTAssertEqual(publishedSnapshot.models, newModels)
+
+        await client.resumeCall(index: 0, with: .failure(PollingError(message: "old policy discovery failed")))
+        let staleResult = try await firstDiscovery.value
+        XCTAssertEqual(staleResult?.models, newModels)
+        XCTAssertEqual(AgentPiModelRegistry.shared.resolvedSnapshot(), newModels)
+        let didSuppressStaleFailure = await recorder.isEmpty()
+        XCTAssertTrue(didSuppressStaleFailure, "Canceled pre-policy-change failures must not publish stale failure events.")
+    }
+
     func testRefreshRecordsRegistryLoadingAndUnavailableStates() async throws {
         let workspace = "/tmp/pi-model-polling-state"
         let client = DelayedNilPiModelDiscoveryClient(delayNanoseconds: 150_000_000)
@@ -215,6 +411,65 @@ private actor PiPollingEventRecorder {
     func removeFirst() -> PiModelPollingService.Event? {
         guard !events.isEmpty else { return nil }
         return events.removeFirst()
+    }
+
+    func isEmpty() -> Bool {
+        events.isEmpty
+    }
+}
+
+private actor ApplyPauseGate {
+    private var didPause = false
+    private var isReleased = false
+
+    func pauseFirstApply() async {
+        guard !didPause else { return }
+        didPause = true
+        while !isReleased {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    func waitUntilPaused() async -> Bool {
+        let deadline = Date().addingTimeInterval(2)
+        while !didPause, Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return didPause
+    }
+
+    func release() {
+        isReleased = true
+    }
+}
+
+private actor SuspendedPiModelDiscoveryClient: PiModelDiscoveryClient {
+    private var continuations: [CheckedContinuation<PiDiscoveredModels?, Error>] = []
+
+    func discoverModels(workspacePath: String?) async throws -> PiDiscoveredModels? {
+        _ = workspacePath
+        return try await withCheckedThrowingContinuation { continuation in
+            continuations.append(continuation)
+        }
+    }
+
+    func waitUntilCallCount(_ expectedCount: Int) async -> Bool {
+        let deadline = Date().addingTimeInterval(2)
+        while continuations.count < expectedCount, Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return continuations.count >= expectedCount
+    }
+
+    func resumeCall(index: Int, with result: Result<PiDiscoveredModels?, Error>) {
+        guard continuations.indices.contains(index) else { return }
+        let continuation = continuations[index]
+        switch result {
+        case let .success(models):
+            continuation.resume(returning: models)
+        case let .failure(error):
+            continuation.resume(throwing: error)
+        }
     }
 }
 

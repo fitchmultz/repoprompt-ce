@@ -1328,7 +1328,11 @@ final class AgentModeViewModel: ObservableObject {
         modelString: String?
     ) -> HeadlessAgentProvider {
         assert(agent != .codexExec, "Codex native runs must not use headless provider factory.")
-        return AgentRuntimeProviderService.shared.makeProvider(for: agent, modelString: modelString)
+        return AgentRuntimeProviderService.shared.makeProvider(
+            for: agent,
+            modelString: modelString,
+            piLaunchPolicy: PiManagedRunExtensionDiscoverySettings.launchPolicy()
+        )
     }
 
     private nonisolated static func makeClaudeCompatibleNativeController(
@@ -1412,7 +1416,8 @@ final class AgentModeViewModel: ObservableObject {
         oracleViewModel: OracleViewModel? = nil,
         applyEditsApprovalStore: ApplyEditsApprovalStore = .shared,
         clearConsumedAttachmentsAfterProviderConsumption: Bool = true,
-        skillCatalog: AgentSkillCatalog? = nil
+        skillCatalog: AgentSkillCatalog? = nil,
+        piModelPollingService: any PiModelPolling = PiModelPollingService.shared
     ) {
         self.windowID = windowID
         self.promptManager = promptManager
@@ -1421,7 +1426,7 @@ final class AgentModeViewModel: ObservableObject {
         self.oracleViewModel = oracleViewModel
         self.applyEditsApprovalStore = applyEditsApprovalStore
         self.skillCatalog = skillCatalog ?? AgentSkillCatalog()
-        piModelPollingService = PiModelPollingService.shared
+        self.piModelPollingService = piModelPollingService
         let codexWorkspacePathProvider = { [weak workspaceManager] in
             workspaceManager?.activeWorkspace?.repoPaths.first
         }
@@ -2036,7 +2041,10 @@ final class AgentModeViewModel: ObservableObject {
             activeAgentRunWaitQuery: { [weak self] runID in
                 self?.mcpServer?.hasActiveChildAgentRunWaits(runID: runID) ?? false
             },
-            childAgentRunWaitDrainTimeoutSeconds: Self.childAgentRunWaitDrainTimeoutSeconds
+            childAgentRunWaitDrainTimeoutSeconds: Self.childAgentRunWaitDrainTimeoutSeconds,
+            piManagedRunLaunchPolicyProvider: {
+                PiManagedRunExtensionDiscoverySettings.launchPolicy()
+            }
         )
         let hooks = AgentModeRunService.Hooks(
             estimateRuntimeTokens: { text in

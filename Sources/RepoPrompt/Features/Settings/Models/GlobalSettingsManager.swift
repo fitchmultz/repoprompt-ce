@@ -33,6 +33,59 @@ enum SettingKeys {
 
     /// App-wide UI font scale preset body size.
     static let fontPresetBodySize = "fontPresetBodySize"
+
+    /// Whether RepoPrompt-managed pi runs load user/project/package-discovered pi extensions
+    /// in addition to RepoPrompt's explicit managed bridge extension.
+    static let piManagedRunsAllowDiscoveredExtensions = "piManagedRunsAllowDiscoveredExtensions"
+}
+
+enum PiManagedRunExtensionDiscoverySettings {
+    static let defaultAllowsDiscoveredExtensions = PiManagedRunLaunchPolicy.defaultPolicy.allowsDiscoveredExtensions
+
+    static func launchPolicy(defaults: UserDefaults = .standard) -> PiManagedRunLaunchPolicy {
+        PiManagedRunLaunchPolicyStore(defaults: defaults).launchPolicy()
+    }
+
+    static func setAllowsDiscoveredExtensions(_ allow: Bool, defaults: UserDefaults = .standard) {
+        PiManagedRunLaunchPolicyStore(defaults: defaults).setAllowsDiscoveredExtensions(allow)
+    }
+}
+
+/// Sendable app-settings adapter for pi launch policy providers.
+/// `UserDefaults` is documented as thread-safe for concurrent access, but it is
+/// not annotated `Sendable` in Foundation, so the wrapper owns the unchecked
+/// conformance instead of leaking non-Sendable captures into pi infrastructure.
+final class PiManagedRunLaunchPolicyStore: @unchecked Sendable {
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    func launchPolicy() -> PiManagedRunLaunchPolicy {
+        guard defaults.object(forKey: SettingKeys.piManagedRunsAllowDiscoveredExtensions) != nil else {
+            return .defaultPolicy
+        }
+        return defaults.bool(forKey: SettingKeys.piManagedRunsAllowDiscoveredExtensions)
+            ? .allowDiscoveredExtensions
+            : .disableDiscoveredExtensions
+    }
+
+    func setAllowsDiscoveredExtensions(_ allow: Bool) {
+        defaults.set(allow, forKey: SettingKeys.piManagedRunsAllowDiscoveredExtensions)
+    }
+}
+
+extension PiModelPollingService {
+    static func appSettingsBacked(defaults: UserDefaults = .standard) -> PiModelPollingService {
+        appSettingsBacked(policyStore: PiManagedRunLaunchPolicyStore(defaults: defaults))
+    }
+
+    static func appSettingsBacked(policyStore: PiManagedRunLaunchPolicyStore) -> PiModelPollingService {
+        PiModelPollingService(client: PiRPCModelDiscoveryClient(
+            launchPolicyProvider: { [policyStore] in policyStore.launchPolicy() }
+        ))
+    }
 }
 
 extension Notification.Name {

@@ -69,6 +69,8 @@ struct PiModelSpecifier: Equatable {
         }
 
         let candidateThinkingLevel = String(raw[raw.index(after: colonIndex)...])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
         guard PiThinkingLevel.isCanonicalRawValue(candidateThinkingLevel) else {
             return (raw, nil)
         }

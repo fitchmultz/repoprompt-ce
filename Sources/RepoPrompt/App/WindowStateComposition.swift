@@ -31,7 +31,7 @@ enum WindowStateCompositionFactory {
         sharedMCPService: MCPService,
         settingsStore: GlobalSettingsStore? = nil,
         contextBuilderProviderFactory: ContextBuilderAgentViewModel.ProviderFactory? = nil,
-        contextBuilderPiModelPollingService: PiModelPolling = PiModelPollingService.shared,
+        contextBuilderPiModelPollingService: PiModelPolling? = nil,
         aiQueriesServiceFactory: ((_ keyManager: KeyManager) -> AIQueriesService)? = nil,
         workspaceFileContextStore injectedWorkspaceFileContextStore: WorkspaceFileContextStore? = nil,
         workspaceSwitchTimingPolicy: WorkspaceSwitchTimingPolicy = .production,
@@ -45,14 +45,20 @@ enum WindowStateCompositionFactory {
 
         // 2) AI queries
         let keyManager = KeyManager()
+        let piLaunchPolicyStore = PiManagedRunLaunchPolicyStore()
         let aiQueriesService = aiQueriesServiceFactory?(keyManager)
-            ?? AIQueriesService(keyManager: keyManager)
+            ?? AIQueriesService(
+                keyManager: keyManager,
+                piManagedRunLaunchPolicyProvider: { [piLaunchPolicyStore] in piLaunchPolicyStore.launchPolicy() }
+            )
 
         // 3) API Settings
+        let piModelPollingService = contextBuilderPiModelPollingService ?? PiModelPollingService.appSettingsBacked(policyStore: piLaunchPolicyStore)
         let apiSettingsViewModel = APISettingsViewModel(
             aiQueriesService: aiQueriesService,
             keyManager: keyManager,
             loadStoredDataOnInit: loadStoredAPISettingsDataOnInit,
+            piModelPollingService: piModelPollingService,
             codexModelPollingService: codexModelPollingService
         )
 
@@ -136,7 +142,7 @@ enum WindowStateCompositionFactory {
             mcpServer: mcpServer,
             oracleViewModel: oracleViewModel,
             providerFactory: contextBuilderProviderFactory,
-            piModelPollingService: contextBuilderPiModelPollingService,
+            piModelPollingService: piModelPollingService,
             codexModelPollingService: codexModelPollingService
         )
 
@@ -147,7 +153,8 @@ enum WindowStateCompositionFactory {
             workspaceManager: workspaceManager,
             mcpServer: mcpServer,
             oracleViewModel: oracleViewModel,
-            applyEditsApprovalStore: applyEditsApprovalStore
+            applyEditsApprovalStore: applyEditsApprovalStore,
+            piModelPollingService: piModelPollingService
         )
         if deferredInitialAgentSystemWorkspaceRefresh {
             agentModeViewModel.deferInitialSystemWorkspaceSessionListRefresh(reason: "programmaticNewWindowWorkspaceSwitch")

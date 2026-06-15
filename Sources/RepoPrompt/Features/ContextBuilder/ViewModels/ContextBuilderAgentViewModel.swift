@@ -906,7 +906,8 @@ final class ContextBuilderAgentViewModel: ObservableObject {
                 modelString: modelString,
                 workspacePath: workspacePath,
                 windowID: windowID,
-                runtimePermission: runtimePermission
+                runtimePermission: runtimePermission,
+                piLaunchPolicy: PiManagedRunExtensionDiscoverySettings.launchPolicy()
             )
         }
         refreshAvailableAgents()

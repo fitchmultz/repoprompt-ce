@@ -280,7 +280,7 @@ final class PiRPCClientTests: XCTestCase {
             commandName: scriptURL.path,
             additionalPathHints: [],
             requestTimeout: 2,
-            launchArguments: PiIntegrationConfiguration.managedRPCLaunchArguments()
+            launchArguments: PiIntegrationConfiguration.managedRPCLaunchArguments(launchPolicy: .defaultPolicy)
         ))
         addTeardownBlock { await client.shutdown() }
 
@@ -303,7 +303,7 @@ final class PiRPCClientTests: XCTestCase {
             commandName: scriptURL.path,
             additionalPathHints: [],
             requestTimeout: 2,
-            launchArguments: PiIntegrationConfiguration.managedRPCLaunchArguments()
+            launchArguments: PiIntegrationConfiguration.managedRPCLaunchArguments(launchPolicy: .defaultPolicy)
         ))
         addTeardownBlock { await client.shutdown() }
 
@@ -319,7 +319,7 @@ final class PiRPCClientTests: XCTestCase {
             commandName: scriptURL.path,
             additionalPathHints: [],
             requestTimeout: 2,
-            launchArguments: PiIntegrationConfiguration.managedRPCLaunchArguments()
+            launchArguments: PiIntegrationConfiguration.managedRPCLaunchArguments(launchPolicy: .defaultPolicy)
         ))
         addTeardownBlock { await client.shutdown() }
 

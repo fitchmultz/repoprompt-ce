@@ -62,6 +62,48 @@ final class PiModelCatalogTests: XCTestCase {
         XCTAssertFalse(AgentModelCatalog.isValid(rawModel: "missing/gpt-5.5:low", for: .pi, availability: availability))
     }
 
+    func testProviderlessNoSlashPiModelsAreNotExposedAsSelectableOptions() throws {
+        let snapshot = AgentPiModelRegistry.discoveredModels(
+            from: [
+                .init(provider: nil, id: "glm-5.2", displayName: "GLM 5.2", description: nil, raw: ["reasoning": .bool(true)]),
+                .init(provider: nil, id: "/glm-5.2", displayName: "Malformed Leading Slash", description: nil, raw: ["reasoning": .bool(true)]),
+                .init(provider: nil, id: "zai/", displayName: "Malformed Trailing Slash", description: nil, raw: ["reasoning": .bool(true)]),
+                .init(provider: nil, id: "deepseek/deepseek-v4-pro", displayName: "DeepSeek V4 Pro", description: nil, raw: ["reasoning": .bool(true)]),
+                .init(provider: "zai", id: "glm-5.2", displayName: "GLM 5.2", description: nil, raw: ["reasoning": .bool(true)])
+            ],
+            currentModel: .init(provider: nil, id: "glm-5.2", displayName: "GLM 5.2", description: nil, raw: [:])
+        )
+
+        let discovered = try XCTUnwrap(snapshot)
+        XCTAssertEqual(discovered.options.map(\.rawValue), ["deepseek/deepseek-v4-pro", "zai/glm-5.2"])
+        XCTAssertNil(discovered.currentModelRaw)
+        XCTAssertTrue(AgentPiModelRegistry.shared.updateDiscoveredModels(discovered))
+
+        let availability = AgentModelCatalog.AvailabilityContext(piAvailable: true)
+        XCTAssertEqual(
+            AgentModelCatalog.options(for: .pi, availability: availability).map(\.rawValue),
+            ["deepseek/deepseek-v4-pro", "zai/glm-5.2"]
+        )
+        XCTAssertFalse(AgentModelCatalog.isValid(rawModel: "glm-5.2", for: .pi, availability: availability))
+        let menu = AgentModelCatalog.piMenu(
+            for: AgentModelCatalog.options(for: .pi, availability: availability),
+            knownModelIDs: discovered.knownModelIDs
+        )
+        XCTAssertEqual(menu.providerGroups.map(\.providerID), ["deepseek", "zai"])
+    }
+
+    func testProviderlessNoSlashPiModelsAreDroppedFromPersistedSnapshots() {
+        let workspace = "/tmp/pi-providerless-cache-workspace"
+        PiDynamicModelStore.save(Self.snapshot(rawValue: "glm-5.2", displayName: "GLM 5.2"), workspacePath: workspace)
+        AgentPiModelRegistry.shared.test_clearMemoryPreservingStore()
+
+        XCTAssertNil(AgentPiModelRegistry.shared.resolvedSnapshot(workspacePath: workspace))
+        XCTAssertEqual(
+            AgentModelCatalog.options(for: .pi, availability: .init(piAvailable: true, piWorkspacePath: workspace)),
+            []
+        )
+    }
+
     func testAnyPiReportedProviderRefreshReplacesStalePiModels() {
         let initialSnapshot = Self.snapshot(rawValue: "openai-codex/gpt-5.5", displayName: "GPT 5.5")
         XCTAssertTrue(AgentPiModelRegistry.shared.updateDiscoveredModels(initialSnapshot))

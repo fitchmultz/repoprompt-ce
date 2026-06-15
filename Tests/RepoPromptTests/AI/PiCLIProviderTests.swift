@@ -16,7 +16,44 @@ final class PiCLIProviderTests: XCTestCase {
     func testCLIProviderForwardsExactlyOneMessageStopPerTurn() async throws {
         let directory = try makeTemporaryDirectory()
         let scriptURL = try makeFakePiRPCScript(recordURL: directory.appendingPathComponent("commands.jsonl"))
-        let provider = PiCLIProvider { modelString in
+        let provider = PiCLIProvider(controllerFactory: { modelString, launchPolicy in
+            XCTAssertEqual(launchPolicy, .defaultPolicy)
+            let client = PiRPCClient(config: .init(
+                commandName: scriptURL.path,
+                additionalPathHints: [],
+                requestTimeout: 2,
+                launchArguments: [],
+                requiresSupportedVersionCheck: false
+            ))
+            return PiNativeSessionController(
+                client: client,
+                options: .init(modelRaw: modelString, requestTimeout: 2, launchArguments: [])
+            )
+        })
+        addTeardownBlock { await provider.dispose() }
+
+        let stream = try await provider.streamMessage(
+            AIMessage(systemPrompt: "Reply briefly.", userMessage: "Hello"),
+            model: .piCustom(name: "zai/glm-5.2")
+        )
+
+        var results: [AIStreamResult] = []
+        for try await result in stream {
+            results.append(result)
+        }
+
+        XCTAssertTrue(results.contains { $0.type == "content" && $0.text == "oracle ready" })
+        let stops = results.filter { $0.type == "message_stop" }
+        XCTAssertEqual(stops.count, 1)
+        XCTAssertEqual(stops.first?.stopReason, "end_turn")
+    }
+
+    func testCLIProviderPassesInjectedLaunchPolicyToPromptOnlyController() async throws {
+        let directory = try makeTemporaryDirectory()
+        let scriptURL = try makeFakePiRPCScript(recordURL: directory.appendingPathComponent("commands.jsonl"))
+        let provider = PiCLIProvider(launchPolicyProvider: { .disableDiscoveredExtensions }) { modelString, launchPolicy in
+            XCTAssertEqual(modelString, "zai/glm-5.2")
+            XCTAssertEqual(launchPolicy, .disableDiscoveredExtensions)
             let client = PiRPCClient(config: .init(
                 commandName: scriptURL.path,
                 additionalPathHints: [],
@@ -35,16 +72,7 @@ final class PiCLIProviderTests: XCTestCase {
             AIMessage(systemPrompt: "Reply briefly.", userMessage: "Hello"),
             model: .piCustom(name: "zai/glm-5.2")
         )
-
-        var results: [AIStreamResult] = []
-        for try await result in stream {
-            results.append(result)
-        }
-
-        XCTAssertTrue(results.contains { $0.type == "content" && $0.text == "oracle ready" })
-        let stops = results.filter { $0.type == "message_stop" }
-        XCTAssertEqual(stops.count, 1)
-        XCTAssertEqual(stops.first?.stopReason, "end_turn")
+        for try await _ in stream {}
     }
 
     private func makeTemporaryDirectory() throws -> URL {

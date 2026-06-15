@@ -1503,7 +1503,8 @@ final class AgentModeRunServiceLifecycleTests: XCTestCase {
             cancelMCPToolsForRun: cancelMCPTools,
             awaitNoActiveMCPTools: idleWaiter,
             activeAgentRunWaitQuery: { _ in false },
-            childAgentRunWaitDrainTimeoutSeconds: 0.01
+            childAgentRunWaitDrainTimeoutSeconds: 0.01,
+            piManagedRunLaunchPolicyProvider: { .defaultPolicy }
         )
         return LifecycleHarness(
             service: AgentModeRunService(

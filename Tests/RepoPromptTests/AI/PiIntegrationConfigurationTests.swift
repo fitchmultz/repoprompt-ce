@@ -27,21 +27,55 @@ final class PiIntegrationConfigurationTests: XCTestCase {
         XCTAssertTrue(PiIntegrationConfiguration.isSupportedVersion("0.80.0"))
     }
 
-    func testManagedRPCLaunchArgumentsApproveProjectInputs() {
+    func testManagedRPCLaunchArgumentsAllowDiscoveredExtensionsByDefault() {
         XCTAssertEqual(
-            PiIntegrationConfiguration.managedRPCLaunchArguments(),
+            PiIntegrationConfiguration.managedRPCLaunchArguments(launchPolicy: .defaultPolicy),
             ["--mode", "rpc", "--approve"]
         )
     }
 
-    func testModelDiscoveryLaunchArgumentsAreEphemeralAndToolless() {
+    func testManagedRPCLaunchArgumentsCanExplicitlyDisableDiscoveredExtensions() {
         XCTAssertEqual(
-            PiIntegrationConfiguration.managedRPCModelDiscoveryLaunchArguments(),
-            ["--mode", "rpc", "--approve", "--no-session", "--no-tools"]
+            PiIntegrationConfiguration.managedRPCLaunchArguments(launchPolicy: .disableDiscoveredExtensions),
+            ["--mode", "rpc", "--approve", "--no-extensions"]
         )
     }
 
-    func testPiModelEligibilityAcceptsEveryNonEmptyPiReportedModelRaw() {
+    func testManagedRPCLaunchArgumentsKeepExplicitBridgeWhenDiscoveryIsDisabled() {
+        XCTAssertEqual(
+            PiIntegrationConfiguration.managedRPCLaunchArguments(
+                bridgeExtensionPath: "/tmp/repoprompt-bridge.ts",
+                launchPolicy: .disableDiscoveredExtensions
+            ),
+            ["--mode", "rpc", "--approve", "--no-extensions", "--extension", "/tmp/repoprompt-bridge.ts"]
+        )
+    }
+
+    func testManagedRunExtensionDiscoverySettingDefaultsToCompatibilityAllowed() throws {
+        let suiteName = "PiIntegrationConfigurationTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertTrue(PiManagedRunExtensionDiscoverySettings.defaultAllowsDiscoveredExtensions)
+        XCTAssertEqual(PiManagedRunExtensionDiscoverySettings.launchPolicy(defaults: defaults), .allowDiscoveredExtensions)
+        PiManagedRunExtensionDiscoverySettings.setAllowsDiscoveredExtensions(false, defaults: defaults)
+        XCTAssertEqual(PiManagedRunExtensionDiscoverySettings.launchPolicy(defaults: defaults), .disableDiscoveredExtensions)
+        PiManagedRunExtensionDiscoverySettings.setAllowsDiscoveredExtensions(true, defaults: defaults)
+        XCTAssertEqual(PiManagedRunExtensionDiscoverySettings.launchPolicy(defaults: defaults), .allowDiscoveredExtensions)
+    }
+
+    func testModelDiscoveryLaunchArgumentsAreEphemeralAndToolless() {
+        XCTAssertEqual(
+            PiIntegrationConfiguration.managedRPCModelDiscoveryLaunchArguments(launchPolicy: .allowDiscoveredExtensions),
+            ["--mode", "rpc", "--approve", "--no-session", "--no-tools"]
+        )
+        XCTAssertEqual(
+            PiIntegrationConfiguration.managedRPCModelDiscoveryLaunchArguments(launchPolicy: .disableDiscoveredExtensions),
+            ["--mode", "rpc", "--approve", "--no-extensions", "--no-session", "--no-tools"]
+        )
+    }
+
+    func testPiModelEligibilityRequiresSelectableProviderQualifiedModelRaw() {
         XCTAssertTrue(PiIntegrationConfiguration.isExposableModelRaw("openai-codex/gpt-5.5"))
         XCTAssertTrue(PiIntegrationConfiguration.isExposableModelRaw("zai/glm-5.2"))
         XCTAssertTrue(PiIntegrationConfiguration.isExposableModelRaw("z-ai/glm-5.2"))
@@ -49,20 +83,29 @@ final class PiIntegrationConfigurationTests: XCTestCase {
         XCTAssertTrue(PiIntegrationConfiguration.isExposableModelRaw("anthropic/claude-opus-4-6"))
         XCTAssertTrue(PiIntegrationConfiguration.isExposableModelRaw("openrouter/z-ai/glm-5.2"))
         XCTAssertTrue(PiIntegrationConfiguration.isExposableModelRaw("cursor/default"))
+        XCTAssertFalse(PiIntegrationConfiguration.isExposableModelRaw("glm-5.2"))
+        XCTAssertFalse(PiIntegrationConfiguration.isExposableModelRaw("/glm-5.2"))
+        XCTAssertFalse(PiIntegrationConfiguration.isExposableModelRaw("zai/"))
+        XCTAssertFalse(PiIntegrationConfiguration.isExposableModelRaw("/"))
         XCTAssertFalse(PiIntegrationConfiguration.isExposableModelRaw(""))
         XCTAssertFalse(PiIntegrationConfiguration.isExposableModelProviderID(nil))
     }
 
     func testPromptOnlyLaunchArgumentsAreEphemeralAndToolless() {
         XCTAssertEqual(
-            PiIntegrationConfiguration.managedRPCPromptOnlyLaunchArguments(),
+            PiIntegrationConfiguration.managedRPCPromptOnlyLaunchArguments(launchPolicy: .allowDiscoveredExtensions),
             ["--mode", "rpc", "--approve", "--no-session", "--no-tools"]
+        )
+        XCTAssertEqual(
+            PiIntegrationConfiguration.managedRPCPromptOnlyLaunchArguments(launchPolicy: .disableDiscoveredExtensions),
+            ["--mode", "rpc", "--approve", "--no-extensions", "--no-session", "--no-tools"]
         )
     }
 
     func testManagedRPCLaunchArgumentsIncludeBridgeExtensionAfterApproval() {
         let arguments = PiIntegrationConfiguration.managedRPCLaunchArguments(
-            bridgeExtensionPath: "/tmp/repoprompt-bridge.ts"
+            bridgeExtensionPath: "/tmp/repoprompt-bridge.ts",
+            launchPolicy: .allowDiscoveredExtensions
         )
         XCTAssertEqual(
             arguments,
@@ -83,7 +126,7 @@ final class PiIntegrationConfigurationTests: XCTestCase {
     func testPiRPCDefaultsUseManagedLaunchArguments() {
         XCTAssertEqual(
             PiRPCClient.Config().launchArguments,
-            PiIntegrationConfiguration.managedRPCLaunchArguments()
+            PiIntegrationConfiguration.managedRPCLaunchArguments(launchPolicy: .defaultPolicy)
         )
         XCTAssertEqual(
             PiRPCClient.Config().environmentOverrides,
@@ -91,7 +134,7 @@ final class PiIntegrationConfigurationTests: XCTestCase {
         )
         XCTAssertEqual(
             PiNativeSessionController.Options().launchArguments,
-            PiIntegrationConfiguration.managedRPCLaunchArguments()
+            PiIntegrationConfiguration.managedRPCLaunchArguments(launchPolicy: .defaultPolicy)
         )
     }
 
@@ -99,7 +142,7 @@ final class PiIntegrationConfigurationTests: XCTestCase {
         let repoRoot = try RepoRoot.url(filePath: #filePath)
         let sourcePath = "Sources/RepoPrompt/Infrastructure/AI/Providers/Pi/PiModelPollingService.swift"
         let contents = try String(contentsOf: repoRoot.appendingPathComponent(sourcePath), encoding: .utf8)
-        XCTAssertTrue(contents.contains("managedRPCModelDiscoveryLaunchArguments()"), sourcePath)
+        XCTAssertTrue(contents.contains("managedRPCModelDiscoveryLaunchArguments(launchPolicy: launchPolicyProvider())"), sourcePath)
         XCTAssertFalse(contents.contains("managedRPCLaunchArguments()"), sourcePath)
     }
 

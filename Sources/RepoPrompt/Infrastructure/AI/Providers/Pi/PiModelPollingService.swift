@@ -8,22 +8,29 @@ protocol PiModelPolling: Sendable {
     func latestSnapshot() async -> PiModelPollingService.Snapshot?
     func discoverOnce(workspacePath: String?) async throws -> PiModelPollingService.Snapshot?
     func subscribe(workspacePath: String?) async -> AsyncStream<PiModelPollingService.Event>
+    func resetModelDiscoveryStateForLaunchPolicyChange() async
+}
+
+extension PiModelPolling {
+    func resetModelDiscoveryStateForLaunchPolicyChange() async {}
 }
 
 struct PiRPCModelDiscoveryClient: PiModelDiscoveryClient {
     typealias ClientFactory = @Sendable (_ workspacePath: String?) -> PiRPCClient
+    typealias LaunchPolicyProvider = @Sendable () -> PiManagedRunLaunchPolicy
 
     private let clientFactory: ClientFactory
 
     init(
-        clientFactory: @escaping ClientFactory = { workspacePath in
+        launchPolicyProvider: @escaping LaunchPolicyProvider = { .defaultPolicy },
+        clientFactory: ClientFactory? = nil
+    ) {
+        self.clientFactory = clientFactory ?? { workspacePath in
             PiRPCClient(config: .init(
                 workingDirectory: workspacePath,
-                launchArguments: PiIntegrationConfiguration.managedRPCModelDiscoveryLaunchArguments()
+                launchArguments: PiIntegrationConfiguration.managedRPCModelDiscoveryLaunchArguments(launchPolicy: launchPolicyProvider())
             ))
         }
-    ) {
-        self.clientFactory = clientFactory
     }
 
     func discoverModels(workspacePath: String?) async throws -> PiDiscoveredModels? {
@@ -87,6 +94,9 @@ actor PiModelPollingService: PiModelPolling {
 
     private var contexts: [PiModelWorkspaceScope: WorkspacePollingContext] = [:]
     private var isShutdown = false
+    #if DEBUG
+        private var beforeApplyRefreshResultHook: (@Sendable (PiModelWorkspaceScope, UUID) async -> Void)?
+    #endif
 
     init(
         client: any PiModelDiscoveryClient,
@@ -114,7 +124,10 @@ actor PiModelPollingService: PiModelPolling {
         let scope = PiModelWorkspaceScope(workspacePath: workspacePath)
         let refresh = startRefreshIfNeeded(scope: scope)
         let result = await refresh.task.value
-        clearInFlightRefresh(refresh, scope: scope)
+        let isCurrentRefresh = clearInFlightRefresh(refresh, scope: scope)
+        guard isCurrentRefresh else {
+            return await latestSnapshot(workspacePath: scope.workspacePath)
+        }
         switch result {
         case .success:
             return await latestSnapshot(workspacePath: scope.workspacePath)
@@ -175,6 +188,26 @@ actor PiModelPollingService: PiModelPolling {
         await performRefresh(scope: scope)
     }
 
+    func resetModelDiscoveryStateForLaunchPolicyChange() async {
+        guard !isShutdown else { return }
+        let scopes = Array(contexts.keys)
+        for scope in scopes {
+            contexts[scope]?.pollingTask?.cancel()
+            contexts[scope]?.pollingTask = nil
+            contexts[scope]?.inFlightRefresh?.task.cancel()
+            contexts[scope]?.inFlightRefresh = nil
+            contexts[scope]?.latest = nil
+            contexts[scope]?.shouldPublishNextSuccessfulRefresh = true
+            AgentPiModelRegistry.shared.setRefreshInFlight(false, workspacePath: scope.workspacePath)
+        }
+        AgentPiModelRegistry.shared.clearAllDiscoveredModels()
+        if startsPollingOnSubscribe {
+            for scope in scopes where contexts[scope]?.continuations.isEmpty == false {
+                startPollingIfNeeded(scope: scope)
+            }
+        }
+    }
+
     func shutdown(finishSubscribers: Bool = true) async {
         isShutdown = true
         for scope in contexts.keys {
@@ -230,9 +263,10 @@ actor PiModelPollingService: PiModelPolling {
         guard !isShutdown else { return }
         let refresh = startRefreshIfNeeded(scope: scope)
         let result = await refresh.task.value
-        clearInFlightRefresh(refresh, scope: scope)
+        let isCurrentRefresh = clearInFlightRefresh(refresh, scope: scope)
+        guard isCurrentRefresh else { return }
         if case let .failure(error) = result {
-            await publishFailure(Failure(message: error.localizedDescription), scope: scope)
+            publishFailure(Failure(message: error.localizedDescription), scope: scope)
         }
     }
 
@@ -242,34 +276,41 @@ actor PiModelPollingService: PiModelPolling {
         }
 
         let workspacePath = scope.workspacePath
+        let refreshID = UUID()
         AgentPiModelRegistry.shared.setRefreshInFlight(true, workspacePath: workspacePath)
-        let task = Task<Result<Void, Error>, Never> { [weak self, scope, workspacePath] in
+        let task = Task<Result<Void, Error>, Never> { [weak self, scope, workspacePath, refreshID] in
             guard let self else { return .success(()) }
             do {
                 let discovered = try await client.discoverModels(workspacePath: workspacePath)
                 guard !Task.isCancelled else { return .success(()) }
-                await applyRefreshResult(discovered, scope: scope)
+                #if DEBUG
+                    await runBeforeApplyRefreshResultHook(scope: scope, refreshID: refreshID)
+                #endif
+                await applyRefreshResult(discovered, scope: scope, refreshID: refreshID)
                 return .success(())
             } catch {
+                guard !Task.isCancelled else { return .success(()) }
                 return .failure(error)
             }
         }
-        let refresh = InFlightRefresh(id: UUID(), task: task)
+        let refresh = InFlightRefresh(id: refreshID, task: task)
         var context = contexts[scope] ?? WorkspacePollingContext()
         context.inFlightRefresh = refresh
         contexts[scope] = context
         return refresh
     }
 
-    private func clearInFlightRefresh(_ refresh: InFlightRefresh, scope: PiModelWorkspaceScope) {
-        guard contexts[scope]?.inFlightRefresh?.id == refresh.id else { return }
+    @discardableResult
+    private func clearInFlightRefresh(_ refresh: InFlightRefresh, scope: PiModelWorkspaceScope) -> Bool {
+        guard contexts[scope]?.inFlightRefresh?.id == refresh.id else { return false }
         contexts[scope]?.inFlightRefresh = nil
         AgentPiModelRegistry.shared.setRefreshInFlight(false, workspacePath: scope.workspacePath)
         AgentPiModelRegistry.shared.markRefreshSettled(workspacePath: scope.workspacePath)
+        return true
     }
 
-    private func applyRefreshResult(_ discovered: PiDiscoveredModels?, scope: PiModelWorkspaceScope) {
-        guard !isShutdown else { return }
+    private func applyRefreshResult(_ discovered: PiDiscoveredModels?, scope: PiModelWorkspaceScope, refreshID: UUID) {
+        guard !isShutdown, contexts[scope]?.inFlightRefresh?.id == refreshID else { return }
         guard let discovered else {
             applyMissingSupportedModels(scope: scope)
             return
@@ -331,6 +372,14 @@ actor PiModelPollingService: PiModelPolling {
         func test_publishedEventCount(workspacePath: String?) -> Int {
             let scope = PiModelWorkspaceScope(workspacePath: workspacePath)
             return contexts[scope]?.publishedEventCount ?? 0
+        }
+
+        func test_setBeforeApplyRefreshResultHook(_ hook: (@Sendable (PiModelWorkspaceScope, UUID) async -> Void)?) {
+            beforeApplyRefreshResultHook = hook
+        }
+
+        private func runBeforeApplyRefreshResultHook(scope: PiModelWorkspaceScope, refreshID: UUID) async {
+            await beforeApplyRefreshResultHook?(scope, refreshID)
         }
     #endif
 

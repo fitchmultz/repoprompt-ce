@@ -22,6 +22,7 @@ final class AgentModeRunService {
         let activeAgentRunWaitQuery: (_ runID: UUID) -> Bool
         /// Bounded wait for child `agent_run.wait` scopes to drain before Claude native interrupt.
         let childAgentRunWaitDrainTimeoutSeconds: TimeInterval
+        let piManagedRunLaunchPolicyProvider: () -> PiManagedRunLaunchPolicy
     }
 
     enum CancellationIntent {
@@ -149,6 +150,7 @@ final class AgentModeRunService {
         )
         piRunner = PiIntegratedAgentModeRunner(
             windowID: dependencies.windowID,
+            launchPolicyProvider: dependencies.piManagedRunLaunchPolicyProvider,
             hooks: hooks,
             terminalCommitBarrier: terminalCommitBarrier
         )

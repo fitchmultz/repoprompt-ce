@@ -9,6 +9,7 @@ import Foundation
 
 actor DisposableProviderPool {
     private let keyManager: KeyManager
+    private let piManagedRunLaunchPolicyProvider: @Sendable () -> PiManagedRunLaunchPolicy
 
     /// Caches for fallback if KeyManager returns invalid/empty values.
     /// Key-based providers (OpenAI, Anthropic, etc.) will store their key here.
@@ -17,8 +18,12 @@ actor DisposableProviderPool {
     /// Azure providers store their entire configuration so we can re-use them if fetching fails.
     private var cachedAzureConfigs: [AIProviderType: AzureOpenAIConfiguration] = [:]
 
-    init(keyManager: KeyManager) {
+    init(
+        keyManager: KeyManager,
+        piManagedRunLaunchPolicyProvider: @escaping @Sendable () -> PiManagedRunLaunchPolicy = { .defaultPolicy }
+    ) {
         self.keyManager = keyManager
+        self.piManagedRunLaunchPolicyProvider = piManagedRunLaunchPolicyProvider
     }
 
     /// Returns a brand-new provider every time it's called.
@@ -62,7 +67,8 @@ actor DisposableProviderPool {
                 for: .ollama,
                 key: "", // No actual API key for Ollama
                 ollamaURL: typedURL,
-                azureConfiguration: azureConfiguration
+                azureConfiguration: azureConfiguration,
+                piManagedRunLaunchPolicyProvider: piManagedRunLaunchPolicyProvider
             )
         } else {
             // Fall back to default (http://localhost:11434)
@@ -71,7 +77,8 @@ actor DisposableProviderPool {
                 for: .ollama,
                 key: "",
                 ollamaURL: fallbackURL,
-                azureConfiguration: azureConfiguration
+                azureConfiguration: azureConfiguration,
+                piManagedRunLaunchPolicyProvider: piManagedRunLaunchPolicyProvider
             )
         }
     }
@@ -87,7 +94,8 @@ actor DisposableProviderPool {
                 for: providerType,
                 key: "", // We already have config
                 ollamaURL: ollamaURL,
-                azureConfiguration: directConfig
+                azureConfiguration: directConfig,
+                piManagedRunLaunchPolicyProvider: piManagedRunLaunchPolicyProvider
             )
         }
 
@@ -106,7 +114,8 @@ actor DisposableProviderPool {
                     for: providerType,
                     key: "",
                     ollamaURL: ollamaURL,
-                    azureConfiguration: config
+                    azureConfiguration: config,
+                    piManagedRunLaunchPolicyProvider: piManagedRunLaunchPolicyProvider
                 )
             } catch {
                 AzureOpenAIProvider.debug("Failed to decode Azure configuration: \(error)")
@@ -119,7 +128,8 @@ actor DisposableProviderPool {
                 for: providerType,
                 key: "",
                 ollamaURL: ollamaURL,
-                azureConfiguration: cachedConfig
+                azureConfiguration: cachedConfig,
+                piManagedRunLaunchPolicyProvider: piManagedRunLaunchPolicyProvider
             )
         } else {
             // If everything fails, create a blank provider
@@ -127,7 +137,8 @@ actor DisposableProviderPool {
                 for: providerType,
                 key: "",
                 ollamaURL: ollamaURL,
-                azureConfiguration: nil
+                azureConfiguration: nil,
+                piManagedRunLaunchPolicyProvider: piManagedRunLaunchPolicyProvider
             )
         }
     }
@@ -161,7 +172,8 @@ actor DisposableProviderPool {
             key: finalKey,
             ollamaURL: ollamaURL,
             azureConfiguration: azureConfiguration,
-            model: model.rawValue
+            model: model.rawValue,
+            piManagedRunLaunchPolicyProvider: piManagedRunLaunchPolicyProvider
         )
     }
 

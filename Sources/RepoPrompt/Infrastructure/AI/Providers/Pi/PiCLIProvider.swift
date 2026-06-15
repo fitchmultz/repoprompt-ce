@@ -5,28 +5,31 @@ import Foundation
 /// bridge tools here; Oracle should reason over supplied context, not edit files or
 /// call RepoPrompt tools.
 final class PiCLIProvider: AIProvider {
-    typealias ControllerFactory = (_ modelString: String?) -> PiNativeSessionController
+    typealias ControllerFactory = (_ modelString: String?, _ launchPolicy: PiManagedRunLaunchPolicy) -> PiNativeSessionController
 
     private let activeControllers = ActiveOpenCodeCLIProviderStore<PiNativeSessionController>()
+    private let launchPolicyProvider: @Sendable () -> PiManagedRunLaunchPolicy
     private let controllerFactory: ControllerFactory
 
     init(
-        controllerFactory: @escaping ControllerFactory = { modelString in
+        launchPolicyProvider: @escaping @Sendable () -> PiManagedRunLaunchPolicy = { .defaultPolicy },
+        controllerFactory: ControllerFactory? = nil
+    ) {
+        self.launchPolicyProvider = launchPolicyProvider
+        self.controllerFactory = controllerFactory ?? { modelString, _ in
             PiNativeSessionController(
                 workspacePath: nil,
                 options: .init(
                     modelRaw: modelString,
-                    launchArguments: PiIntegrationConfiguration.managedRPCPromptOnlyLaunchArguments()
+                    launchArguments: PiIntegrationConfiguration.managedRPCPromptOnlyLaunchArguments(launchPolicy: launchPolicyProvider())
                 )
             )
         }
-    ) {
-        self.controllerFactory = controllerFactory
     }
 
     func streamMessage(_ aiMessage: AIMessage, model: AIModel, maxTokens _: Int? = nil) async throws -> AsyncThrowingStream<AIStreamResult, Error> {
         let modelName = piModelName(for: model)
-        let controller = controllerFactory(modelName)
+        let controller = controllerFactory(modelName, launchPolicyProvider())
         if let replacedController = activeControllers.replace(controller) {
             await replacedController.shutdown()
         }
@@ -38,7 +41,7 @@ final class PiCLIProvider: AIProvider {
                     return
                 }
                 do {
-                    try await controller.startOrResume(existing: nil, model: modelName)
+                    _ = try await controller.startOrResume(existing: nil, model: modelName)
                     let events = await controller.events
                     let collector = Task { () -> (PiNativeSessionController.TurnStatus, Bool) in
                         var sawMessageStop = false

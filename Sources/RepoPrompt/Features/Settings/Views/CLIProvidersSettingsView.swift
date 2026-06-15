@@ -47,6 +47,7 @@ struct CLIProvidersSettingsView: View {
     @State private var showOpenCodeTraceDump = false
     @State private var showCursorTraceDump = false
     @State private var showPiTraceDump = false
+    @State private var piManagedRunsAllowDiscoveredExtensions = PiManagedRunExtensionDiscoverySettings.defaultAllowsDiscoveredExtensions
     @State private var isClaudePromptSettingsExpanded = false
     @State private var claudeNativePromptMode = ClaudeAgentToolPreferences.agentModePromptDelivery()
 
@@ -191,7 +192,7 @@ struct CLIProvidersSettingsView: View {
                 )
             }
         }
-        .onChange(of: showAlert) { newValue in
+        .onChange(of: showAlert) { _, newValue in
             if !newValue {
                 showClaudeCodeTraceDump = false
                 showCodexTraceDump = false
@@ -1953,10 +1954,36 @@ struct CLIProvidersSettingsView: View {
                         }
                     }
                 }
+
+                piExtensionDiscoveryToggle
             }
             .onAppear {
                 viewModel.refreshPiModelCatalogIfConnected()
             }
+        }
+    }
+
+    private var piExtensionDiscoveryToggle: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle("Load discovered pi extensions in managed runs", isOn: $piManagedRunsAllowDiscoveredExtensions)
+                .toggleStyle(.checkbox)
+                .font(.caption)
+                .onChange(of: piManagedRunsAllowDiscoveredExtensions) { _, newValue in
+                    viewModel.setPiManagedRunsAllowDiscoveredExtensions(newValue)
+                }
+                .onReceive(viewModel.$piManagedRunsAllowDiscoveredExtensions.removeDuplicates()) { value in
+                    if piManagedRunsAllowDiscoveredExtensions != value {
+                        piManagedRunsAllowDiscoveredExtensions = value
+                    }
+                }
+                .onAppear {
+                    piManagedRunsAllowDiscoveredExtensions = viewModel.piManagedRunsAllowDiscoveredExtensions
+                }
+
+            Text("On preserves pi's default discovery behavior for extension-provided providers, models, and tools. Turn it off for an isolated managed mode: RepoPrompt launches pi with `--no-extensions --extension <RepoPrompt bridge>` so project/global pi extension hooks do not run outside RepoPrompt's approval gate. Changing this restarts pi model discovery and clears stale pi model caches.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -2115,7 +2142,7 @@ struct CLIProvidersSettingsView: View {
         testingCompatibleBackends.insert(backendID)
         Task {
             _ = await viewModel.testCompatibleBackendConnection(backendID)
-            await MainActor.run {
+            _ = await MainActor.run {
                 testingCompatibleBackends.remove(backendID)
             }
         }

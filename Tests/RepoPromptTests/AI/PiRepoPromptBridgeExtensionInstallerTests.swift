@@ -330,6 +330,14 @@ final class PiRepoPromptBridgeExtensionInstallerTests: XCTestCase {
         XCTAssertTrue(source.contains("const REPOPROMPT_PI_PERMISSION_LEVEL_ENV = \"REPOPROMPT_PI_PERMISSION_LEVEL\""))
         XCTAssertTrue(source.contains("const REPOPROMPT_SCHEMA_ARGS = JSON.parse(\"[\\\"--tools-schema\\\",\\\"--compact\\\"]\") as string[]"))
         XCTAssertTrue(source.contains("const REPOPROMPT_TOOL_ARGS_PREFIX = JSON.parse(\"[\\\"--client-name\\\",\\\"repoprompt-pi-bridge\\\",\\\"--raw-json\\\"]\") as string[]"))
+        XCTAssertTrue(source.contains("const MANAGED_SCHEMA_LOAD_TIMEOUT_MS = 60_000;"))
+        XCTAssertTrue(source.contains("const DEFAULT_GLOBAL_SCHEMA_LOAD_TIMEOUT_MS = 10_000;"))
+        XCTAssertTrue(source.contains("const GLOBAL_SCHEMA_LOAD_TIMEOUT_ENV = \"REPOPROMPT_PI_GLOBAL_BRIDGE_SCHEMA_TIMEOUT_MS\""))
+        XCTAssertTrue(source.contains("function positiveIntegerEnv(name: string, fallback: number): number"))
+        XCTAssertTrue(source.contains("function schemaLoadTimeoutMS(): number"))
+        XCTAssertTrue(source.contains("if (REPOPROMPT_IS_MANAGED_WINDOW_BRIDGE) return MANAGED_SCHEMA_LOAD_TIMEOUT_MS;"))
+        XCTAssertTrue(source.contains("return positiveIntegerEnv(GLOBAL_SCHEMA_LOAD_TIMEOUT_ENV, DEFAULT_GLOBAL_SCHEMA_LOAD_TIMEOUT_MS);"))
+        XCTAssertTrue(source.contains("{ timeout: schemaLoadTimeoutMS() }"))
 
         XCTAssertTrue(try PiRepoPromptBridgeExtensionInstaller.uninstallGlobal(homeDirectory: home, cliPath: cliPath))
         XCTAssertEqual(

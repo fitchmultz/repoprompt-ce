@@ -5,7 +5,8 @@ class AIProviderFactory {
         for providerType: AIProviderType,
         keyManager: KeyManager,
         ollamaURL: URL? = nil,
-        azureConfiguration: AzureOpenAIConfiguration? = nil
+        azureConfiguration: AzureOpenAIConfiguration? = nil,
+        piManagedRunLaunchPolicyProvider: @escaping @Sendable () -> PiManagedRunLaunchPolicy = { .defaultPolicy }
     ) async throws -> AIProvider {
         // If Azure config is provided, skip key fetching
         if providerType == .azure, let config = azureConfiguration {
@@ -13,7 +14,8 @@ class AIProviderFactory {
                 for: providerType,
                 key: "",
                 ollamaURL: ollamaURL,
-                azureConfiguration: config
+                azureConfiguration: config,
+                piManagedRunLaunchPolicyProvider: piManagedRunLaunchPolicyProvider
             )
         }
 
@@ -23,7 +25,8 @@ class AIProviderFactory {
                 for: providerType,
                 key: "",
                 ollamaURL: ollamaURL,
-                azureConfiguration: azureConfiguration
+                azureConfiguration: azureConfiguration,
+                piManagedRunLaunchPolicyProvider: piManagedRunLaunchPolicyProvider
             )
         }
 
@@ -34,7 +37,8 @@ class AIProviderFactory {
             for: providerType,
             key: key,
             ollamaURL: ollamaURL,
-            azureConfiguration: azureConfiguration
+            azureConfiguration: azureConfiguration,
+            piManagedRunLaunchPolicyProvider: piManagedRunLaunchPolicyProvider
         )
     }
 
@@ -43,7 +47,8 @@ class AIProviderFactory {
         key: String,
         ollamaURL: URL? = nil,
         azureConfiguration: AzureOpenAIConfiguration? = nil,
-        model: String? = nil
+        model: String? = nil,
+        piManagedRunLaunchPolicyProvider: @escaping @Sendable () -> PiManagedRunLaunchPolicy = { .defaultPolicy }
     ) async throws -> AIProvider {
         switch providerType {
         case .anthropic:
@@ -88,7 +93,7 @@ class AIProviderFactory {
         case .cursor:
             return CursorCLIProvider()
         case .pi:
-            return PiCLIProvider()
+            return PiCLIProvider(launchPolicyProvider: piManagedRunLaunchPolicyProvider)
         case .customProvider:
             let config = try CustomProviderConfiguration.load()
 

@@ -233,7 +233,8 @@ final class AgentRuntimeProviderService {
         runType: AgentRunType = .discover,
         workspacePath: String? = nil,
         windowID: Int? = nil,
-        runtimePermission: AgentProviderRuntimePermissionBinding? = nil
+        runtimePermission: AgentProviderRuntimePermissionBinding? = nil,
+        piLaunchPolicy: PiManagedRunLaunchPolicy = .defaultPolicy
     ) -> HeadlessAgentProvider {
         if Self.enableDebugLogging {
             Self.logger.debug("Creating provider for agent: \(agent.displayName), model: \(modelString ?? "default"), runType: \(String(describing: runType))")
@@ -304,7 +305,8 @@ final class AgentRuntimeProviderService {
                 workspacePath: workspacePath,
                 windowID: windowID,
                 enableDebugLogging: Self.enableDebugLogging,
-                permissionLevel: runtimePermission?.piPermissionLevel ?? .managedDefault
+                permissionLevel: runtimePermission?.piPermissionLevel ?? .managedDefault,
+                launchPolicy: piLaunchPolicy
             )
         case .cursor:
             let config = CursorAgentConfig(
