@@ -89,6 +89,76 @@ final class PiModelCatalogTests: XCTestCase {
         XCTAssertEqual(AgentPiModelRegistry.shared.resolvedSnapshot()?.currentModelRaw, "anthropic/claude-opus-4-6")
     }
 
+    func testPiCustomDisplayNameDoesNotSynchronouslyWarmPersistedStore() {
+        let rawModel = "zai/glm-5.2"
+        PiDynamicModelStore.save(Self.snapshot(rawValue: rawModel, displayName: "GLM 5.2"))
+        AgentPiModelRegistry.shared.test_clearMemoryPreservingStore()
+
+        XCTAssertNil(AgentPiModelRegistry.shared.cachedSnapshot())
+        XCTAssertEqual(AIModel.piCustom(name: rawModel).displayName, rawModel)
+        XCTAssertNil(AgentPiModelRegistry.shared.cachedSnapshot())
+
+        XCTAssertEqual(AgentPiModelRegistry.shared.resolvedSnapshot()?.option(matching: rawModel)?.displayName, "GLM 5.2")
+        XCTAssertEqual(AIModel.piCustom(name: rawModel).displayName, "GLM 5.2")
+    }
+
+    func testDelayedPiModelPersistDoesNotResurrectCatalogAfterClear() {
+        let workspace = "/tmp/pi-clear-race-\(UUID().uuidString)"
+        let rawModel = "zai/glm-5.2"
+        AgentPiModelRegistry.shared.test_setBeforePersistDiscoveredModelsHook { workspacePath in
+            AgentPiModelRegistry.shared.clearDiscoveredModels(workspacePath: workspacePath)
+        }
+        defer {
+            AgentPiModelRegistry.shared.test_setBeforePersistDiscoveredModelsHook(nil)
+        }
+
+        XCTAssertTrue(AgentPiModelRegistry.shared.updateDiscoveredModels(
+            Self.snapshot(rawValue: rawModel, displayName: "GLM 5.2"),
+            workspacePath: workspace
+        ))
+        XCTAssertNil(AgentPiModelRegistry.shared.cachedSnapshot(workspacePath: workspace))
+
+        AgentPiModelRegistry.shared.test_clearMemoryPreservingStore()
+        XCTAssertNil(AgentPiModelRegistry.shared.resolvedSnapshot(workspacePath: workspace))
+    }
+
+    func testPersistedWarmDoesNotReinsertCatalogClearedDuringLoad() {
+        let workspace = "/tmp/pi-warm-clear-race-\(UUID().uuidString)"
+        let rawModel = "zai/glm-5.2"
+        PiDynamicModelStore.save(Self.snapshot(rawValue: rawModel, displayName: "GLM 5.2"), workspacePath: workspace)
+        AgentPiModelRegistry.shared.test_clearMemoryPreservingStore()
+        AgentPiModelRegistry.shared.test_setBeforeApplyPersistedWarmHook { workspacePath in
+            AgentPiModelRegistry.shared.clearDiscoveredModels(workspacePath: workspacePath)
+        }
+        defer {
+            AgentPiModelRegistry.shared.test_setBeforeApplyPersistedWarmHook(nil)
+        }
+
+        XCTAssertNil(AgentPiModelRegistry.shared.resolvedSnapshot(workspacePath: workspace))
+        XCTAssertNil(AgentPiModelRegistry.shared.cachedSnapshot(workspacePath: workspace))
+    }
+
+    func testPersistedWarmStartingDuringClearDoesNotReinsertCatalog() async {
+        let workspace = "/tmp/pi-warm-during-clear-race-\(UUID().uuidString)"
+        let rawModel = "zai/glm-5.2"
+        let warmTaskBox = PiWarmTaskBox()
+        PiDynamicModelStore.save(Self.snapshot(rawValue: rawModel, displayName: "GLM 5.2"), workspacePath: workspace)
+        AgentPiModelRegistry.shared.test_clearMemoryPreservingStore()
+        AgentPiModelRegistry.shared.test_setBeforeRemovePersistedModelsHook { workspacePath in
+            warmTaskBox.task = Task.detached {
+                AgentPiModelRegistry.shared.resolvedSnapshot(workspacePath: workspacePath)
+            }
+        }
+        defer {
+            AgentPiModelRegistry.shared.test_setBeforeRemovePersistedModelsHook(nil)
+        }
+
+        XCTAssertFalse(AgentPiModelRegistry.shared.clearDiscoveredModels(workspacePath: workspace))
+        let warmedSnapshot = await warmTaskBox.task?.value
+        XCTAssertNil(warmedSnapshot ?? nil)
+        XCTAssertNil(AgentPiModelRegistry.shared.cachedSnapshot(workspacePath: workspace))
+    }
+
     func testCurrentAvailabilitySurfacesConnectedPiRuntimeModelsForMCPOptions() throws {
         UserDefaults.standard.set(true, forKey: "PiCLIConnected")
         defer { UserDefaults.standard.removeObject(forKey: "PiCLIConnected") }
@@ -452,6 +522,50 @@ final class PiModelCatalogTests: XCTestCase {
         XCTAssertEqual(loaded?.options.last?.supportedPiThinkingLevels, [.off, .low, .high])
     }
 
+    func testPiDynamicModelStoreIgnoresPersistedCurrentModelMissingFromOptions() throws {
+        let record = PiDynamicModelSnapshotRecord(
+            currentModelRaw: "missing/model",
+            options: [
+                PiDynamicModelRecord(
+                    rawValue: "zai/glm-5.2",
+                    displayName: "GLM 5.2",
+                    description: nil,
+                    isPlaceholderDefault: false,
+                    isProviderDefault: true
+                )
+            ]
+        )
+
+        let snapshot = try XCTUnwrap(PiDynamicModelStore.snapshot(from: record))
+
+        XCTAssertNil(snapshot.currentModelRaw)
+        XCTAssertEqual(snapshot.preferredModelRaw, "zai/glm-5.2")
+    }
+
+    func testPiDefaultModelIgnoresDiscoveredCurrentModelMissingFromOptions() {
+        let workspace = "/tmp/pi-missing-current-default-workspace"
+        let snapshot = PiDiscoveredModels(
+            options: [
+                AgentModelOption(
+                    rawValue: "zai/glm-5.2",
+                    displayName: "GLM 5.2",
+                    description: nil,
+                    isDefault: true
+                )
+            ],
+            currentModelRaw: "missing/model"
+        )
+        XCTAssertTrue(AgentPiModelRegistry.shared.updateDiscoveredModels(snapshot, workspacePath: workspace))
+
+        XCTAssertEqual(
+            AgentModelCatalog.defaultModelRaw(
+                for: .pi,
+                availability: .init(piAvailable: true, piWorkspacePath: workspace)
+            ),
+            "zai/glm-5.2"
+        )
+    }
+
     func testRegistryStateWarmsPersistedWorkspaceSnapshotSynchronouslyOnFirstRead() {
         let workspace = "/tmp/pi-sync-warm-workspace"
         let snapshot = Self.snapshot(rawValue: "openai-codex/gpt-5.5", displayName: "GPT 5.5")
@@ -548,4 +662,8 @@ final class PiModelCatalogTests: XCTestCase {
             currentModelRaw: rawValue
         )
     }
+}
+
+private final class PiWarmTaskBox: @unchecked Sendable {
+    var task: Task<PiDiscoveredModels?, Never>?
 }

@@ -6,7 +6,6 @@ struct PiDiscoveredModels: Equatable {
 
     var preferredModelRaw: String? {
         option(matching: currentModelRaw)?.rawValue
-            ?? Self.normalizedRawModel(currentModelRaw)
             ?? options.first(where: \.isProviderDefault)?.rawValue
             ?? options.first(where: { !$0.isPlaceholderDefault })?.rawValue
             ?? options.first?.rawValue
@@ -365,7 +364,11 @@ enum PiDynamicModelStore {
         if let matched = options.first(where: { $0.rawValue.caseInsensitiveCompare(trimmed) == .orderedSame }) {
             return matched.rawValue
         }
-        return trimmed
+        let knownModelIDs = Set(options.map(\.rawValue))
+        guard let specifier = PiModelSpecifier(raw: trimmed, knownModelIDs: knownModelIDs) else { return nil }
+        return options.first {
+            $0.rawValue.caseInsensitiveCompare(specifier.providerQualifiedModelRaw) == .orderedSame
+        }?.rawValue
     }
 
     private static func normalizedOptionalString(_ value: String?) -> String? {
@@ -404,6 +407,7 @@ final class AgentPiModelRegistry {
     static let shared = AgentPiModelRegistry()
 
     private let lock = NSLock()
+    private let persistenceLock = NSLock()
     private var liveSnapshots: [PiModelWorkspaceScope: PiDiscoveredModels] = [:]
     private var liveSignatures: [PiModelWorkspaceScope: PiDynamicModelSnapshotRecord] = [:]
     private var persistedSnapshots: [PiModelWorkspaceScope: PiDiscoveredModels] = [:]
@@ -412,6 +416,12 @@ final class AgentPiModelRegistry {
     private var standardStoreWarmTasks: [PiModelWorkspaceScope: Task<PiDiscoveredModels?, Never>] = [:]
     private var warmedStandardStoreScopes: Set<PiModelWorkspaceScope> = []
     private var standardStoreWarmGeneration: UInt64 = 0
+    private var persistenceGeneration: UInt64 = 0
+    #if DEBUG
+        private var beforePersistDiscoveredModelsHook: ((String?) -> Void)?
+        private var beforeApplyPersistedWarmHook: ((String?) -> Void)?
+        private var beforeRemovePersistedModelsHook: ((String?) -> Void)?
+    #endif
 
     private init() {}
 
@@ -435,10 +445,20 @@ final class AgentPiModelRegistry {
         if didChange {
             liveSnapshots[scope] = normalizedSnapshot
             liveSignatures[scope] = record
-            PiDynamicModelStore.save(normalizedSnapshot, workspacePath: scope.workspacePath)
         }
         persistedSnapshots[scope] = normalizedSnapshot
+        let generation = persistenceGeneration
+        #if DEBUG
+            let beforePersistHook = beforePersistDiscoveredModelsHook
+        #endif
         lock.unlock()
+
+        if didChange {
+            #if DEBUG
+                beforePersistHook?(scope.workspacePath)
+            #endif
+            persistSnapshotIfCurrent(normalizedSnapshot, record: record, scope: scope, generation: generation)
+        }
 
         return didChange
     }
@@ -446,6 +466,7 @@ final class AgentPiModelRegistry {
     @discardableResult
     func clearDiscoveredModels(workspacePath: String? = nil) -> Bool {
         let scope = PiModelWorkspaceScope(workspacePath: workspacePath)
+        persistenceLock.lock()
         lock.lock()
         let removedLiveSnapshot = liveSnapshots.removeValue(forKey: scope) != nil
         let removedPersistedSnapshot = persistedSnapshots.removeValue(forKey: scope) != nil
@@ -455,8 +476,17 @@ final class AgentPiModelRegistry {
         settledScopes.remove(scope)
         warmedStandardStoreScopes.remove(scope)
         standardStoreWarmTasks.removeValue(forKey: scope)?.cancel()
+        standardStoreWarmGeneration &+= 1
+        persistenceGeneration &+= 1
+        #if DEBUG
+            let beforeRemoveHook = beforeRemovePersistedModelsHook
+        #endif
         lock.unlock()
+        #if DEBUG
+            beforeRemoveHook?(scope.workspacePath)
+        #endif
         PiDynamicModelStore.remove(workspacePath: scope.workspacePath)
+        persistenceLock.unlock()
         return hadSnapshot
     }
 
@@ -469,6 +499,10 @@ final class AgentPiModelRegistry {
 
     func resolvedSnapshot(workspacePath: String? = nil) -> PiDiscoveredModels? {
         snapshotAfterSynchronousWarmIfNeeded(scope: PiModelWorkspaceScope(workspacePath: workspacePath))
+    }
+
+    func cachedSnapshot(workspacePath: String? = nil) -> PiDiscoveredModels? {
+        snapshotFromMemory(scope: PiModelWorkspaceScope(workspacePath: workspacePath))
     }
 
     func catalogState(workspacePath: String? = nil) -> PiModelCatalogState {
@@ -524,8 +558,8 @@ final class AgentPiModelRegistry {
             task = existing
         } else {
             let workspacePath = scope.workspacePath
-            let newTask = Task.detached(priority: .utility) {
-                PiDynamicModelStore.load(workspacePath: workspacePath)
+            let newTask = Task.detached(priority: .utility) { [weak self] in
+                self?.loadPersistedSnapshot(workspacePath: workspacePath)
             }
             standardStoreWarmTasks[scope] = newTask
             task = newTask
@@ -533,6 +567,14 @@ final class AgentPiModelRegistry {
         lock.unlock()
 
         let loadedSnapshot = await task.value
+        #if DEBUG
+            let beforeApplyWarmHook: ((String?) -> Void)? = {
+                lock.lock()
+                defer { lock.unlock() }
+                return beforeApplyPersistedWarmHook
+            }()
+            beforeApplyWarmHook?(scope.workspacePath)
+        #endif
 
         lock.lock()
         guard generation == standardStoreWarmGeneration else {
@@ -634,6 +676,62 @@ final class AgentPiModelRegistry {
         return (liveSnapshots[scope] ?? persistedSnapshots[scope])?.retainingPiReportedModelOptions()
     }
 
+    private func loadPersistedSnapshot(workspacePath: String?) -> PiDiscoveredModels? {
+        persistenceLock.lock()
+        defer { persistenceLock.unlock() }
+        return PiDynamicModelStore.load(workspacePath: workspacePath)
+    }
+
+    private func persistSnapshotIfCurrent(
+        _ snapshot: PiDiscoveredModels,
+        record: PiDynamicModelSnapshotRecord,
+        scope: PiModelWorkspaceScope,
+        generation: UInt64
+    ) {
+        persistenceLock.lock()
+        defer { persistenceLock.unlock() }
+
+        lock.lock()
+        let currentRecordBeforeSave = liveSignatures[scope]
+        let generationBeforeSave = persistenceGeneration
+        lock.unlock()
+
+        guard generationBeforeSave == generation,
+              currentRecordBeforeSave == record
+        else {
+            reconcilePersistedSnapshot(scope: scope, savedRecord: record, savedGeneration: generation)
+            return
+        }
+
+        PiDynamicModelStore.save(snapshot, workspacePath: scope.workspacePath)
+        reconcilePersistedSnapshot(scope: scope, savedRecord: record, savedGeneration: generation)
+    }
+
+    private func reconcilePersistedSnapshot(
+        scope: PiModelWorkspaceScope,
+        savedRecord: PiDynamicModelSnapshotRecord,
+        savedGeneration: UInt64
+    ) {
+        lock.lock()
+        let currentRecord = liveSignatures[scope]
+        let currentSnapshot = liveSnapshots[scope]
+        let currentGeneration = persistenceGeneration
+        lock.unlock()
+
+        guard currentGeneration == savedGeneration,
+              currentRecord == savedRecord
+        else {
+            if currentRecord != nil,
+               let currentSnapshot
+            {
+                PiDynamicModelStore.save(currentSnapshot, workspacePath: scope.workspacePath)
+            } else {
+                PiDynamicModelStore.remove(workspacePath: scope.workspacePath)
+            }
+            return
+        }
+    }
+
     private func snapshotAfterSynchronousWarmIfNeeded(scope: PiModelWorkspaceScope) -> PiDiscoveredModels? {
         lock.lock()
         if let snapshot = (liveSnapshots[scope] ?? persistedSnapshots[scope])?.retainingPiReportedModelOptions() {
@@ -648,7 +746,15 @@ final class AgentPiModelRegistry {
         let workspacePath = scope.workspacePath
         lock.unlock()
 
-        let loadedSnapshot = PiDynamicModelStore.load(workspacePath: workspacePath)
+        let loadedSnapshot = loadPersistedSnapshot(workspacePath: workspacePath)
+        #if DEBUG
+            let beforeApplyWarmHook: ((String?) -> Void)? = {
+                lock.lock()
+                defer { lock.unlock() }
+                return beforeApplyPersistedWarmHook
+            }()
+            beforeApplyWarmHook?(scope.workspacePath)
+        #endif
 
         lock.lock()
         guard generation == standardStoreWarmGeneration else {
@@ -676,6 +782,7 @@ final class AgentPiModelRegistry {
 
     #if DEBUG
         func test_reset() {
+            persistenceLock.lock()
             lock.lock()
             liveSnapshots.removeAll()
             liveSignatures.removeAll()
@@ -688,8 +795,13 @@ final class AgentPiModelRegistry {
             standardStoreWarmTasks.removeAll()
             warmedStandardStoreScopes.removeAll()
             standardStoreWarmGeneration &+= 1
+            persistenceGeneration &+= 1
+            beforePersistDiscoveredModelsHook = nil
+            beforeApplyPersistedWarmHook = nil
+            beforeRemovePersistedModelsHook = nil
             lock.unlock()
             PiDynamicModelStore.remove()
+            persistenceLock.unlock()
         }
 
         func test_clearMemoryPreservingStore() {
@@ -705,6 +817,24 @@ final class AgentPiModelRegistry {
             standardStoreWarmTasks.removeAll()
             warmedStandardStoreScopes.removeAll()
             standardStoreWarmGeneration &+= 1
+            lock.unlock()
+        }
+
+        func test_setBeforePersistDiscoveredModelsHook(_ hook: ((String?) -> Void)?) {
+            lock.lock()
+            beforePersistDiscoveredModelsHook = hook
+            lock.unlock()
+        }
+
+        func test_setBeforeApplyPersistedWarmHook(_ hook: ((String?) -> Void)?) {
+            lock.lock()
+            beforeApplyPersistedWarmHook = hook
+            lock.unlock()
+        }
+
+        func test_setBeforeRemovePersistedModelsHook(_ hook: ((String?) -> Void)?) {
+            lock.lock()
+            beforeRemovePersistedModelsHook = hook
             lock.unlock()
         }
     #endif

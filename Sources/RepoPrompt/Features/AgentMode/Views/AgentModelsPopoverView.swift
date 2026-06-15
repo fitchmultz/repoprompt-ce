@@ -53,7 +53,7 @@ struct AgentModelsPopoverView: View {
     }
 
     private var availability: AgentModelCatalog.AvailabilityContext {
-        apiSettingsVM.agentModeAvailabilityContext
+        promptViewModel.workspaceScopedAgentAvailabilityContext(from: apiSettingsVM.agentModeAvailabilityContext)
     }
 
     private var roleResolutions: [MCPAgentRoleDefaultsService.RoleDefaultResolution] {

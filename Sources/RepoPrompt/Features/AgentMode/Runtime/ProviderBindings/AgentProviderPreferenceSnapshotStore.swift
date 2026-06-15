@@ -48,20 +48,23 @@ final class AgentProviderPreferenceSnapshotStore {
         selectedModelRaw: String? = nil,
         permissionProfile: AgentProviderPermissionProfile,
         isSubagent _: Bool,
-        externallyManagedReason: String?
+        externallyManagedReason: String?,
+        runtimePermissionOverride: AgentProviderRuntimePermissionBinding? = nil
     ) -> AgentProviderControlsBinding {
         let providerID = selectedAgent.providerBindingID
+        let runtimePermission = runtimePermissionOverride ?? runtimePermission(for: selectedAgent, profile: permissionProfile)
         let permission = permissionChromeBinding(
             for: providerID,
             profile: permissionProfile,
-            externallyManagedReason: externallyManagedReason
+            externallyManagedReason: externallyManagedReason,
+            runtimePermissionOverride: runtimePermissionOverride
         )
         return AgentProviderControlsBinding(
             revision: revision(for: providerID),
             selectedAgent: selectedAgent,
             providerID: providerID,
             permission: permission,
-            runtimePermission: runtimePermission(for: selectedAgent, profile: permissionProfile),
+            runtimePermission: runtimePermission,
             codexTools: providerID == .codex
                 ? codexToolSettingsBinding(profile: permissionProfile)
                 : nil,
@@ -240,7 +243,8 @@ final class AgentProviderPreferenceSnapshotStore {
     private func permissionChromeBinding(
         for providerID: AgentProviderBindingID,
         profile: AgentProviderPermissionProfile,
-        externallyManagedReason: String?
+        externallyManagedReason: String?,
+        runtimePermissionOverride: AgentProviderRuntimePermissionBinding? = nil
     ) -> AgentPermissionChromeBinding {
         switch providerID {
         case .codex:
@@ -324,7 +328,7 @@ final class AgentProviderPreferenceSnapshotStore {
                 }
             )
         case .pi:
-            let effective = effectivePiPermissionLevel(profile: profile)
+            let effective = runtimePermissionOverride?.piPermissionLevel ?? effectivePiPermissionLevel(profile: profile)
             return AgentPermissionChromeBinding(
                 providerID: providerID,
                 displayName: effective.displayName,

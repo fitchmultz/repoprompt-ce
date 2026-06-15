@@ -20,13 +20,15 @@ final class AgentSubagentPermissionsSettingsViewModel: ObservableObject {
     let diagnostics: AgentPermissionStorageDiagnosticsViewModel
 
     private let notificationCenter: NotificationCenter
+    private let onPolicyChanged: (() -> Void)?
     private var cancellables: Set<AnyCancellable> = []
 
     init(
         defaults: UserDefaults = .standard,
         securePermissions: AgentPermissionSecureStore? = nil,
         diagnostics: AgentPermissionStorageDiagnosticsViewModel? = nil,
-        notificationCenter: NotificationCenter = .default
+        notificationCenter: NotificationCenter = .default,
+        onPolicyChanged: (() -> Void)? = nil
     ) {
         self.defaults = defaults
         let resolvedSecure: AgentPermissionSecureStore? = if let securePermissions {
@@ -42,6 +44,7 @@ final class AgentSubagentPermissionsSettingsViewModel: ObservableObject {
             notificationCenter: notificationCenter
         )
         self.notificationCenter = notificationCenter
+        self.onPolicyChanged = onPolicyChanged
         globalPolicy = AgentModePermissionPreferences.subagentPermissionPolicy(
             defaults: defaults,
             secureStore: resolvedSecure
@@ -69,7 +72,7 @@ final class AgentSubagentPermissionsSettingsViewModel: ObservableObject {
             secureStore: securePermissions
         )
         // Re-read so failed secure writes snap back to the effective persisted value.
-        refreshFromStorage()
+        refreshFromStorage(notifyPolicyChange: true)
     }
 
     func setProviderPermissionLevel(
@@ -83,10 +86,12 @@ final class AgentSubagentPermissionsSettingsViewModel: ObservableObject {
             defaults: defaults,
             secureStore: securePermissions
         )
-        refreshFromStorage()
+        refreshFromStorage(notifyPolicyChange: true)
     }
 
-    func refreshFromStorage() {
+    func refreshFromStorage(notifyPolicyChange: Bool = false) {
+        let previousPolicy = globalPolicy
+        let previousProviderLevels = providerPermissionLevelsByID
         globalPolicy = AgentModePermissionPreferences.subagentPermissionPolicy(
             defaults: defaults,
             secureStore: securePermissions
@@ -97,6 +102,11 @@ final class AgentSubagentPermissionsSettingsViewModel: ObservableObject {
         )
         diagnostics.refresh()
         revision &+= 1
+        if notifyPolicyChange,
+           previousPolicy != globalPolicy || previousProviderLevels != providerPermissionLevelsByID
+        {
+            onPolicyChanged?()
+        }
     }
 
     func safeManagedSummaries(
@@ -127,8 +137,9 @@ final class AgentSubagentPermissionsSettingsViewModel: ObservableObject {
     private func subscribeToSecureStoreChanges() {
         notificationCenter.publisher(for: .agentPermissionSecureStoreDidChange)
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                self?.refreshFromStorage()
+            .sink { [weak self] notification in
+                let isSubagentDomain = notification.userInfo?[AgentPermissionSecureStoreNotificationKey.domain] as? String == AgentPermissionSecureDomain.subagent.rawValue
+                self?.refreshFromStorage(notifyPolicyChange: isSubagentDomain)
             }
             .store(in: &cancellables)
     }

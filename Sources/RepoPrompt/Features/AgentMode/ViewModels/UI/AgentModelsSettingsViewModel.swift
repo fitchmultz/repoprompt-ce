@@ -119,7 +119,7 @@ final class AgentModelsSettingsViewModel: ObservableObject {
     // MARK: - Public Derived Values
 
     var availability: AgentModelCatalog.AvailabilityContext {
-        apiSettingsVM.agentModeAvailabilityContext
+        promptVM.workspaceScopedAgentAvailabilityContext(from: apiSettingsVM.agentModeAvailabilityContext)
     }
 
     var hasConnectedCLIProvider: Bool {

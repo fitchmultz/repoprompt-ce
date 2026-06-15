@@ -196,6 +196,29 @@ final class AgentPermissionSecureStoreTests: XCTestCase {
         XCTAssertEqual(store.diagnostic(for: .subagent)?.kind, .keychainInteractionNotAllowed)
     }
 
+    func testTransientReadFailureDoesNotPoisonPermissionCache() throws {
+        let secureStrings = FakeSecurePlainStringStore(plainGetError: KeychainService.KeychainError.interactionNotAllowed)
+        let key = AgentPermissionSecureDomain.codex.storageKey
+        secureStrings.plainValues[key] = try encode(SecureCodexPermissionDocument(
+            schemaVersion: SecureCodexPermissionDocument.currentSchemaVersion,
+            approvalPolicyRaw: CodexAgentToolPreferences.ApprovalPolicy.never.persistedValue,
+            sandboxModeRaw: CodexAgentToolPreferences.SandboxMode.dangerFullAccess.persistedValue,
+            bashToolEnabled: true
+        ))
+        let store = makeStore(secureStrings: secureStrings)
+
+        let failClosed = store.codexPermissions()
+        secureStrings.plainGetError = nil
+        let recovered = store.codexPermissions()
+
+        XCTAssertEqual(failClosed.permissionLevel(), .defaultPermission)
+        XCTAssertEqual(failClosed.bashToolEnabled, false)
+        XCTAssertEqual(recovered.permissionLevel(), .fullAccess)
+        XCTAssertEqual(recovered.bashToolEnabled, true)
+        XCTAssertNil(store.diagnostic(for: .codex))
+        XCTAssertEqual(secureStrings.plainGetAccessModes.count, 2)
+    }
+
     func testMalformedCodexPlainDocumentFailsClosed() {
         let secureStrings = FakeSecurePlainStringStore()
         let key = AgentPermissionSecureDomain.codex.storageKey

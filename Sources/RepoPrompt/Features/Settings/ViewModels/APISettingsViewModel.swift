@@ -301,7 +301,7 @@ public class APISettingsViewModel: ObservableObject {
     private var cursorLogCollector: CLIProcessLogCollector?
 
     // pi RPC
-    @Published var isPiConnected: Bool = UserDefaults.standard.bool(forKey: "PiCLIConnected")
+    @Published var isPiConnected: Bool = false
     @Published var piError: String? = nil
     @Published private(set) var availablePiModelOptions: [AgentModelOption] = []
     private var piLogCollector: CLIProcessLogCollector?
@@ -530,7 +530,7 @@ public class APISettingsViewModel: ObservableObject {
         isCodexConnected = UserDefaults.standard.bool(forKey: "CodexCLIConnected")
         isOpenCodeConnected = UserDefaults.standard.bool(forKey: "OpenCodeCLIConnected")
         isCursorConnected = UserDefaults.standard.bool(forKey: "CursorCLIConnected")
-        isPiConnected = UserDefaults.standard.bool(forKey: "PiCLIConnected")
+        isPiConnected = piConnectionDefaults.bool(forKey: "PiCLIConnected")
         if wasCursorConnected != isCursorConnected {
             if isCursorConnected {
                 startCursorModelsSubscriptionIfNeeded(workspacePath: nil)
@@ -975,16 +975,20 @@ public class APISettingsViewModel: ObservableObject {
     private let aiQueriesService: AIQueriesService
     private let keyManager: KeyManager
     private let piModelPollingService: any PiModelPolling
+    private let piConnectionDefaults: UserDefaults
 
     init(
         aiQueriesService: AIQueriesService,
         keyManager: KeyManager,
         loadStoredDataOnInit: Bool = true,
-        piModelPollingService: any PiModelPolling = PiModelPollingService.shared
+        piModelPollingService: any PiModelPolling = PiModelPollingService.shared,
+        piConnectionDefaults: UserDefaults = .standard
     ) {
         self.aiQueriesService = aiQueriesService
         self.keyManager = keyManager
         self.piModelPollingService = piModelPollingService
+        self.piConnectionDefaults = piConnectionDefaults
+        isPiConnected = piConnectionDefaults.bool(forKey: "PiCLIConnected")
         installCLIConnectionObservers()
         if loadStoredDataOnInit {
             Task {
@@ -1033,7 +1037,7 @@ public class APISettingsViewModel: ObservableObject {
         }
         isCodexConnected = UserDefaults.standard.bool(forKey: "CodexCLIConnected")
         isOpenCodeConnected = UserDefaults.standard.bool(forKey: "OpenCodeCLIConnected")
-        isPiConnected = UserDefaults.standard.bool(forKey: "PiCLIConnected")
+        isPiConnected = piConnectionDefaults.bool(forKey: "PiCLIConnected")
 
         if let customConfig = try? CustomProviderConfiguration.load() {
             if let version = customConfig.apiVersion, !version.isEmpty {
@@ -1974,8 +1978,10 @@ public class APISettingsViewModel: ObservableObject {
         case .cursor:
             break
         case .pi:
-            isPiConnected = false
-            availablePiModelOptions = []
+            stopPiModelsSubscription(clearModels: true)
+            piPreflightTask?.cancel()
+            piPreflightTask = nil
+            applyPiDisconnected(errorMessage: nil)
         }
         await updateAvailableModels()
         resetPreferredModelIfNeeded(for: provider)
@@ -3429,8 +3435,6 @@ public class APISettingsViewModel: ObservableObject {
             }
             collector.append("pi RPC marked as connected")
             piLogCollector = nil
-            UserDefaults.standard.set(true, forKey: "PiCLIConnected")
-            NotificationCenter.default.post(name: .piConnectionChanged, object: nil)
             startPiModelsSubscriptionIfNeeded(workspacePath: nil)
             return true
         } catch {
@@ -3444,7 +3448,7 @@ public class APISettingsViewModel: ObservableObject {
     }
 
     func refreshPiModelCatalogIfConnected(workspacePath: String? = nil) {
-        guard isPiConnected || UserDefaults.standard.bool(forKey: "PiCLIConnected") else { return }
+        guard isPiConnected || piConnectionDefaults.bool(forKey: "PiCLIConnected") else { return }
         guard piPreflightTask == nil else { return }
         piPreflightTask = Task { [weak self, workspacePath] in
             guard let self else { return }
@@ -3471,8 +3475,6 @@ public class APISettingsViewModel: ObservableObject {
         stopPiModelsSubscription(clearModels: true)
         piPreflightTask?.cancel()
         piPreflightTask = nil
-        UserDefaults.standard.set(false, forKey: "PiCLIConnected")
-        NotificationCenter.default.post(name: .piConnectionChanged, object: nil)
         applyPiDisconnected(errorMessage: nil)
     }
 
@@ -3535,8 +3537,7 @@ public class APISettingsViewModel: ObservableObject {
             return false
         }
         collector?.append("Discovered \(snapshot.models.options.count) pi model option(s)")
-        piError = nil
-        isPiConnected = true
+        applyPiConnected()
         applyPiModelSnapshot(snapshot)
         return true
     }
@@ -3557,8 +3558,7 @@ public class APISettingsViewModel: ObservableObject {
                     guard let self else { return }
                     switch event {
                     case let .snapshot(snapshot):
-                        piError = nil
-                        isPiConnected = true
+                        applyPiConnected()
                         applyPiModelSnapshot(snapshot)
                     case let .failure(failure):
                         applyPiDisconnected(errorMessage: failure.message)
@@ -3588,10 +3588,19 @@ public class APISettingsViewModel: ObservableObject {
         Task { await updateAvailableModels() }
     }
 
+    private func applyPiConnected() {
+        piError = nil
+        isPiConnected = true
+        piConnectionDefaults.set(true, forKey: "PiCLIConnected")
+        NotificationCenter.default.post(name: .piConnectionChanged, object: nil)
+    }
+
     private func applyPiDisconnected(errorMessage: String?) {
         piError = errorMessage
         isPiConnected = false
         availablePiModelOptions = []
+        piConnectionDefaults.set(false, forKey: "PiCLIConnected")
+        NotificationCenter.default.post(name: .piConnectionChanged, object: nil)
         Task { await updateAvailableModels() }
     }
 

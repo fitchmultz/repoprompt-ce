@@ -2934,6 +2934,7 @@ final class WindowRoutingService: Service {
 
                     try await networkMgr.setActiveWindowForCurrentConnection(targetWindow.windowID)
                     try await MainActor.run {
+                        self.clearNonRunScopedBindingsAcrossWindows(for: connectionID)
                         try targetWindow.mcpServer.bindTabForConnection(
                             connectionID: connectionID,
                             clientName: clientName,
@@ -3005,6 +3006,7 @@ final class WindowRoutingService: Service {
 
                     if shouldBind, let connectionID {
                         try await MainActor.run {
+                            self.clearNonRunScopedBindingsAcrossWindows(for: connectionID)
                             try targetWindow.mcpServer.bindTabForConnection(
                                 connectionID: connectionID,
                                 clientName: clientName,

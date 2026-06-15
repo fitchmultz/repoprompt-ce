@@ -29,7 +29,9 @@ enum WindowStateCompositionFactory {
         windowID: Int,
         deferredInitialAgentSystemWorkspaceRefresh: Bool,
         sharedMCPService: MCPService,
+        settingsStore: GlobalSettingsStore? = nil,
         contextBuilderProviderFactory: ContextBuilderAgentViewModel.ProviderFactory? = nil,
+        contextBuilderPiModelPollingService: PiModelPolling = PiModelPollingService.shared,
         aiQueriesServiceFactory: ((_ keyManager: KeyManager) -> AIQueriesService)? = nil,
         workspaceFileContextStore injectedWorkspaceFileContextStore: WorkspaceFileContextStore? = nil,
         workspaceSwitchTimingPolicy: WorkspaceSwitchTimingPolicy = .production
@@ -48,7 +50,7 @@ enum WindowStateCompositionFactory {
         let apiSettingsViewModel = APISettingsViewModel(aiQueriesService: aiQueriesService, keyManager: keyManager)
 
         // 5) Settings Manager (per-window overlay)
-        let settingsManager = WindowSettingsManager(windowID: windowID)
+        let settingsManager = WindowSettingsManager(windowID: windowID, store: settingsStore)
 
         // 6) Prompt
         let promptManager = PromptViewModel(
@@ -126,7 +128,8 @@ enum WindowStateCompositionFactory {
             workspaceManager: workspaceManager,
             mcpServer: mcpServer,
             oracleViewModel: oracleViewModel,
-            providerFactory: contextBuilderProviderFactory
+            providerFactory: contextBuilderProviderFactory,
+            piModelPollingService: contextBuilderPiModelPollingService
         )
 
         // 13) Agent mode (for minimal agent UI)

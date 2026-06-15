@@ -19,10 +19,22 @@ import SwiftUI
 struct AgentPermissionsPopoverView: View {
     let windowID: Int
 
-    @StateObject private var subagentVM = AgentSubagentPermissionsSettingsViewModel()
+    @StateObject private var subagentVM: AgentSubagentPermissionsSettingsViewModel
     @ObservedObject private var fontScale = FontScaleManager.shared
     private var fontPreset: FontScalePreset {
         fontScale.preset
+    }
+
+    init(windowID: Int) {
+        self.windowID = windowID
+        _subagentVM = StateObject(wrappedValue: AgentSubagentPermissionsSettingsViewModel(
+            onPolicyChanged: {
+                WindowStatesManager.shared.allWindows
+                    .first { $0.windowID == windowID }?
+                    .agentModeViewModel
+                    .subagentPermissionPolicyDidChange()
+            }
+        ))
     }
 
     var body: some View {

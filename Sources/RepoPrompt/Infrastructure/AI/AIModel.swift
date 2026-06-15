@@ -570,7 +570,7 @@ public enum AIModel: Equatable, Hashable {
             return n
         }
         if case let .piCustom(n) = self {
-            if let option = AgentPiModelRegistry.shared.resolvedSnapshot()?.option(matching: n) {
+            if let option = AgentPiModelRegistry.shared.cachedSnapshot()?.option(matching: n) {
                 guard option.rawValue.caseInsensitiveCompare(n) == .orderedSame else {
                     return AgentModelCatalog.displayName(
                         for: n,

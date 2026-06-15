@@ -113,6 +113,107 @@ final class TabContextRoutingTests: XCTestCase {
     }
 
     @MainActor
+    func testManageWorkspacesSelectTabClearsStaleBindingInPreviousWindow() async throws {
+        let previousAutoStart = GlobalSettingsStore.shared.mcpAutoStart()
+        GlobalSettingsStore.shared.setMCPAutoStart(false, commit: false)
+        let windowA = WindowState()
+        let windowB = WindowState()
+        WindowStatesManager.shared.registerWindowState(windowA)
+        WindowStatesManager.shared.registerWindowState(windowB)
+        GlobalSettingsStore.shared.setMCPAutoStart(previousAutoStart, commit: false)
+        defer {
+            WindowStatesManager.shared.unregisterWindowState(windowA)
+            WindowStatesManager.shared.unregisterWindowState(windowB)
+        }
+
+        let rootA = try makeTemporaryDirectory(named: "legacy-select-window-a")
+        let rootB = try makeTemporaryDirectory(named: "legacy-select-window-b")
+        defer {
+            try? FileManager.default.removeItem(at: rootA.deletingLastPathComponent())
+            try? FileManager.default.removeItem(at: rootB.deletingLastPathComponent())
+        }
+        let tabA = UUID()
+        let tabB = UUID()
+        let workspaceA = try await configureWorkspace(windowA, root: rootA, tabID: tabA, tabName: "A")
+        let workspaceB = try await configureWorkspace(windowB, root: rootB, tabID: tabB, tabName: "B")
+        let connectionID = UUID()
+        windowA.mcpServer.installTabContext(
+            clientID: connectionID.uuidString,
+            clientName: "legacy-select-client",
+            windowID: windowA.windowID,
+            workspaceID: workspaceA.id,
+            snapshot: ComposeTabState(id: tabA, name: "A"),
+            signalRouting: false
+        )
+        XCTAssertEqual(windowA.mcpServer.boundTabID(forConnection: connectionID), tabA)
+
+        let service = WindowRoutingService(windowStates: .shared, networkMgr: .shared)
+        defer { ServiceRegistry.unregister(service) }
+        let manageWorkspaces = try await waitForRoutingTool(service, named: MCPGlobalToolName.manageWorkspaces)
+        _ = try await ServerNetworkManager.withConnectionID(connectionID) {
+            try await manageWorkspaces([
+                "action": .string("select_tab"),
+                "window_id": .int(windowB.windowID),
+                "tab": .string(tabB.uuidString)
+            ])
+        }
+
+        XCTAssertNil(windowA.mcpServer.boundTabID(forConnection: connectionID))
+        XCTAssertEqual(windowB.mcpServer.boundTabID(forConnection: connectionID), tabB)
+        XCTAssertEqual(windowB.workspaceManager.activeWorkspace?.id, workspaceB.id)
+    }
+
+    @MainActor
+    func testManageWorkspacesCreateTabClearsStaleBindingInPreviousWindow() async throws {
+        let previousAutoStart = GlobalSettingsStore.shared.mcpAutoStart()
+        GlobalSettingsStore.shared.setMCPAutoStart(false, commit: false)
+        let windowA = WindowState()
+        let windowB = WindowState()
+        WindowStatesManager.shared.registerWindowState(windowA)
+        WindowStatesManager.shared.registerWindowState(windowB)
+        GlobalSettingsStore.shared.setMCPAutoStart(previousAutoStart, commit: false)
+        defer {
+            WindowStatesManager.shared.unregisterWindowState(windowA)
+            WindowStatesManager.shared.unregisterWindowState(windowB)
+        }
+
+        let rootA = try makeTemporaryDirectory(named: "legacy-create-window-a")
+        let rootB = try makeTemporaryDirectory(named: "legacy-create-window-b")
+        defer {
+            try? FileManager.default.removeItem(at: rootA.deletingLastPathComponent())
+            try? FileManager.default.removeItem(at: rootB.deletingLastPathComponent())
+        }
+        let tabA = UUID()
+        let tabB = UUID()
+        let workspaceA = try await configureWorkspace(windowA, root: rootA, tabID: tabA, tabName: "A")
+        _ = try await configureWorkspace(windowB, root: rootB, tabID: tabB, tabName: "B")
+        let connectionID = UUID()
+        windowA.mcpServer.installTabContext(
+            clientID: connectionID.uuidString,
+            clientName: "legacy-create-client",
+            windowID: windowA.windowID,
+            workspaceID: workspaceA.id,
+            snapshot: ComposeTabState(id: tabA, name: "A"),
+            signalRouting: false
+        )
+
+        let service = WindowRoutingService(windowStates: .shared, networkMgr: .shared)
+        defer { ServiceRegistry.unregister(service) }
+        let manageWorkspaces = try await waitForRoutingTool(service, named: MCPGlobalToolName.manageWorkspaces)
+        _ = try await ServerNetworkManager.withConnectionID(connectionID) {
+            try await manageWorkspaces([
+                "action": .string("create_tab"),
+                "window_id": .int(windowB.windowID),
+                "name": .string("Created by MCP")
+            ])
+        }
+
+        XCTAssertNil(windowA.mcpServer.boundTabID(forConnection: connectionID))
+        let boundTabID = try XCTUnwrap(windowB.mcpServer.boundTabID(forConnection: connectionID))
+        XCTAssertEqual(windowB.workspaceManager.composeTab(with: boundTabID)?.name, "Created by MCP")
+    }
+
+    @MainActor
     func testPendingRunScopedStoreRequiresExactRunHint() {
         var store = MCPServerViewModel.PendingRunScopedContextStore()
         let runID = UUID()
@@ -1458,6 +1559,48 @@ final class TabContextRoutingTests: XCTestCase {
             .appendingPathComponent(name, isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url.standardizedFileURL
+    }
+
+    @MainActor
+    private func configureWorkspace(
+        _ window: WindowState,
+        root: URL,
+        tabID: UUID,
+        tabName: String
+    ) async throws -> WorkspaceModel {
+        let workspace = window.workspaceManager.createWorkspace(
+            name: "Routing \(tabName) \(UUID().uuidString.prefix(8))",
+            repoPaths: [root.path],
+            ephemeral: true
+        )
+        let switchResult = await window.workspaceManager.switchWorkspace(
+            to: workspace,
+            saveState: false,
+            reason: "tabRoutingLegacyBindingTest"
+        )
+        XCTAssertEqual(switchResult, .switched)
+        let workspaceIndex = try XCTUnwrap(window.workspaceManager.workspaces.firstIndex { $0.id == workspace.id })
+        window.workspaceManager.workspaces[workspaceIndex].composeTabs = [ComposeTabState(id: tabID, name: tabName)]
+        window.workspaceManager.workspaces[workspaceIndex].activeComposeTabID = tabID
+        let reactivationResult = await window.workspaceManager.reactivateWorkspaceAfterReplacement(
+            window.workspaceManager.workspaces[workspaceIndex],
+            reason: "tabRoutingLegacyBindingTestTabs"
+        )
+        XCTAssertEqual(reactivationResult, .switched)
+        let activeWorkspace = try XCTUnwrap(window.workspaceManager.activeWorkspace)
+        window.promptManager.loadComposeTabsFromWorkspace(activeWorkspace, syncPromptText: true)
+        _ = try await WorkspaceRootLoadTestSupport.loadRootMatchingCurrentFileSystemSettings(in: window, path: root.path)
+        return activeWorkspace
+    }
+
+    private func waitForRoutingTool(_ service: WindowRoutingService, named name: String) async throws -> RepoPrompt.Tool {
+        for _ in 0 ..< 100 {
+            if let tool = await service.tools.first(where: { $0.name == name }) {
+                return tool
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        throw XCTSkip("Routing service did not publish \(name)")
     }
 
     private func makeWorktreeBinding(

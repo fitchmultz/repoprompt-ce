@@ -632,7 +632,8 @@ struct MCPServerPopoverContent: View {
                 options: promptViewModel.contextBuilderModelOptions(for: agent),
                 selectedAgent: promptViewModel.contextBuilderAgent,
                 selectedModelRaw: promptViewModel.contextBuilderAgentModelRaw,
-                includePiThinkingLevelOptions: true
+                includePiThinkingLevelOptions: true,
+                piCatalogState: agent == .pi ? AgentModelCatalog.piCatalogState(workspacePath: promptViewModel.piModelCatalogWorkspacePath) : nil
             ) { selectedAgent, selectedOption in
                 promptViewModel.contextBuilderAgent = selectedAgent
                 promptViewModel.selectContextBuilderAgentModel(rawModel: selectedOption.rawValue)

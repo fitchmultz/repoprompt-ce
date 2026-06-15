@@ -138,6 +138,141 @@ final class ContextBuilderModelStartupSelectionTests: XCTestCase {
         XCTAssertTrue([AgentProviderKind.openCode, .cursor].contains(resolved.agent))
     }
 
+    func testPersistedPiSelectionRestoresFromWorkspaceScopedCatalogOnly() throws {
+        AgentPiModelRegistry.shared.test_reset()
+        addTeardownBlock { AgentPiModelRegistry.shared.test_reset() }
+
+        let workspacePath = "/tmp/context-builder-pi-workspace-\(UUID().uuidString)"
+        let piModelRaw = "openai-codex/gpt-5.5"
+        XCTAssertTrue(AgentPiModelRegistry.shared.updateDiscoveredModels(
+            PiDiscoveredModels(
+                options: [AgentModelOption(rawValue: piModelRaw, displayName: "GPT 5.5", description: nil, isDefault: true)],
+                currentModelRaw: piModelRaw
+            ),
+            workspacePath: workspacePath
+        ))
+
+        let unscopedFallback = try XCTUnwrap(AutoRecommendationEngine.resolveContextBuilderSelection(
+            persistedAgentRaw: AgentProviderKind.pi.rawValue,
+            persistedModelRaw: piModelRaw,
+            availability: .init(
+                claudeCodeAvailable: false,
+                codexAvailable: true,
+                openCodeAvailable: false,
+                cursorAvailable: false,
+                piAvailable: true
+            )
+        ))
+        XCTAssertNotEqual(unscopedFallback.agent, .pi)
+
+        let scopedRestoration = try XCTUnwrap(AutoRecommendationEngine.resolveContextBuilderSelection(
+            persistedAgentRaw: AgentProviderKind.pi.rawValue,
+            persistedModelRaw: piModelRaw,
+            availability: AgentModelCatalog.AvailabilityContext(
+                claudeCodeAvailable: false,
+                codexAvailable: true,
+                openCodeAvailable: false,
+                cursorAvailable: false,
+                piAvailable: true
+            ).withPiWorkspacePath(workspacePath)
+        ))
+        XCTAssertEqual(scopedRestoration.agent, .pi)
+        XCTAssertEqual(scopedRestoration.modelRaw, piModelRaw)
+    }
+
+    func testContextBuilderStartsPiPollingBeforePiIsSelected() async throws {
+        AgentPiModelRegistry.shared.test_reset()
+        addTeardownBlock { AgentPiModelRegistry.shared.test_reset() }
+        let polling = RecordingPiModelPollingService()
+        let composition = WindowStateCompositionFactory.make(
+            windowID: -812,
+            deferredInitialAgentSystemWorkspaceRefresh: true,
+            sharedMCPService: MCPService(),
+            contextBuilderPiModelPollingService: polling
+        )
+        await composition.workspaceManager.awaitInitialized()
+
+        let workspaceRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ContextBuilderPiPolling-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: workspaceRoot, withIntermediateDirectories: true)
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: workspaceRoot)
+        }
+        let workspace = composition.workspaceManager.createWorkspace(
+            name: "Context Builder pi polling",
+            repoPaths: [workspaceRoot.path],
+            ephemeral: true
+        )
+        _ = await composition.workspaceManager.switchWorkspace(
+            to: workspace,
+            saveState: false,
+            reason: "ContextBuilderPiPollingTest"
+        )
+        composition.apiSettingsViewModel.isPiConnected = true
+
+        let subscribedWorkspacePath = try await polling.waitForSubscription(matching: workspaceRoot.path)
+        XCTAssertEqual(subscribedWorkspacePath, AgentPiModelRegistry.canonicalWorkspacePath(workspaceRoot.path))
+        XCTAssertEqual(
+            composition.contextBuilderAgentViewModel.test_piModelsSubscribedWorkspacePath(),
+            AgentPiModelRegistry.canonicalWorkspacePath(workspaceRoot.path)
+        )
+        XCTAssertEqual(composition.contextBuilderAgentViewModel.piCatalogStateForCurrentWorkspace(), .loading)
+        XCTAssertNotEqual(composition.contextBuilderAgentViewModel.selectedAgent, .pi)
+    }
+
+    func testPromptViewModelRestoresPersistedPiContextBuilderSelectionFromWorkspaceCatalog() async throws {
+        AgentPiModelRegistry.shared.test_reset()
+        addTeardownBlock { AgentPiModelRegistry.shared.test_reset() }
+        let settingsFixture = try makeStoreFixture()
+
+        let workspaceRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PromptPiContextBuilderRestore-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: workspaceRoot, withIntermediateDirectories: true)
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: workspaceRoot)
+        }
+        let piModelRaw = "openai-codex/gpt-5.5"
+        XCTAssertTrue(AgentPiModelRegistry.shared.updateDiscoveredModels(
+            PiDiscoveredModels(
+                options: [AgentModelOption(rawValue: piModelRaw, displayName: "GPT 5.5", description: nil, isDefault: true)],
+                currentModelRaw: piModelRaw
+            ),
+            workspacePath: workspaceRoot.path
+        ))
+        settingsFixture.store.setGlobalContextBuilderAgentSelection(
+            agentRaw: AgentProviderKind.pi.rawValue,
+            modelRaw: piModelRaw,
+            markUserDefined: true
+        )
+
+        let composition = WindowStateCompositionFactory.make(
+            windowID: -813,
+            deferredInitialAgentSystemWorkspaceRefresh: true,
+            sharedMCPService: MCPService(),
+            settingsStore: settingsFixture.store,
+            contextBuilderPiModelPollingService: RecordingPiModelPollingService()
+        )
+        await composition.workspaceManager.awaitInitialized()
+        let workspace = composition.workspaceManager.createWorkspace(
+            name: "Prompt pi Context Builder restore",
+            repoPaths: [workspaceRoot.path],
+            ephemeral: true
+        )
+        _ = await composition.workspaceManager.switchWorkspace(
+            to: workspace,
+            saveState: false,
+            reason: "PromptPiContextBuilderRestoreTest"
+        )
+        composition.apiSettingsViewModel.isPiConnected = true
+        composition.apiSettingsViewModel.test_completeContextBuilderProviderValidation(verifiedProviders: [.pi])
+
+        let didRestore = await eventually {
+            composition.promptManager.contextBuilderAgent == .pi
+                && composition.promptManager.contextBuilderAgentModelRaw == piModelRaw
+        }
+        XCTAssertTrue(didRestore)
+    }
+
     func testUnavailablePersistedSelectionFallsBackToRecommendedAvailableProvider() throws {
         let resolved = try XCTUnwrap(AutoRecommendationEngine.resolveContextBuilderSelection(
             persistedAgentRaw: AgentProviderKind.claudeCode.rawValue,
@@ -450,6 +585,20 @@ final class ContextBuilderModelStartupSelectionTests: XCTestCase {
         XCTAssertTrue(viewModel.contextBuilderRestorationAvailabilityContext.claudeCodeAvailable)
     }
 
+    private func eventually(
+        timeout: TimeInterval = 1,
+        condition: @MainActor @escaping () async -> Bool
+    ) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if await condition() {
+                return true
+            }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        return await condition()
+    }
+
     private func makeStoreFixture() throws -> (
         store: GlobalSettingsStore,
         defaults: UserDefaults,
@@ -473,6 +622,39 @@ final class ContextBuilderModelStartupSelectionTests: XCTestCase {
             fileURL: temp.appendingPathComponent("Settings/globalSettings.json")
         )
         return (GlobalSettingsStore(defaults: defaults, fileStore: fileStore), defaults, fileStore)
+    }
+}
+
+private actor RecordingPiModelPollingService: PiModelPolling {
+    private var subscriptions: [String?] = []
+
+    func latestSnapshot() async -> PiModelPollingService.Snapshot? {
+        nil
+    }
+
+    func discoverOnce(workspacePath _: String?) async throws -> PiModelPollingService.Snapshot? {
+        nil
+    }
+
+    func subscribe(workspacePath: String?) async -> AsyncStream<PiModelPollingService.Event> {
+        subscriptions.append(workspacePath)
+        if let workspacePath {
+            AgentPiModelRegistry.shared.setRefreshInFlight(true, workspacePath: workspacePath)
+        }
+        return AsyncStream { _ in }
+    }
+
+    func waitForSubscription(matching workspacePath: String, timeout: TimeInterval = 2) async throws -> String? {
+        let deadline = Date().addingTimeInterval(timeout)
+        let canonicalWorkspacePath = AgentPiModelRegistry.canonicalWorkspacePath(workspacePath) ?? workspacePath
+        while Date() < deadline {
+            if let match = subscriptions.last(where: { $0 == canonicalWorkspacePath }) {
+                return match
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTFail("Timed out waiting for pi model subscription for \(canonicalWorkspacePath)")
+        return nil
     }
 }
 

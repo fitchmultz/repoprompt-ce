@@ -677,6 +677,7 @@ final class AgentPermissionSecureStore {
                 failure: StoredDocumentFailure(kind: kind, message: sanitizedDiagnosticMessage(domain: domain, kind: kind, error: error)),
                 failClosedDocument: failClosedDocument,
                 cache: &cache,
+                cacheFailure: false,
                 deferred: &effects
             )
         }
@@ -767,11 +768,14 @@ final class AgentPermissionSecureStore {
         failure: StoredDocumentFailure,
         failClosedDocument: Document,
         cache: inout Document?,
+        cacheFailure: Bool = true,
         deferred effects: inout DeferredSideEffects
     ) -> Document {
         recordDiagnostic(domain: domain, kind: failure.kind, message: failure.message)
         effects.requestDiagnosticsNotification(for: domain)
-        cache = failClosedDocument
+        if cacheFailure {
+            cache = failClosedDocument
+        }
         return failClosedDocument
     }
 

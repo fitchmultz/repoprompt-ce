@@ -54,6 +54,7 @@ struct AgentModelOptionsMenuContent: View {
     let options: [AgentModelOption]
     let selectedAgent: AgentProviderKind
     let selectedModelRaw: String
+    var piCatalogState: PiModelCatalogState?
     let onSelect: (AgentProviderKind, AgentModelOption) -> Void
 
     var body: some View {
@@ -104,7 +105,7 @@ struct AgentModelOptionsMenuContent: View {
             let piKnownModelIDs = AgentModelCatalog.piKnownModelIDs(from: options)
             let piMenu = AgentModelCatalog.piMenu(for: options, knownModelIDs: piKnownModelIDs)
             if options.isEmpty {
-                Button(piCatalogEmptyTitle(state: AgentModelCatalog.piCatalogState())) {}
+                Button(piCatalogEmptyTitle(state: piCatalogState ?? .unavailable)) {}
                     .disabled(true)
             }
             if let defaultOption = piMenu.defaultOption {
@@ -453,7 +454,7 @@ enum AgentModelStableMenuItems {
         onSelect: @escaping (AgentProviderKind, AgentModelOption) -> Void
     ) -> [StableMenuItem] {
         guard !options.isEmpty else {
-            return [.message(piCatalogEmptyTitle(state: catalogState ?? AgentModelCatalog.piCatalogState()))]
+            return [.message(piCatalogEmptyTitle(state: catalogState ?? .unavailable))]
         }
         let piKnownModelIDs = AgentModelCatalog.piKnownModelIDs(from: options)
         let piMenu = AgentModelCatalog.piMenu(

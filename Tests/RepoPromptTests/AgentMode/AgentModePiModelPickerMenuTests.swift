@@ -46,6 +46,20 @@ final class AgentModePiModelPickerMenuTests: XCTestCase {
         XCTAssertEqual(AgentHandoffPopover.emptyModelMenuTitle(for: .pi, piWorkspacePath: workspace), "Loading pi models…")
     }
 
+    func testPiStableMenuWithoutExplicitCatalogStateDoesNotReadGlobalFallback() {
+        AgentPiModelRegistry.shared.setRefreshInFlight(true)
+
+        let menu = AgentModelStableMenuItems.agentSubmenu(
+            agentKind: .pi,
+            options: [],
+            selectedAgent: .pi,
+            selectedModelRaw: AgentModel.defaultModel.rawValue,
+            includePlaceholderDefault: false
+        ) { _, _ in }
+
+        XCTAssertEqual(menu.testSubmenuItems?.map(\.title), ["No pi models available"])
+    }
+
     func testInputBarPiMenuGroupsProviderThenModelWithoutThinkingLevelVariants() throws {
         let items = AgentModelStableMenuItems.modelItems(
             agentKind: .pi,

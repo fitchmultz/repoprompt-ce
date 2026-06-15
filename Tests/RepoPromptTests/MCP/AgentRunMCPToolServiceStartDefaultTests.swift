@@ -105,6 +105,27 @@ final class AgentRunMCPToolServiceStartDefaultTests: XCTestCase {
         XCTAssertFalse(snapshot.runtimePermission.piAllowsMutatingBuiltInsWithoutApproval)
     }
 
+    func testActivePiRuntimePermissionOverrideWinsOverChangedStoredPreference() throws {
+        let suiteName = "AgentRunMCPToolServiceStartDefaultTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.removePersistentDomain(forName: suiteName)
+        PiAgentToolPreferences.setPermissionLevel(.readOnly, defaults: defaults)
+        let service = makeBindingService(defaults: defaults)
+
+        let snapshot = service.controlsBinding(
+            selectedAgent: .pi,
+            permissionProfile: .userConfigured,
+            isSubagent: false,
+            externallyManagedReason: nil,
+            runtimePermissionOverride: AgentProviderRuntimePermissionBinding(piPermissionLevel: .fullAccess)
+        )
+
+        XCTAssertEqual(snapshot.permission.displayName, PiAgentToolPreferences.PermissionLevel.fullAccess.displayName)
+        XCTAssertEqual(snapshot.runtimePermission.piPermissionLevel, .fullAccess)
+        XCTAssertTrue(snapshot.runtimePermission.piAllowsMutatingBuiltInsWithoutApproval)
+    }
+
     func testCustomPiOverrideWinsOverSafeManagedDefaults() throws {
         let suiteName = "AgentRunMCPToolServiceStartDefaultTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))

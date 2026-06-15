@@ -74,6 +74,7 @@ enum PiRepoPromptBridgeExtensionInstaller {
             .appendingPathComponent("PiBridge", isDirectory: true)
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         try repairStaleManagedWindowExtensions(directory: directory, fileManager: fileManager, cliPath: cliPath)
+        try removeOtherManagedWindowExtensions(directory: directory, activeWindowID: windowID, fileManager: fileManager, cliPath: cliPath)
         let extensionURL = managedExtensionURL(directory: directory, windowID: windowID)
         let source = extensionSource(windowID: windowID, cliPath: cliPath)
         if let existing = try? String(contentsOf: extensionURL, encoding: .utf8), existing == source {
@@ -145,6 +146,19 @@ enum PiRepoPromptBridgeExtensionInstaller {
             } else {
                 try fileManager.removeItem(at: status.extensionURL)
             }
+        }
+    }
+
+    static func removeOtherManagedWindowExtensions(
+        directory: URL,
+        activeWindowID: Int,
+        fileManager: FileManager = .default,
+        cliPath: String
+    ) throws {
+        for status in managedWindowInstallStatuses(directory: directory, fileManager: fileManager, cliPath: cliPath)
+            where status.status != .installedByOther && status.windowID != activeWindowID
+        {
+            try fileManager.removeItem(at: status.extensionURL)
         }
     }
 

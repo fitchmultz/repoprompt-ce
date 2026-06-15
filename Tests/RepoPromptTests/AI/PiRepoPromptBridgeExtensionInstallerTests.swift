@@ -34,7 +34,7 @@ final class PiRepoPromptBridgeExtensionInstallerTests: XCTestCase {
         )
     }
 
-    func testManagedInstallUsesWindowScopedBridgePath() throws {
+    func testManagedInstallUsesSingleActiveWindowScopedBridgePath() throws {
         let home = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: home) }
         let appSupport = home.appendingPathComponent("Application Support", isDirectory: true)
@@ -47,9 +47,8 @@ final class PiRepoPromptBridgeExtensionInstallerTests: XCTestCase {
         XCTAssertEqual(first.lastPathComponent, "repoprompt-bridge-window-4.ts")
         XCTAssertEqual(second.lastPathComponent, "repoprompt-bridge-window-5.ts")
         XCTAssertNotEqual(first, second)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: first.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: first.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: second.path))
-        XCTAssertTrue(try String(contentsOf: first, encoding: .utf8).contains(#"const REPOPROMPT_WINDOW_ID: string | undefined = "4""#))
         XCTAssertTrue(try String(contentsOf: second, encoding: .utf8).contains(#"const REPOPROMPT_WINDOW_ID: string | undefined = "5""#))
     }
 
@@ -90,8 +89,8 @@ final class PiRepoPromptBridgeExtensionInstallerTests: XCTestCase {
         )
 
         _ = try PiRepoPromptBridgeExtensionInstaller.install(windowID: 5, fileManager: StubApplicationSupportFileManager(applicationSupportURL: appSupport), cliPath: cliPath)
-        let repairedStaleSource = try String(contentsOf: staleURL, encoding: .utf8)
-        XCTAssertEqual(repairedStaleSource, PiRepoPromptBridgeExtensionInstaller.extensionSource(windowID: 4, cliPath: cliPath))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staleURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: currentURL.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: unmanagedURL.path))
         XCTAssertEqual(
             PiRepoPromptBridgeExtensionInstaller.staleManagedWindowExtensionURLs(directory: directory, cliPath: cliPath),

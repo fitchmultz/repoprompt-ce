@@ -3,14 +3,24 @@ import XCTest
 
 @MainActor
 final class PiAPISettingsViewModelTests: XCTestCase {
+    private var piConnectionDefaults: UserDefaults!
+    private var piConnectionSuiteName: String!
+
     override func setUp() {
         super.setUp()
-        UserDefaults.standard.removeObject(forKey: "PiCLIConnected")
+        AgentPiModelRegistry.shared.test_reset()
+        piConnectionSuiteName = "PiAPISettingsViewModelTests.\(UUID().uuidString)"
+        piConnectionDefaults = UserDefaults(suiteName: piConnectionSuiteName)
+        piConnectionDefaults.removePersistentDomain(forName: piConnectionSuiteName)
     }
 
     override func tearDown() {
         AgentPiModelRegistry.shared.test_reset()
-        UserDefaults.standard.removeObject(forKey: "PiCLIConnected")
+        if let piConnectionDefaults, let piConnectionSuiteName {
+            piConnectionDefaults.removePersistentDomain(forName: piConnectionSuiteName)
+        }
+        piConnectionDefaults = nil
+        piConnectionSuiteName = nil
         super.tearDown()
     }
 
@@ -38,7 +48,7 @@ final class PiAPISettingsViewModelTests: XCTestCase {
         XCTAssertTrue(didPublishOracleModels)
         let discoveryCount = await polling.discoveryCount()
         XCTAssertEqual(discoveryCount, 1)
-        XCTAssertTrue(UserDefaults.standard.bool(forKey: "PiCLIConnected"))
+        XCTAssertTrue(piConnectionDefaults.bool(forKey: "PiCLIConnected"))
     }
 
     func testLoadAllKeysDoesNotAutoProbePiBeforeUserConnects() async {
@@ -63,7 +73,7 @@ final class PiAPISettingsViewModelTests: XCTestCase {
     }
 
     func testLoadAllKeysRefreshesPiOnlyAfterUserConnected() async {
-        UserDefaults.standard.set(true, forKey: "PiCLIConnected")
+        piConnectionDefaults.set(true, forKey: "PiCLIConnected")
         let polling = FakePiModelPolling(snapshot: Self.piSnapshot())
         let viewModel = makeViewModel(polling: polling)
 
@@ -81,7 +91,7 @@ final class PiAPISettingsViewModelTests: XCTestCase {
         let polling = FakePiModelPolling(snapshot: Self.piSnapshot())
         let viewModel = makeViewModel(polling: polling)
 
-        UserDefaults.standard.set(true, forKey: "PiCLIConnected")
+        piConnectionDefaults.set(true, forKey: "PiCLIConnected")
         viewModel.test_reloadCLIConnectionFlagsFromDefaults()
         let didConnect = await eventually { !viewModel.availablePiModelOptions.isEmpty }
 
@@ -90,7 +100,7 @@ final class PiAPISettingsViewModelTests: XCTestCase {
         let discoveryCount = await polling.discoveryCount()
         XCTAssertEqual(discoveryCount, 1)
 
-        UserDefaults.standard.set(false, forKey: "PiCLIConnected")
+        piConnectionDefaults.set(false, forKey: "PiCLIConnected")
         viewModel.test_reloadCLIConnectionFlagsFromDefaults()
         let didDisconnect = await eventually { !viewModel.isPiConnected }
 
@@ -102,7 +112,7 @@ final class PiAPISettingsViewModelTests: XCTestCase {
         let polling = FakePiModelPolling(snapshot: Self.piSnapshot())
         let viewModel = makeViewModel(polling: polling)
         _ = try await viewModel.testPiConnection()
-        XCTAssertTrue(UserDefaults.standard.bool(forKey: "PiCLIConnected"))
+        XCTAssertTrue(piConnectionDefaults.bool(forKey: "PiCLIConnected"))
 
         viewModel.disconnectPi()
         let reloadedViewModel = makeViewModel(polling: polling)
@@ -115,13 +125,14 @@ final class PiAPISettingsViewModelTests: XCTestCase {
 
         XCTAssertTrue(stayedIdle)
         XCTAssertFalse(reloadedViewModel.isPiConnected)
-        XCTAssertFalse(UserDefaults.standard.bool(forKey: "PiCLIConnected"))
+        XCTAssertFalse(piConnectionDefaults.bool(forKey: "PiCLIConnected"))
         XCTAssertEqual(reloadedViewModel.availablePiModelOptions, [])
         let discoveryCount = await polling.discoveryCount()
         XCTAssertEqual(discoveryCount, 1)
     }
 
-    func testPiConnectionFailureKeepsPiUnavailable() async throws {
+    func testPiConnectionFailureClearsStalePersistedAvailability() async throws {
+        piConnectionDefaults.set(true, forKey: "PiCLIConnected")
         let polling = FakePiModelPolling(error: PiRPCClient.ClientError.executableUnavailable("pi executable was not found."))
         let viewModel = makeViewModel(polling: polling)
 
@@ -134,6 +145,7 @@ final class PiAPISettingsViewModelTests: XCTestCase {
 
         XCTAssertFalse(viewModel.isPiConnected)
         XCTAssertFalse(viewModel.agentModeAvailabilityContext.piAvailable)
+        XCTAssertFalse(piConnectionDefaults.bool(forKey: "PiCLIConnected"))
         XCTAssertEqual(viewModel.availablePiModelOptions, [])
         let didClearOracleModels = await eventually { viewModel.availableModels.filter { $0.providerType == .pi }.isEmpty }
         XCTAssertTrue(didClearOracleModels)
@@ -142,8 +154,23 @@ final class PiAPISettingsViewModelTests: XCTestCase {
         XCTAssertEqual(discoveryCount, 1)
     }
 
+    func testDeletingPiKeyClearsPersistedAvailability() async throws {
+        piConnectionDefaults.set(true, forKey: "PiCLIConnected")
+        let polling = FakePiModelPolling(snapshot: Self.piSnapshot())
+        let viewModel = makeViewModel(polling: polling)
+        viewModel.test_reloadCLIConnectionFlagsFromDefaults()
+        XCTAssertTrue(viewModel.isPiConnected)
+
+        try await viewModel.deleteKey(for: .pi)
+
+        XCTAssertFalse(viewModel.isPiConnected)
+        XCTAssertFalse(viewModel.agentModeAvailabilityContext.piAvailable)
+        XCTAssertFalse(piConnectionDefaults.bool(forKey: "PiCLIConnected"))
+        XCTAssertEqual(viewModel.availablePiModelOptions, [])
+    }
+
     func testContextBuilderStartupValidationVerifiesPersistedPiConnectionAndStartsPolling() async {
-        UserDefaults.standard.set(true, forKey: "PiCLIConnected")
+        piConnectionDefaults.set(true, forKey: "PiCLIConnected")
         let polling = FakePiModelPolling(snapshot: Self.piSnapshot())
         let viewModel = makeViewModel(polling: polling)
 
@@ -257,7 +284,8 @@ final class PiAPISettingsViewModelTests: XCTestCase {
             aiQueriesService: AIQueriesService(keyManager: keyManager),
             keyManager: keyManager,
             loadStoredDataOnInit: false,
-            piModelPollingService: polling
+            piModelPollingService: polling,
+            piConnectionDefaults: piConnectionDefaults
         )
     }
 

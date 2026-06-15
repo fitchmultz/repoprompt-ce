@@ -5948,6 +5948,21 @@ final class AgentModeViewModel: ObservableObject {
         return true
     }
 
+    func subagentPermissionPolicyDidChange() {
+        var didChange = false
+        for session in sessions.values where usesSubagentPermissionPolicy(session) {
+            if refreshMCPPermissionProfileIfNeeded(for: session) {
+                didChange = true
+                if session.activeAgentSessionID != nil {
+                    scheduleSave(for: session.tabID)
+                }
+            }
+        }
+        guard didChange else { return }
+        refreshAutoEditPermissionGuidanceForActiveSession()
+        syncAllActiveUIState()
+    }
+
     func mcpActivateControlContext(
         forTabID tabID: UUID,
         sessionID: UUID,
@@ -7064,12 +7079,16 @@ final class AgentModeViewModel: ObservableObject {
             didChange = true
         }
 
+        let runtimePermissionOverride = session.selectedAgent == .pi && session.runState.isActive
+            ? session.activeRunRuntimePermission
+            : nil
         let nextControlsBinding = providerBindingService.controlsBinding(
             selectedAgent: session.selectedAgent,
             selectedModelRaw: session.selectedModelRaw,
             permissionProfile: session.permissionProfile,
             isSubagent: usesSubagentPolicy,
-            externallyManagedReason: externallyManagedReason
+            externallyManagedReason: externallyManagedReason,
+            runtimePermissionOverride: runtimePermissionOverride
         )
         if activeProviderControlsBinding != nextControlsBinding {
             activeProviderControlsBinding = nextControlsBinding

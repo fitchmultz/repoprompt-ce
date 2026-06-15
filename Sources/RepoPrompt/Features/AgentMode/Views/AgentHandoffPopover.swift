@@ -341,7 +341,8 @@ struct AgentHandoffPopover: View {
                 agentKind: agent,
                 options: options,
                 selectedAgent: selectedAgent,
-                selectedModelRaw: selectedModelRaw
+                selectedModelRaw: selectedModelRaw,
+                piCatalogState: agent == .pi ? AgentModelCatalog.piCatalogState(workspacePath: config.piWorkspacePathProvider()) : nil
             ) { agent, model in
                 selectHandoffModel(model, for: agent)
             }

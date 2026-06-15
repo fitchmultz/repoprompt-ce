@@ -2950,7 +2950,7 @@ def operation_smoke(repo_root: Path, args: Dict[str, Any]) -> int:
             session_id = find_session_id_in_text(stdout)
         if not session_id:
             print("ERROR: Could not parse session_id from agent_run start output.", flush=True)
-            print("Manual wait hint: rpce-cli-debug -w 1 -c agent_run -j '{\"op\":\"wait\",\"session_id\":\"<session_id>\",\"timeout\":120}'", flush=True)
+            print(f"Manual wait hint: rpce-cli-debug -w {window_id} -c agent_run -j '{{\"op\":\"wait\",\"session_id\":\"<session_id>\",\"timeout\":120}}'", flush=True)
             return 1
         wait_payload = {"op": "wait", "session_id": session_id, "timeout": agent_timeout}
         code, _stdout, _stderr = run_operation_command(

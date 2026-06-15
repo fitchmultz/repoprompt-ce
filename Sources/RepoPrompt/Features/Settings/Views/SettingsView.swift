@@ -476,7 +476,10 @@ struct SettingsView: View {
         let diagnostics = provider.diagnostics
         let subagent = AgentSubagentPermissionsSettingsViewModel(
             securePermissions: securePermissions,
-            diagnostics: diagnostics
+            diagnostics: diagnostics,
+            onPolicyChanged: { [weak agentModeVM = windowState.agentModeViewModel] in
+                agentModeVM?.subagentPermissionPolicyDidChange()
+            }
         )
         return (provider, subagent, diagnostics)
     }

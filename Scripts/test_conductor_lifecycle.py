@@ -835,6 +835,27 @@ class SmokeOperationTests(unittest.TestCase):
             payload = json.loads(call[call.index("-j") + 1])
             self.assertEqual(payload["_windowID"], 7)
 
+    def test_agent_smoke_session_parse_failure_hint_uses_requested_window(self) -> None:
+        def fake_command(name: str, _argv: list[str], *_args: object, **_kwargs: object) -> tuple[int, str, str]:
+            if name == "tree roots":
+                return 0, "## File Tree ✅\n- **Roots**: 1\n/tmp/repo\n", ""
+            if name == "agent_run start":
+                return 0, "{}", ""
+            return 0, "", ""
+
+        output = io.StringIO()
+        with mock.patch.object(conductor, "require_debug_cli", return_value="/tmp/rpce-cli-debug"), mock.patch.object(
+            conductor, "run_operation_command", side_effect=fake_command
+        ), contextlib.redirect_stdout(output):
+            code = conductor.operation_smoke(
+                Path.cwd(),
+                {"windowId": 7, "workspace": "test-workspace", "agentRun": True, "agentTimeout": 5},
+            )
+
+        self.assertEqual(code, 1)
+        self.assertIn("rpce-cli-debug -w 7 -c agent_run", output.getvalue())
+        self.assertNotIn("rpce-cli-debug -w 1 -c agent_run", output.getvalue())
+
     def test_launch_smoke_uses_exact_embedded_helper_and_ignores_other_resolvers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             app = Path(tmp) / "RepoPrompt.app"

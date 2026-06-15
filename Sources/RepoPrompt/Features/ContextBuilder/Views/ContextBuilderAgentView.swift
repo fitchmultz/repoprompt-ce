@@ -908,7 +908,8 @@ struct ContextBuilderAgentView: View {
                 options: viewModel.modelOptions(for: agent),
                 selectedAgent: viewModel.selectedAgent,
                 selectedModelRaw: viewModel.selectedModelRaw,
-                includePiThinkingLevelOptions: true
+                includePiThinkingLevelOptions: true,
+                piCatalogState: agent == .pi ? viewModel.piCatalogStateForCurrentWorkspace() : nil
             ) { selectedAgent, selectedOption in
                 viewModel.selectedAgent = selectedAgent
                 viewModel.selectModel(rawModel: selectedOption.rawValue)

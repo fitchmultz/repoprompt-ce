@@ -472,6 +472,16 @@ class PromptViewModel: ObservableObject {
         AgentModelCatalog.options(for: agentKind, availability: agentAvailabilityContext)
     }
 
+    func workspaceScopedAgentAvailabilityContext(
+        from base: AgentModelCatalog.AvailabilityContext
+    ) -> AgentModelCatalog.AvailabilityContext {
+        base.withPiWorkspacePath(currentWorkspacePath)
+    }
+
+    var piModelCatalogWorkspacePath: String? {
+        currentWorkspacePath
+    }
+
     private var agentAvailabilityContext: AgentModelCatalog.AvailabilityContext {
         let base = apiSettingsViewModel?.agentModeAvailabilityContext ?? .none
         return base.withPiWorkspacePath(currentWorkspacePath)
@@ -496,6 +506,7 @@ class PromptViewModel: ObservableObject {
             return nil
         }
         let availability = apiSettingsViewModel.contextBuilderRestorationAvailabilityContext
+            .withPiWorkspacePath(currentWorkspacePath)
         let enabledProviders = settingsManager.globalRecommendationProviderFilter()
         let promoted = currentWorkspaceID.flatMap { workspaceID in
             settingsManager.promoteLegacyWorkspaceContextBuilderSelectionIfNeeded(

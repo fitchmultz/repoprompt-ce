@@ -150,6 +150,10 @@ extension AgentModeViewModel {
         /// Permission profile for the current session. Set to `.mcpSafeDefaults`
         /// when MCP control is active, `.userConfigured` otherwise.
         var permissionProfile: AgentPermissionProfile = .userConfigured
+        /// Runtime permission snapshot used to launch the currently active run. Pi built-in
+        /// tool policy is process-env scoped, so active pi UI must reflect this launch-time
+        /// value rather than a later settings value that only applies to the next run.
+        var activeRunRuntimePermission: AgentProviderRuntimePermissionBinding?
 
         // Instruction queue for when user sends while agent is not waiting (shared across all runners)
         var pendingInstructions: [String] = []

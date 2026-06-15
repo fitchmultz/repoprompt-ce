@@ -21,14 +21,16 @@ final class AgentModeProviderBindingService {
         selectedModelRaw: String? = nil,
         permissionProfile: AgentProviderPermissionProfile,
         isSubagent: Bool,
-        externallyManagedReason: String?
+        externallyManagedReason: String?,
+        runtimePermissionOverride: AgentProviderRuntimePermissionBinding? = nil
     ) -> AgentProviderControlsBinding {
         preferences.controlsBinding(
             selectedAgent: selectedAgent,
             selectedModelRaw: selectedModelRaw,
             permissionProfile: permissionProfile,
             isSubagent: isSubagent,
-            externallyManagedReason: externallyManagedReason
+            externallyManagedReason: externallyManagedReason,
+            runtimePermissionOverride: runtimePermissionOverride
         )
     }
 

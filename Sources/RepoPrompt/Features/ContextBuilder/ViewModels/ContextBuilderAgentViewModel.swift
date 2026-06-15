@@ -827,6 +827,16 @@ final class ContextBuilderAgentViewModel: ObservableObject {
         AgentModelCatalog.options(for: agentKind, availability: agentAvailabilityContext, codexDynamicModels: codexDynamicModels)
     }
 
+    func piCatalogStateForCurrentWorkspace() -> PiModelCatalogState {
+        AgentModelCatalog.piCatalogState(workspacePath: currentWorkspacePath)
+    }
+
+    #if DEBUG
+        func test_piModelsSubscribedWorkspacePath() -> String? {
+            piModelsSubscribedWorkspacePath
+        }
+    #endif
+
     func selectModel(rawModel: String) {
         selectedModelRaw = rawModel
         AgentModelCatalog.updateLastUsedEffortIfEncoded(
@@ -849,6 +859,7 @@ final class ContextBuilderAgentViewModel: ObservableObject {
     private var isRestoringState = false
     private let settingsManager = GlobalSettingsStore.shared
     private let providerBindingService = AgentModeProviderBindingService()
+    private let piModelPollingService: PiModelPolling
     private var cancellables = Set<AnyCancellable>()
 
     private var currentWorkspaceID: UUID? {
@@ -867,6 +878,8 @@ final class ContextBuilderAgentViewModel: ObservableObject {
     private var codexModelsSubscriptionTask: Task<Void, Never>?
     private var openCodeModelsSubscriptionTask: Task<Void, Never>?
     private var cursorModelsSubscriptionTask: Task<Void, Never>?
+    private var piModelsSubscriptionTask: Task<Void, Never>?
+    private var piModelsSubscribedWorkspacePath: String?
 
     // MARK: - Init / Deinit
 
@@ -875,12 +888,14 @@ final class ContextBuilderAgentViewModel: ObservableObject {
         workspaceManager: WorkspaceManagerViewModel,
         mcpServer: MCPServerViewModel,
         oracleViewModel: OracleViewModel,
-        providerFactory: ProviderFactory? = nil
+        providerFactory: ProviderFactory? = nil,
+        piModelPollingService: PiModelPolling = PiModelPollingService.shared
     ) {
         self.promptManager = promptManager
         self.workspaceManager = workspaceManager
         self.mcpServer = mcpServer
         self.oracleViewModel = oracleViewModel
+        self.piModelPollingService = piModelPollingService
         self.providerFactory = providerFactory ?? { agent, modelString, workspacePath, windowID, runtimePermission in
             AgentRuntimeProviderService.shared.makeProvider(
                 for: agent,
@@ -987,6 +1002,7 @@ final class ContextBuilderAgentViewModel: ObservableObject {
             return nil
         }
         let availability = apiSettingsViewModel.contextBuilderRestorationAvailabilityContext
+            .withPiWorkspacePath(currentWorkspacePath)
         let enabledProviders = settingsManager.globalRecommendationProviderFilter()
         let promoted = currentWorkspaceID.flatMap { workspaceID in
             settingsManager.promoteLegacyWorkspaceContextBuilderSelectionIfNeeded(
@@ -1023,6 +1039,7 @@ final class ContextBuilderAgentViewModel: ObservableObject {
 
     private func handleAgentProviderAvailabilityChanged() {
         refreshAvailableAgents()
+        defer { updateDynamicModelPolling() }
         guard let normalized = resolvedPersistedContextBuilderSelection() else { return }
         guard normalized.agent != selectedAgent || normalized.modelRaw.caseInsensitiveCompare(selectedModelRaw) != .orderedSame else {
             return
@@ -1032,13 +1049,13 @@ final class ContextBuilderAgentViewModel: ObservableObject {
         selectedModelRaw = normalized.modelRaw
         selectedModel = AgentModel.resolvedModel(forRaw: normalized.modelRaw, agentKind: normalized.agent) ?? .defaultModel
         isRestoringState = false
-        updateDynamicModelPolling()
     }
 
     private func updateDynamicModelPolling(startCursorPolling: Bool = true) {
         updateCodexModelPolling()
         updateOpenCodeModelPolling()
         updateCursorModelPolling(startPolling: startCursorPolling)
+        updatePiModelPolling()
     }
 
     private func updateCodexModelPolling() {
@@ -1133,6 +1150,49 @@ final class ContextBuilderAgentViewModel: ObservableObject {
         cursorModelsSubscriptionTask = nil
     }
 
+    private func updatePiModelPolling() {
+        guard AgentModelCatalog.isAgentAvailable(.pi, availability: agentAvailabilityContext) else {
+            stopPiModelsSubscription()
+            return
+        }
+        startPiModelsSubscriptionIfNeeded()
+    }
+
+    private func startPiModelsSubscriptionIfNeeded() {
+        let workspacePath = currentWorkspacePath
+        let canonicalWorkspacePath = AgentPiModelRegistry.canonicalWorkspacePath(workspacePath)
+        if piModelsSubscriptionTask != nil {
+            guard piModelsSubscribedWorkspacePath != canonicalWorkspacePath else { return }
+            stopPiModelsSubscription()
+        }
+        piModelsSubscribedWorkspacePath = canonicalWorkspacePath
+        let pollingService = piModelPollingService
+        piModelsSubscriptionTask = Task { [weak self, canonicalWorkspacePath, pollingService] in
+            let stream = await pollingService.subscribe(workspacePath: canonicalWorkspacePath)
+            for await _ in stream {
+                guard !Task.isCancelled else { return }
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    acpDynamicModelRevision &+= 1
+                    handleAgentProviderAvailabilityChanged()
+                    syncSelectedPiModelFromRegistryIfNeeded()
+                }
+            }
+            guard !Task.isCancelled else { return }
+            await MainActor.run { [weak self] in
+                guard self?.piModelsSubscribedWorkspacePath == canonicalWorkspacePath else { return }
+                self?.piModelsSubscriptionTask = nil
+                self?.piModelsSubscribedWorkspacePath = nil
+            }
+        }
+    }
+
+    private func stopPiModelsSubscription() {
+        piModelsSubscriptionTask?.cancel()
+        piModelsSubscriptionTask = nil
+        piModelsSubscribedWorkspacePath = nil
+    }
+
     private func syncSelectedACPModelFromRegistryIfNeeded(for agent: AgentProviderKind) {
         guard selectedAgent == agent,
               let providerID = agent.acpProviderID,
@@ -1141,12 +1201,36 @@ final class ContextBuilderAgentViewModel: ObservableObject {
         else {
             return
         }
+        syncSelectedModelFromDynamicSnapshot(
+            preferredModelRaw: preferredModelRaw,
+            selectedOptionIsPlaceholder: snapshot.option(matching: selectedModelRaw)?.isPlaceholderDefault == true,
+            agent: agent
+        )
+    }
 
+    private func syncSelectedPiModelFromRegistryIfNeeded() {
+        guard selectedAgent == .pi,
+              let snapshot = AgentPiModelRegistry.shared.resolvedSnapshot(workspacePath: currentWorkspacePath),
+              let preferredModelRaw = snapshot.preferredModelRaw
+        else {
+            return
+        }
+        syncSelectedModelFromDynamicSnapshot(
+            preferredModelRaw: preferredModelRaw,
+            selectedOptionIsPlaceholder: snapshot.option(matching: selectedModelRaw)?.isPlaceholderDefault == true,
+            agent: .pi
+        )
+    }
+
+    private func syncSelectedModelFromDynamicSnapshot(
+        preferredModelRaw: String,
+        selectedOptionIsPlaceholder: Bool,
+        agent: AgentProviderKind
+    ) {
         let trimmedSelection = selectedModelRaw.trimmingCharacters(in: .whitespacesAndNewlines)
         let selectedIsDefault = trimmedSelection.isEmpty
             || trimmedSelection.caseInsensitiveCompare(AgentModel.defaultModel.rawValue) == .orderedSame
-        let selectedOption = snapshot.option(matching: selectedModelRaw)
-        let selectedIsPlaceholder = selectedIsDefault || selectedOption?.isPlaceholderDefault == true
+        let selectedIsPlaceholder = selectedIsDefault || selectedOptionIsPlaceholder
         guard selectedIsPlaceholder else { return }
         guard selectedModelRaw.caseInsensitiveCompare(preferredModelRaw) != .orderedSame else { return }
 
@@ -1377,6 +1461,7 @@ final class ContextBuilderAgentViewModel: ObservableObject {
         stopCodexModelsSubscription()
         stopOpenCodeModelsSubscription()
         stopCursorModelsSubscription()
+        stopPiModelsSubscription()
 
         let activeRecords = sessions.keys.compactMap { runRegistry.activeRecord(tabID: $0) }
         for record in activeRecords {

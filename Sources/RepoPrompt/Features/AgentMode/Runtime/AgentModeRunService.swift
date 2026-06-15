@@ -210,6 +210,8 @@ final class AgentModeRunService {
             nil
         }
 
+        session.activeRunRuntimePermission = runtimePermission
+
         let windowID = dependencies.windowID
         let mcpServerEnabler = dependencies.mcpServerEnabler
         let connectionPolicyInstaller = dependencies.connectionPolicyInstaller
