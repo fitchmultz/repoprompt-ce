@@ -5294,7 +5294,11 @@ extension ToolOutputFormatter {
             for entry in workflows {
                 guard let workflow = entry.objectValue else { continue }
                 let name = workflow["name"]?.stringValue ?? workflow["id"]?.stringValue ?? "Unnamed"
-                lines.append("  - \(name)")
+                if let id = workflow["id"]?.stringValue, !id.isEmpty, id != name {
+                    lines.append("  - \(name) (`\(id)`)")
+                } else {
+                    lines.append("  - \(name)")
+                }
             }
         }
         if let deletedCount = object["deleted_count"]?.intValue {

@@ -295,6 +295,26 @@ final class ToolOutputFormatterWorktreeTests: XCTestCase {
         XCTAssertTrue(text.contains("### Selected File Tree"), text)
     }
 
+    func testAgentManageWorkflowListShowsWorkflowIDs() throws {
+        let value = Value.object([
+            "workflows": .array([
+                .object([
+                    "id": .string("builtin-oracleExport"),
+                    "name": .string("ChatGPT Export")
+                ]),
+                .object([
+                    "id": .string("custom-same"),
+                    "name": .string("custom-same")
+                ])
+            ])
+        ])
+
+        let text = try Self.onlyText(ToolOutputFormatter.formatAgentManage(args: ["op": Self.value("list_workflows")], value: value))
+
+        XCTAssertTrue(text.contains("ChatGPT Export (`builtin-oracleExport`)"), text)
+        XCTAssertTrue(text.contains("- custom-same"), text)
+    }
+
     func testAgentRunOutputShowsWorktreeSummaryAndUnavailableState() throws {
         let cases = [
             (

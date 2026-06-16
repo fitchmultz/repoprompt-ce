@@ -1828,6 +1828,11 @@ class DaemonState:
             job.result_summary = job.error
 
     def _xctest_watchdog_enabled(self, job: Job) -> bool:
+        if job.operation == "test" and not job.args.get("filter"):
+            # Root tests are a Python runner that starts many child `swift test` processes.
+            # The runner owns per-shard startup/stall handling; an outer XCTest watchdog
+            # incorrectly carries progress between child processes and can kill a healthy retry.
+            return False
         return job.operation in {"test", "provider-test"} and job.args.get("xctestStallSeconds") is not None
 
     def _record_xctest_progress_locked(

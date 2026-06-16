@@ -223,19 +223,23 @@ class LifecycleQueueTests(LifecycleTestCase):
             with self.assertRaisesRegex(conductor.ConductorError, "must not exceed 900 seconds"):
                 registry.prepare({"operation": "test", "args": {}, "timeout": conductor.TEST_TIMEOUT_SECONDS + 1})
 
-    def test_test_operations_default_to_xctest_stall_watchdog(self) -> None:
+    def test_test_operations_default_to_xctest_stall_watchdog_where_safe(self) -> None:
         tmp, state = self.make_state()
         self.addCleanup(tmp.cleanup)
 
         with mock.patch.object(state, "_schedule_locked"):
             root_payload = state.enqueue({"operation": "test", "args": {}})
+            focused_payload = state.enqueue({"operation": "test", "args": {"filter": "ExampleTests"}})
             provider_payload = state.enqueue({"operation": "provider-test", "args": {}})
 
         root_job = state.jobs[root_payload["ticket"]]
+        focused_job = state.jobs[focused_payload["ticket"]]
         provider_job = state.jobs[provider_payload["ticket"]]
         self.assertEqual(root_job.args["xctestStallSeconds"], conductor.DEFAULT_XCTEST_STALL_SECONDS)
+        self.assertEqual(focused_job.args["xctestStallSeconds"], conductor.DEFAULT_XCTEST_STALL_SECONDS)
         self.assertEqual(provider_job.args["xctestStallSeconds"], conductor.DEFAULT_XCTEST_STALL_SECONDS)
-        self.assertTrue(state._xctest_watchdog_enabled(root_job))
+        self.assertFalse(state._xctest_watchdog_enabled(root_job))
+        self.assertTrue(state._xctest_watchdog_enabled(focused_job))
         self.assertTrue(state._xctest_watchdog_enabled(provider_job))
 
     def test_explicit_xctest_stall_timeout_overrides_default(self) -> None:
@@ -969,7 +973,7 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
         *,
         wake_probe: bool = False,
     ) -> conductor.Job:
-        args: dict[str, object] = {"xctestStallSeconds": 5.0}
+        args: dict[str, object] = {"filter": "ExampleTests", "xctestStallSeconds": 5.0}
         if wake_probe:
             args["xctestStallWakeProbe"] = True
         job = self.make_job(state, "xctest-watchdog", "test", args, ["build"], job_state="running")
@@ -1200,7 +1204,7 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
             state,
             "controlled-xctest-watchdog",
             "test",
-            {"xctestStallSeconds": 0.05, "xctestStallWakeProbe": True},
+            {"filter": "ControlledTests", "xctestStallSeconds": 0.05, "xctestStallWakeProbe": True},
             ["build"],
             job_state="running",
         )
