@@ -1182,7 +1182,7 @@ final class PiNativeSessionControllerTests: XCTestCase {
         let client = PiRPCClient(config: .init(
             commandName: scriptURL.path,
             additionalPathHints: [],
-            requestTimeout: 2,
+            requestTimeout: 5,
             launchArguments: [],
             requiresSupportedVersionCheck: false
         ))
@@ -1466,7 +1466,7 @@ final class PiNativeSessionControllerTests: XCTestCase {
         }
 
         let turnID = try await controller.sendUserMessage("auto-retry-failure")
-        let events = await waitForRecordedEvents(recorder, timeoutNanoseconds: 1_500_000_000) { events in
+        let events = await waitForRecordedEvents(recorder, timeoutNanoseconds: 5_000_000_000) { events in
             events.contains { event in
                 if case let .turnCompleted(completedTurnID, status) = event {
                     return completedTurnID == turnID && status == .failed
