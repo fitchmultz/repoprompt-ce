@@ -6902,6 +6902,9 @@ final class WorkspaceFileContextStoreCoreTests: WorkspaceFileContextStoreTestCas
             try await runTestUnloadRootReportsCompletedWatcherStopWhenStopFinishesWithinGrace()
         }
     #endif
+}
+
+final class WorkspaceFileContextStoreCorePart2Tests: WorkspaceFileContextStoreTestCase {
     #if DEBUG
         func testCancelledUnloadReportsWatcherStopCancelledWhileDetachedStopIsBlocked() async throws {
             try await runTestCancelledUnloadReportsWatcherStopCancelledWhileDetachedStopIsBlocked()
@@ -7087,6 +7090,9 @@ final class WorkspaceFileContextStoreIngressTests: WorkspaceFileContextStoreTest
             try await runTestScopedIngressBarrierDiagnosticsReportActiveTargetAndCompletedTiming()
         }
     #endif
+}
+
+final class WorkspaceFileContextStoreIngressPart2Tests: WorkspaceFileContextStoreTestCase {
     #if DEBUG
         func testRootUnloadCancelsActiveAndPendingScopedIngressFlightsAndReleasesDetachedService() async throws {
             try await runTestRootUnloadCancelsActiveAndPendingScopedIngressFlightsAndReleasesDetachedService()
@@ -7227,7 +7233,9 @@ final class WorkspaceFileContextStoreSearchTests: WorkspaceFileContextStoreTestC
     func testManageSelectionCodemapOnlySetRejectsSlices() async throws {
         try await runTestManageSelectionCodemapOnlySetRejectsSlices()
     }
+}
 
+final class WorkspaceFileContextStoreSearchPart2Tests: WorkspaceFileContextStoreTestCase {
     func testManageSelectionFullSetWithSlicesRemainsDestructive() async throws {
         try await runTestManageSelectionFullSetWithSlicesRemainsDestructive()
     }
@@ -7353,7 +7361,9 @@ final class WorkspaceFileContextStoreMutationTests: WorkspaceFileContextStoreTes
     func testReadFileWorkDiagnosticsCaptureDiskBytesDecodeAndReturnedRange() async throws {
         try await runTestReadFileWorkDiagnosticsCaptureDiskBytesDecodeAndReturnedRange()
     }
+}
 
+final class WorkspaceFileContextStoreMutationPart2Tests: WorkspaceFileContextStoreTestCase {
     func testWorkspaceReadableFileServiceResolvesAndReadsAlwaysReadableExternalFiles() async throws {
         try await runTestWorkspaceReadableFileServiceResolvesAndReadsAlwaysReadableExternalFiles()
     }
@@ -7501,6 +7511,9 @@ final class WorkspaceFileContextStoreCodemapTests: WorkspaceFileContextStoreTest
             try await runTestConcurrentSamePathRootLoadsShareInFlightLoad()
         }
     #endif
+}
+
+final class WorkspaceFileContextStoreCodemapPart2Tests: WorkspaceFileContextStoreTestCase {
     #if DEBUG
         func testCancelledRootLoadAfterUIRootAppendDoesNotLeaveUIOrStoreRoot() async throws {
             try await runTestCancelledRootLoadAfterUIRootAppendDoesNotLeaveUIOrStoreRoot()
