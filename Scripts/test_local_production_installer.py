@@ -208,6 +208,7 @@ class LocalProductionInstallerTests(unittest.TestCase):
             conductor.chmod(0o755)
 
             env = os.environ.copy()
+            env.pop("BASH_ENV", None)
             env["LAUNCHER_CAPTURE"] = str(capture)
             result = subprocess.run(
                 ["bash", str(copied_launcher)],
@@ -234,6 +235,7 @@ class LocalProductionInstallerTests(unittest.TestCase):
             conductor.write_text("#!/bin/bash\nprintf 'invoked\\n' > \"$LAUNCHER_CAPTURE\"\n", encoding="utf-8")
             conductor.chmod(0o755)
             env = os.environ.copy()
+            env.pop("BASH_ENV", None)
             env["LAUNCHER_CAPTURE"] = str(capture)
             result = subprocess.run(
                 ["bash", str(copied_launcher)],
@@ -812,6 +814,7 @@ class LocalProductionInstallerTests(unittest.TestCase):
         )
 
         env = os.environ.copy()
+        env.pop("BASH_ENV", None)
         env.update(
             {
                 "PATH": f"{bin_dir}:{env.get('PATH', '')}",
