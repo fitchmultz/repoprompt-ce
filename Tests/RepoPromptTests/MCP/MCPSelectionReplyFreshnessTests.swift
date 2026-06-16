@@ -204,6 +204,280 @@ final class MCPSelectionReplyFreshnessTests: XCTestCase {
         XCTAssertEqual(mutationReply.files?.map(\.path), [logicalFile.path])
     }
 
+    #if DEBUG
+        func testActiveMCPTokenRepliesCompleteWhileBackgroundRecountIsBlockedAndCoalesce() async throws {
+            let root = try makeTemporaryRoot(name: "ActiveTokenCache")
+            defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+            let fileURL = root.appendingPathComponent("Cached.swift")
+            try write("struct ActiveCachedTokenType {}\n", to: fileURL)
+
+            let tabID = UUID()
+            let selection = StoredSelection(selectedPaths: [fileURL.path])
+            let (window, workspaceID) = await makeWindow(root: root, tabID: tabID, selection: selection)
+            defer { WindowStatesManager.shared.unregisterWindowState(window) }
+            _ = try await WorkspaceRootLoadTestSupport.loadRootMatchingCurrentFileSystemSettings(
+                in: window,
+                path: root.path
+            )
+            let tokenCounter = window.promptManager.tokenCountingViewModel
+            await tokenCounter.forceImmediateRecount()
+            let recountGate = TokenAccountingGate()
+            tokenCounter.setBeforeTokenCalculationForTesting {
+                await recountGate.markStartedAndWaitForRelease()
+            }
+            defer {
+                Task { @MainActor in
+                    await recountGate.release()
+                    tokenCounter.setBeforeTokenCalculationForTesting(nil)
+                }
+            }
+
+            let baselineStarts = tokenCounter.tokenCalculationStartCountForTesting()
+            tokenCounter.markDirty(.selection)
+            await recountGate.waitUntilStarted()
+
+            let context = makeContext(
+                window: window,
+                workspaceID: workspaceID,
+                tabID: tabID,
+                selection: selection
+            )
+            let activeResolution = MCPServerViewModel.ResolvedTabContextSnapshot(
+                snapshot: context,
+                usesActiveTabCompatibility: true
+            )
+            let repliesCompleted = expectation(description: "active token replies complete while recount is blocked")
+            var selectionReply: ToolResultDTOs.SelectionReply?
+            var workspaceReply: ToolResultDTOs.PromptContextDTO?
+            var replyError: Error?
+            Task { @MainActor in
+                selectionReply = await window.mcpServer.buildCurrentSelectionReply(
+                    includeBlocks: false,
+                    display: .relative,
+                    resolvedContext: activeResolution,
+                    lookupContext: .visibleWorkspace
+                )
+                do {
+                    workspaceReply = try await window.mcpServer.buildTabWorkspaceContext(
+                        context: context,
+                        include: ["selection", "tokens"],
+                        display: .relative,
+                        activeTabCompatibility: true
+                    )
+                } catch {
+                    replyError = error
+                }
+                repliesCompleted.fulfill()
+            }
+            await fulfillment(of: [repliesCompleted], timeout: 1)
+            if let replyError { throw replyError }
+            let resolvedSelectionReply = try XCTUnwrap(selectionReply)
+            let resolvedWorkspaceReply = try XCTUnwrap(workspaceReply)
+
+            XCTAssertEqual(resolvedSelectionReply.tokenAccounting?.source, "active_tab_published")
+            XCTAssertTrue(resolvedSelectionReply.tokenAccounting?.refreshPending == true)
+            XCTAssertEqual(resolvedWorkspaceReply.tokenAccounting?.source, "active_tab_published")
+            XCTAssertTrue(resolvedWorkspaceReply.tokenAccounting?.refreshPending == true)
+            XCTAssertEqual(tokenCounter.tokenCalculationStartCountForTesting(), baselineStarts + 1)
+
+            await recountGate.release()
+            tokenCounter.setBeforeTokenCalculationForTesting(nil)
+        }
+
+        func testBoundMCPTokenRepliesCompleteWhileContentRefreshIsBlockedAndCoalesce() async throws {
+            let root = try makeTemporaryRoot(name: "BoundTokenCache")
+            defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+            let fileURL = root.appendingPathComponent("Bound.swift")
+            try write("struct BoundCachedTokenType {}\n", to: fileURL)
+
+            let tabID = UUID()
+            let selection = StoredSelection(selectedPaths: [fileURL.path])
+            let (window, workspaceID) = await makeWindow(root: root, tabID: tabID, selection: selection)
+            defer { WindowStatesManager.shared.unregisterWindowState(window) }
+            let loadedRoot = try await WorkspaceRootLoadTestSupport.loadRootMatchingCurrentFileSystemSettings(
+                in: window,
+                path: root.path
+            )
+            await window.promptManager.tokenCountingViewModel.forceImmediateRecount()
+            let refreshGate = TokenAccountingGate()
+            window.mcpServer.setBeforeVirtualTokenRefreshForTesting {
+                await refreshGate.markStartedAndWaitForRelease()
+            }
+            defer {
+                Task { @MainActor in
+                    await refreshGate.release()
+                    window.mcpServer.setBeforeVirtualTokenRefreshForTesting(nil)
+                }
+            }
+
+            let context = makeContext(
+                window: window,
+                workspaceID: workspaceID,
+                tabID: tabID,
+                selection: selection
+            )
+            let boundResolution = MCPServerViewModel.ResolvedTabContextSnapshot(
+                snapshot: context,
+                usesActiveTabCompatibility: false
+            )
+            let baselineStarts = window.mcpServer.virtualTokenRefreshStartCountForTesting()
+            let firstCompleted = expectation(description: "first bound token reply completes before refresh")
+            var firstReply: ToolResultDTOs.SelectionReply?
+            Task { @MainActor in
+                firstReply = await window.mcpServer.buildCurrentSelectionReply(
+                    includeBlocks: false,
+                    display: .relative,
+                    resolvedContext: boundResolution,
+                    lookupContext: .visibleWorkspace
+                )
+                firstCompleted.fulfill()
+            }
+            await refreshGate.waitUntilStarted()
+            await fulfillment(of: [firstCompleted], timeout: 1)
+
+            let remainingCompleted = expectation(description: "coalesced bound token replies complete while refresh is blocked")
+            var secondReply: ToolResultDTOs.SelectionReply?
+            var workspaceReply: ToolResultDTOs.PromptContextDTO?
+            var replyError: Error?
+            Task { @MainActor in
+                secondReply = await window.mcpServer.buildCurrentSelectionReply(
+                    includeBlocks: false,
+                    display: .relative,
+                    resolvedContext: boundResolution,
+                    lookupContext: .visibleWorkspace
+                )
+                do {
+                    workspaceReply = try await window.mcpServer.buildTabWorkspaceContext(
+                        context: context,
+                        include: ["selection", "tokens"],
+                        display: .relative,
+                        activeTabCompatibility: false
+                    )
+                } catch {
+                    replyError = error
+                }
+                remainingCompleted.fulfill()
+            }
+            await fulfillment(of: [remainingCompleted], timeout: 1)
+            if let replyError { throw replyError }
+            let resolvedFirstReply = try XCTUnwrap(firstReply)
+            let resolvedSecondReply = try XCTUnwrap(secondReply)
+            let resolvedWorkspaceReply = try XCTUnwrap(workspaceReply)
+
+            XCTAssertEqual(resolvedFirstReply.tokenAccounting?.source, "bound_tab_cached_state")
+            XCTAssertEqual(resolvedFirstReply.tokenAccounting?.status, "incomplete")
+            XCTAssertTrue(resolvedFirstReply.tokenAccounting?.refreshPending == true)
+            XCTAssertEqual(resolvedSecondReply.tokenAccounting?.source, "bound_tab_cached_state")
+            XCTAssertEqual(resolvedSecondReply.tokenAccounting?.status, "incomplete")
+            XCTAssertTrue(resolvedSecondReply.tokenAccounting?.refreshPending == true)
+            XCTAssertEqual(resolvedWorkspaceReply.tokenAccounting?.source, "bound_tab_cached_state")
+            XCTAssertEqual(resolvedWorkspaceReply.tokenAccounting?.status, "incomplete")
+            XCTAssertTrue(resolvedWorkspaceReply.tokenAccounting?.refreshPending == true)
+            XCTAssertEqual(window.mcpServer.virtualTokenRefreshStartCountForTesting(), baselineStarts + 1)
+            let refreshStartCount = await refreshGate.startCount()
+            // Identical bound selection and workspace token requests share one signature,
+            // so all cached replies coalesce onto the same background refresh.
+            XCTAssertEqual(refreshStartCount, 1)
+
+            await refreshGate.release()
+            window.mcpServer.setBeforeVirtualTokenRefreshForTesting(nil)
+        }
+
+        func testBoundMCPTokenRefreshesForDistinctSignaturesDoNotCancelEachOther() async throws {
+            let root = try makeTemporaryRoot(name: "BoundTokenSignatures")
+            defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+            let fileURL = root.appendingPathComponent("Bound.swift")
+            try write("struct BoundDistinctSignatureType {}\n", to: fileURL)
+
+            let tabID = UUID()
+            let selection = StoredSelection(selectedPaths: [fileURL.path])
+            let (window, workspaceID) = await makeWindow(root: root, tabID: tabID, selection: selection)
+            defer { WindowStatesManager.shared.unregisterWindowState(window) }
+            _ = try await WorkspaceRootLoadTestSupport.loadRootMatchingCurrentFileSystemSettings(
+                in: window,
+                path: root.path
+            )
+            await window.promptManager.tokenCountingViewModel.forceImmediateRecount()
+            let refreshGate = TokenAccountingGate()
+            window.mcpServer.setBeforeVirtualTokenRefreshForTesting {
+                await refreshGate.markStartedAndWaitForRelease()
+            }
+            defer {
+                Task { @MainActor in
+                    await refreshGate.release()
+                    window.mcpServer.setBeforeVirtualTokenRefreshForTesting(nil)
+                }
+            }
+
+            let firstContext = makeContext(
+                window: window,
+                workspaceID: workspaceID,
+                tabID: tabID,
+                selection: selection,
+                promptText: "First signature"
+            )
+            let secondContext = makeContext(
+                window: window,
+                workspaceID: workspaceID,
+                tabID: tabID,
+                selection: selection,
+                promptText: "Second signature"
+            )
+            let firstResolution = MCPServerViewModel.ResolvedTabContextSnapshot(
+                snapshot: firstContext,
+                usesActiveTabCompatibility: false
+            )
+            let secondResolution = MCPServerViewModel.ResolvedTabContextSnapshot(
+                snapshot: secondContext,
+                usesActiveTabCompatibility: false
+            )
+            let baselineStarts = window.mcpServer.virtualTokenRefreshStartCountForTesting()
+
+            let firstReply = await window.mcpServer.buildCurrentSelectionReply(
+                includeBlocks: false,
+                display: .relative,
+                resolvedContext: firstResolution,
+                lookupContext: .visibleWorkspace
+            )
+            await refreshGate.waitUntilStarted(count: 1)
+            let secondReply = await window.mcpServer.buildCurrentSelectionReply(
+                includeBlocks: false,
+                display: .relative,
+                resolvedContext: secondResolution,
+                lookupContext: .visibleWorkspace
+            )
+            await refreshGate.waitUntilStarted(count: 2)
+
+            XCTAssertEqual(firstReply.tokenAccounting?.source, "bound_tab_cached_state")
+            XCTAssertEqual(secondReply.tokenAccounting?.source, "bound_tab_cached_state")
+            XCTAssertEqual(window.mcpServer.virtualTokenRefreshStartCountForTesting(), baselineStarts + 2)
+            let refreshStartCount = await refreshGate.startCount()
+            XCTAssertEqual(refreshStartCount, 2)
+
+            await refreshGate.release()
+            window.mcpServer.setBeforeVirtualTokenRefreshForTesting(nil)
+            for _ in 0 ..< 100 where window.mcpServer.virtualTokenRefreshTaskCountForTesting() > 0 {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            XCTAssertEqual(window.mcpServer.virtualTokenRefreshTaskCountForTesting(), 0)
+
+            let firstCachedReply = await window.mcpServer.buildCurrentSelectionReply(
+                includeBlocks: false,
+                display: .relative,
+                resolvedContext: firstResolution,
+                lookupContext: .visibleWorkspace
+            )
+            let secondCachedReply = await window.mcpServer.buildCurrentSelectionReply(
+                includeBlocks: false,
+                display: .relative,
+                resolvedContext: secondResolution,
+                lookupContext: .visibleWorkspace
+            )
+            XCTAssertEqual(firstCachedReply.tokenAccounting?.source, "bound_tab_cache")
+            XCTAssertEqual(secondCachedReply.tokenAccounting?.source, "bound_tab_cache")
+        }
+    #endif
+
     func testActiveCompatibilityLookupContextPreservesActiveSessionAuthority() async throws {
         let workspaceRoot = try makeTemporaryRoot(name: "CompatibilityWorkspace")
         let worktreeRoot = try makeTemporaryRoot(name: "CompatibilityWorktree")
@@ -316,13 +590,14 @@ final class MCPSelectionReplyFreshnessTests: XCTestCase {
         window: WindowState,
         workspaceID: UUID,
         tabID: UUID,
-        selection: StoredSelection
+        selection: StoredSelection,
+        promptText: String = ""
     ) -> MCPServerViewModel.TabScopedContext {
         MCPServerViewModel.TabContextSnapshot(
             tabID: tabID,
             windowID: window.windowID,
             workspaceID: workspaceID,
-            promptText: "",
+            promptText: promptText,
             selection: selection,
             selectedMetaPromptIDs: [],
             tabName: "Agent",
@@ -365,3 +640,41 @@ final class MCPSelectionReplyFreshnessTests: XCTestCase {
         try content.write(to: url, atomically: true, encoding: .utf8)
     }
 }
+
+#if DEBUG
+    private actor TokenAccountingGate {
+        private var startedCount = 0
+        private var released = false
+        private var startWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+        private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+        func markStartedAndWaitForRelease() async {
+            startedCount += 1
+            let readyWaiters = startWaiters.filter { $0.count <= startedCount }
+            startWaiters.removeAll { $0.count <= startedCount }
+            readyWaiters.forEach { $0.continuation.resume() }
+            guard !released else { return }
+            await withCheckedContinuation { continuation in
+                releaseWaiters.append(continuation)
+            }
+        }
+
+        func waitUntilStarted(count: Int = 1) async {
+            guard startedCount < count else { return }
+            await withCheckedContinuation { continuation in
+                startWaiters.append((count, continuation))
+            }
+        }
+
+        func release() {
+            released = true
+            let waiters = releaseWaiters
+            releaseWaiters.removeAll()
+            waiters.forEach { $0.resume() }
+        }
+
+        func startCount() -> Int {
+            startedCount
+        }
+    }
+#endif

@@ -179,13 +179,63 @@ final class MCPServerViewModel: ObservableObject {
     let workspaceManager: WorkspaceManagerViewModel?
     let selectionCoordinator: WorkspaceSelectionCoordinator?
     var agentWorktreeBindingStateProvider: (@MainActor (UUID, UUID?) -> AgentSessionWorktreeBindingState)?
+    var agentWorktreeBindingStateResolver: (@MainActor (UUID, UUID?) async -> AgentSessionWorktreeBindingState)?
 
     func registerAgentWorktreeBindingsProvider(_ provider: @escaping @MainActor (UUID, UUID?) -> AgentSessionWorktreeBindingState) {
         agentWorktreeBindingStateProvider = provider
     }
 
+    func registerAgentWorktreeBindingsResolver(
+        _ resolver: @escaping @MainActor (UUID, UUID?) async -> AgentSessionWorktreeBindingState
+    ) {
+        agentWorktreeBindingStateResolver = resolver
+    }
+
     private let workspaceSearch: WorkspaceSearchHandler
     private let ensureGitDataRootLoaded: (WorkspaceModel?, WorkspaceManagerViewModel?) async -> Void
+
+    struct MCPVirtualTokenSignature: Equatable, Hashable {
+        let tabID: UUID
+        let workspaceID: UUID?
+        let selection: StoredSelection
+        let promptText: String
+        let selectedMetaPromptIDs: [UUID]
+        let codeMapUsage: String
+        let includeUserPrompt: Bool
+        let includeMetaPrompts: Bool
+        let rendersFileTree: Bool
+        let fileTreeMode: String
+        let gitInclusion: String
+        let lookupScope: String
+    }
+
+    struct MCPVirtualTokenSnapshot {
+        let signature: MCPVirtualTokenSignature
+        let entryResultsByFileID: [UUID: PromptEntriesEvaluation.EntryResult]
+        let breakdown: TokenComponentBreakdown
+    }
+
+    var mcpVirtualTokenSnapshotsByTabID: [UUID: [MCPVirtualTokenSignature: MCPVirtualTokenSnapshot]] = [:]
+    var mcpVirtualTokenRefreshTasksByTabID: [UUID: [MCPVirtualTokenSignature: Task<Void, Never>]] = [:]
+    var mcpVirtualTokenRefreshGenerationByTabID: [UUID: [MCPVirtualTokenSignature: UUID]] = [:]
+    #if DEBUG
+        var mcpVirtualTokenRefreshStartCount = 0
+        var debugBeforeVirtualTokenRefreshForTesting: (@MainActor @Sendable () async -> Void)?
+
+        func virtualTokenRefreshStartCountForTesting() -> Int {
+            mcpVirtualTokenRefreshStartCount
+        }
+
+        func virtualTokenRefreshTaskCountForTesting() -> Int {
+            mcpVirtualTokenRefreshTasksByTabID.values.reduce(0) { $0 + $1.count }
+        }
+
+        func setBeforeVirtualTokenRefreshForTesting(
+            _ handler: (@MainActor @Sendable () async -> Void)?
+        ) {
+            debugBeforeVirtualTokenRefreshForTesting = handler
+        }
+    #endif
 
     // ---------------------------------------------------------------------
     // MARK: Networking delegation
@@ -986,6 +1036,9 @@ final class MCPServerViewModel: ObservableObject {
     private func applyReadFileAutoSelectionMirror(
         for key: MCPReadFileAutoSelectionCoordinator.TabMirrorKey
     ) async {
+        #if DEBUG
+            await readFileAutoSelectionMirrorGateForTesting?()
+        #endif
         if let sessionID = workspaceManager?.activeAgentSessionID(
             forTabID: key.tabID,
             inWorkspaceID: key.workspaceID
@@ -2977,7 +3030,7 @@ final class MCPServerViewModel: ObservableObject {
 
     @MainActor
     func refreshSelectionMetrics() async {
-        await promptVM.tokenCountingViewModel.forceImmediateRecount()
+        _ = promptVM.tokenCountingViewModel.latestPublishedTokenSnapshot(for: nil)
     }
 
     private func resolveSelectionPathsForChatSend(_ rawPaths: [String]) async -> (paths: [String], invalid: [String]) {
@@ -3249,6 +3302,14 @@ final class MCPServerViewModel: ObservableObject {
         @MainActor
         func setReadFileAutoSelectionCanonicalApplyGateForTesting(_ gate: (() async -> Void)?) {
             readFileAutoSelectionCoordinator.setCanonicalApplyGateForTesting(gate)
+        }
+
+        @MainActor
+        var readFileAutoSelectionMirrorGateForTesting: (() async -> Void)?
+
+        @MainActor
+        func setReadFileAutoSelectionMirrorGateForTesting(_ gate: (() async -> Void)?) {
+            readFileAutoSelectionMirrorGateForTesting = gate
         }
 
         @MainActor
@@ -3717,8 +3778,7 @@ final class MCPServerViewModel: ObservableObject {
         fromRecords files: [WorkspaceFileRecord],
         maxResults: Int,
         includeUnmappedPaths: Bool,
-        lookupContext: WorkspaceLookupContext = .visibleWorkspace,
-        selfHealTimeout: Duration = .seconds(5)
+        lookupContext: WorkspaceLookupContext = .visibleWorkspace
     ) async throws -> ToolResultDTOs.SelectedCodeStructureDTO {
         struct CodeStructureFile {
             let file: WorkspaceFileRecord
@@ -3776,28 +3836,24 @@ final class MCPServerViewModel: ObservableObject {
             return lhs.displayPath < rhs.displayPath
         }
 
-        var snapshots = await store.codemapSnapshotDictionary()
+        let initialSnapshots = await store.codemapSnapshotDictionary()
         try Task.checkCancellation()
         let repairLimit = min(max(0, maxResults), Self.maxCodeStructureSelfHealingFiles)
         let repairFiles = Array(codeStructureFiles.lazy.filter { item in
-            guard snapshots[item.file.id] == nil else { return false }
+            guard initialSnapshots[item.file.id] == nil else { return false }
             let ext = (item.file.name as NSString).pathExtension
             return SyntaxManager.isSupportedFileExtension(ext)
         }.prefix(repairLimit).map(\.file))
-        let repairResult: WorkspaceCodemapRepairResult
-        if repairFiles.isEmpty {
-            repairResult = WorkspaceCodemapRepairResult(
-                snapshotsByFileID: snapshots,
+        let repairResult: WorkspaceCodemapRepairResult = if repairFiles.isEmpty {
+            WorkspaceCodemapRepairResult(
+                snapshotsByFileID: initialSnapshots,
                 pendingFileIDs: []
             )
         } else {
-            repairResult = try await store.repairMissingCodemapSnapshots(
-                for: repairFiles,
-                timeout: selfHealTimeout
-            )
-            snapshots = repairResult.snapshotsByFileID
+            await store.enqueueMissingCodemapSnapshotRepairs(for: repairFiles)
         }
         try Task.checkCancellation()
+        let snapshots = repairResult.snapshotsByFileID
 
         var renderable: [RenderableCodeStructure] = []
         var unmappedPaths: [String] = []

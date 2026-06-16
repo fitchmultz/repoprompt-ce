@@ -60,6 +60,202 @@ class WorkspaceFileContextStoreTestCase: XCTestCase {
         XCTAssertEqual(scopedA?.location.absolutePath, rootA.appendingPathComponent("shared/file.txt").path)
     }
 
+    func runTestRepeatedPathLookupReusesStaticSnapshotForUnchangedCatalogGeneration() async throws {
+        #if DEBUG
+            let root = try makeTemporaryRoot(name: "StaticPathSnapshotReuse")
+            let fileURL = root.appendingPathComponent("Sources/App.swift")
+            try write("struct App {}", to: fileURL)
+
+            let store = WorkspaceFileContextStore()
+            _ = try await store.loadRoot(path: root.path)
+
+            EditFlowPerf.resetDebugCaptureForTesting()
+            defer { EditFlowPerf.resetDebugCaptureForTesting() }
+            switch EditFlowPerf.beginDebugCapture(label: "static-path-snapshot-reuse", maxSamples: 100) {
+            case .started:
+                break
+            case .busy:
+                return XCTFail("Performance capture should start")
+            }
+
+            let first = await store.lookupPath("Sources/App.swift", rootScope: .visibleWorkspace)
+            let second = await store.lookupPath("Sources/App.swift", rootScope: .visibleWorkspace)
+            let capture = EditFlowPerf.debugCaptureSnapshot(finish: true)
+            let snapshotBuildCount = capture.stages
+                .filter { $0.stageName == String(describing: EditFlowPerf.Stage.ReadFile.pathLookupStaticSnapshotBuild) }
+                .reduce(0) { $0 + $1.sampleCount }
+
+            XCTAssertEqual(first?.file?.standardizedFullPath, fileURL.path)
+            XCTAssertEqual(second?.file?.standardizedFullPath, fileURL.path)
+            XCTAssertEqual(snapshotBuildCount, 1)
+        #endif
+    }
+
+    func runTestExplicitRootRefsUseDistinctStaticSnapshotsAndDoNotPoisonCanonicalScope() async throws {
+        let rootA = try makeTemporaryRoot(name: "ExplicitSnapshotRootA")
+        let rootB = try makeTemporaryRoot(name: "ExplicitSnapshotRootB")
+        try write("a", to: rootA.appendingPathComponent("shared/file.txt"))
+        try write("b", to: rootB.appendingPathComponent("shared/file.txt"))
+
+        let store = WorkspaceFileContextStore()
+        let recordA = try await store.loadRoot(path: rootA.path)
+        let recordB = try await store.loadRoot(path: rootB.path)
+        let refA = WorkspaceRootRef(id: recordA.id, name: recordA.name, fullPath: recordA.standardizedFullPath)
+        let refB = WorkspaceRootRef(id: recordB.id, name: recordB.name, fullPath: recordB.standardizedFullPath)
+        let request = WorkspacePathLookupRequest(
+            userPath: "shared/file.txt",
+            rootScope: .allLoaded
+        )
+
+        let scopedA = await store.lookupPath(request, rootRefs: [refA])
+        let scopedB = await store.lookupPath(request, rootRefs: [refB])
+        let canonical = await store.lookupPath(request)
+
+        XCTAssertEqual(scopedA?.file?.rootID, recordA.id)
+        XCTAssertEqual(scopedB?.file?.rootID, recordB.id)
+        XCTAssertEqual(canonical?.file?.rootID, recordA.id)
+    }
+
+    func runTestSessionBoundStaticSnapshotCacheUsesBoundedLRUEviction() async throws {
+        #if DEBUG
+            let worktree = try makeTemporaryRoot(name: "StaticSnapshotLRUWorktree")
+            try write("struct Cached {}", to: worktree.appendingPathComponent("Cached.swift"))
+            let store = WorkspaceFileContextStore()
+            _ = try await store.loadRoot(path: worktree.path, kind: .sessionWorktree)
+            let scopes = (0 ... 16).map { index in
+                WorkspaceLookupRootScope.sessionBoundWorkspace(
+                    canonicalRootPaths: ["/logical/\(index)"],
+                    physicalRootPaths: [worktree.path]
+                )
+            }
+
+            EditFlowPerf.resetDebugCaptureForTesting()
+            defer { EditFlowPerf.resetDebugCaptureForTesting() }
+            switch EditFlowPerf.beginDebugCapture(label: "static-path-snapshot-lru", maxSamples: 100) {
+            case .started:
+                break
+            case .busy:
+                return XCTFail("Performance capture should start")
+            }
+
+            for scope in scopes.prefix(16) {
+                let lookup = await store.lookupPath("Cached.swift", rootScope: scope)
+                XCTAssertNotNil(lookup)
+            }
+            var cacheCount = await store.staticPathMatchSnapshotCacheCountForTesting()
+            XCTAssertEqual(cacheCount, 16)
+            let warmFirst = await store.lookupPath("Cached.swift", rootScope: scopes[0])
+            let inserted = await store.lookupPath("Cached.swift", rootScope: scopes[16])
+            XCTAssertNotNil(warmFirst)
+            XCTAssertNotNil(inserted)
+            cacheCount = await store.staticPathMatchSnapshotCacheCountForTesting()
+            XCTAssertEqual(cacheCount, 16)
+            let retainedFirst = await store.lookupPath("Cached.swift", rootScope: scopes[0])
+            let evictedSecond = await store.lookupPath("Cached.swift", rootScope: scopes[1])
+            XCTAssertNotNil(retainedFirst)
+            XCTAssertNotNil(evictedSecond)
+
+            let capture = EditFlowPerf.debugCaptureSnapshot(finish: true)
+            let snapshotBuildCount = capture.stages
+                .filter { $0.stageName == String(describing: EditFlowPerf.Stage.ReadFile.pathLookupStaticSnapshotBuild) }
+                .reduce(0) { $0 + $1.sampleCount }
+            XCTAssertEqual(snapshotBuildCount, 18)
+            cacheCount = await store.staticPathMatchSnapshotCacheCountForTesting()
+            XCTAssertEqual(cacheCount, 16)
+        #endif
+    }
+
+    func runTestStaticSnapshotLRUEvictionPreservesRetainedSearchCatalogGeneration() async throws {
+        #if DEBUG
+            let worktree = try makeTemporaryRoot(name: "StaticSnapshotSearchGeneration")
+            try write("struct Cached {}", to: worktree.appendingPathComponent("Cached.swift"))
+            let store = WorkspaceFileContextStore()
+            _ = try await store.loadRoot(path: worktree.path, kind: .sessionWorktree)
+            let scopes = (0 ... 16).map { index in
+                WorkspaceLookupRootScope.sessionBoundWorkspace(
+                    canonicalRootPaths: ["/logical/\(index)"],
+                    physicalRootPaths: [worktree.path]
+                )
+            }
+            let retainedSearchScope = scopes[0]
+
+            startSearchCatalogSnapshotCapture(label: "static-lru-search-generation")
+            defer { EditFlowPerf.resetDebugCaptureForTesting() }
+            let initialSearchSnapshot = await store.searchCatalogSnapshot(rootScope: retainedSearchScope)
+            let initialGenerationState = await store.sessionCatalogGenerationForTesting(scope: retainedSearchScope)
+            XCTAssertEqual(initialGenerationState, initialSearchSnapshot.generation)
+
+            for scope in scopes {
+                let lookup = await store.lookupPath("Cached.swift", rootScope: scope)
+                XCTAssertNotNil(lookup)
+            }
+            let rebuiltStaticLookup = await store.lookupPath("Cached.swift", rootScope: retainedSearchScope)
+            XCTAssertNotNil(rebuiltStaticLookup)
+
+            let generationAfterStaticEviction = await store.sessionCatalogGenerationForTesting(scope: retainedSearchScope)
+            let warmSearchSnapshot = await store.searchCatalogSnapshot(rootScope: retainedSearchScope)
+            XCTAssertEqual(generationAfterStaticEviction, initialSearchSnapshot.generation)
+            XCTAssertEqual(warmSearchSnapshot.generation, initialSearchSnapshot.generation)
+            XCTAssertEqual(warmSearchSnapshot.roots.map(\.id), initialSearchSnapshot.roots.map(\.id))
+            XCTAssertEqual(warmSearchSnapshot.files.map(\.id), initialSearchSnapshot.files.map(\.id))
+
+            let capture = EditFlowPerf.debugCaptureSnapshot(finish: true)
+            let buckets = searchCatalogSnapshotBuckets(capture)
+            let missCount = buckets
+                .filter { $0.sanitizedDimensions.contains("cacheHit=false") }
+                .reduce(0) { $0 + $1.sampleCount }
+            let hitCount = buckets
+                .filter { $0.sanitizedDimensions.contains("cacheHit=true") }
+                .reduce(0) { $0 + $1.sampleCount }
+            XCTAssertEqual(missCount, 1)
+            XCTAssertEqual(hitCount, 1)
+        #endif
+    }
+
+    func runTestSessionBoundStaticSnapshotInvalidatesForMutationAndRootUnload() async throws {
+        #if DEBUG
+            let worktree = try makeTemporaryRoot(name: "StaticSnapshotInvalidationWorktree")
+            let original = worktree.appendingPathComponent("Original.swift")
+            let added = worktree.appendingPathComponent("Added.swift")
+            try write("struct Original {}", to: original)
+            let store = WorkspaceFileContextStore()
+            let record = try await store.loadRoot(path: worktree.path, kind: .sessionWorktree)
+            let scope = WorkspaceLookupRootScope.sessionBoundWorkspace(
+                canonicalRootPaths: [],
+                physicalRootPaths: [worktree.path]
+            )
+
+            EditFlowPerf.resetDebugCaptureForTesting()
+            defer { EditFlowPerf.resetDebugCaptureForTesting() }
+            switch EditFlowPerf.beginDebugCapture(label: "static-path-snapshot-invalidation", maxSamples: 100) {
+            case .started:
+                break
+            case .busy:
+                return XCTFail("Performance capture should start")
+            }
+
+            let firstOriginal = await store.lookupPath("Original.swift", rootScope: scope)
+            let secondOriginal = await store.lookupPath("Original.swift", rootScope: scope)
+            XCTAssertEqual(firstOriginal?.file?.rootID, record.id)
+            XCTAssertEqual(secondOriginal?.file?.rootID, record.id)
+            try write("struct Added {}", to: added)
+            await store.replayObservedFileSystemDeltas(rootID: record.id, deltas: [.fileAdded("Added.swift")])
+            let addedLookup = await store.lookupPath("Added.swift", rootScope: scope)
+            XCTAssertEqual(addedLookup?.file?.rootID, record.id)
+            await store.unloadRoot(id: record.id)
+            let unloadedLookup = await store.lookupPath("Original.swift", rootScope: scope)
+            XCTAssertNil(unloadedLookup)
+
+            let capture = EditFlowPerf.debugCaptureSnapshot(finish: true)
+            let snapshotBuildCount = capture.stages
+                .filter { $0.stageName == String(describing: EditFlowPerf.Stage.ReadFile.pathLookupStaticSnapshotBuild) }
+                .reduce(0) { $0 + $1.sampleCount }
+            XCTAssertEqual(snapshotBuildCount, 3)
+            let cacheCount = await store.staticPathMatchSnapshotCacheCountForTesting()
+            XCTAssertEqual(cacheCount, 1)
+        #endif
+    }
+
     func runTestResolvedClipboardPackagingRendersStoreCodemaps() async throws {
         let root = try makeTemporaryRoot(name: "ResolvedClipboard")
         let fileURL = root.appendingPathComponent("A.swift")
@@ -1031,25 +1227,33 @@ class WorkspaceFileContextStoreTestCase: XCTestCase {
 
         func runTestAcceptedCallbackBeforeActorEntryDelaysBarrierUntilCanonicalApply() async throws {
             let root = try makeTemporaryRoot(name: "AcceptedCallbackCanonicalBarrier")
+            let addedFileURL = root.appendingPathComponent("BeforeActorEntry.swift")
             let store = WorkspaceFileContextStore()
             let record = try await store.loadRoot(path: root.path)
-            try await store.startWatchingRoot(id: record.id)
+            let rootID = record.id
+            let attached = try await store.attachPublisherIngressWithoutStartingWatcherForTesting(rootID: rootID)
+            XCTAssertTrue(attached)
+            try write("accepted", to: addedFileURL)
 
             let sinkGate = AsyncGate()
             let barrierCompleted = AsyncSignal()
-            let rootID = record.id
             await store.setWatcherSinkWillApplyHandler { observedRootID in
                 guard observedRootID == rootID else { return }
                 await sinkGate.markStartedAndWaitForRelease()
             }
+            addTeardownBlock {
+                await sinkGate.release()
+                await store.setWatcherSinkWillApplyHandler(nil)
+                await store.stopWatchingRoot(id: rootID)
+            }
 
             let acceptedPayload = try await store.acceptWatcherPayloadForTesting(
                 rootID: rootID,
-                events: [(absolutePath: "/outside/before-actor-entry.swift", flags: createdFileFlags, eventId: 100)],
+                events: [(absolutePath: addedFileURL.path, flags: createdFileFlags, eventId: 100)],
                 scheduleDrain: false
             )
             let accepted = try XCTUnwrap(acceptedPayload)
-            let barrierTask = Task {
+            let barrierTask = Task.detached {
                 let samples = await store.awaitAppliedIngressForAllRoots()
                 await barrierCompleted.mark()
                 return samples
@@ -1063,9 +1267,6 @@ class WorkspaceFileContextStoreTestCase: XCTestCase {
             let sample = try XCTUnwrap(samples.first)
             XCTAssertEqual(sample.acceptedWatcherWatermark, accepted.rawValue)
             XCTAssertGreaterThanOrEqual(sample.appliedWatcherWatermark, accepted.rawValue)
-
-            await store.setWatcherSinkWillApplyHandler(nil)
-            await store.stopWatchingRoot(id: rootID)
         }
 
         func runTestBarrierCaptureCutExcludesCallbackAcceptedAfterCaptureUntilNextBarrier() async throws {
@@ -1083,7 +1284,7 @@ class WorkspaceFileContextStoreTestCase: XCTestCase {
                 await captureGate.markStartedAndWaitForRelease()
             }
 
-            let firstBarrierTask = Task {
+            let firstBarrierTask = Task.detached {
                 await store.awaitAppliedIngressForAllRoots()
             }
             await captureGate.waitUntilStarted()
@@ -1171,7 +1372,7 @@ class WorkspaceFileContextStoreTestCase: XCTestCase {
                 guard observedRootID == rootID else { return }
                 await flushGate.markStartedAndWaitForRelease()
             }
-            let barrierTask = Task {
+            let barrierTask = Task.detached {
                 await store.awaitAppliedIngressForAllRoots()
             }
             await flushGate.waitUntilStarted()
@@ -6628,6 +6829,26 @@ private extension String {
 final class WorkspaceFileContextStoreCoreTests: WorkspaceFileContextStoreTestCase {
     func testRootLoadIndexesFilesFoldersReadsContentAndLooksUpPaths() async throws {
         try await runTestRootLoadIndexesFilesFoldersReadsContentAndLooksUpPaths()
+    }
+
+    func testRepeatedPathLookupReusesStaticSnapshotForUnchangedCatalogGeneration() async throws {
+        try await runTestRepeatedPathLookupReusesStaticSnapshotForUnchangedCatalogGeneration()
+    }
+
+    func testExplicitRootRefsUseDistinctStaticSnapshotsAndDoNotPoisonCanonicalScope() async throws {
+        try await runTestExplicitRootRefsUseDistinctStaticSnapshotsAndDoNotPoisonCanonicalScope()
+    }
+
+    func testSessionBoundStaticSnapshotCacheUsesBoundedLRUEviction() async throws {
+        try await runTestSessionBoundStaticSnapshotCacheUsesBoundedLRUEviction()
+    }
+
+    func testStaticSnapshotLRUEvictionPreservesRetainedSearchCatalogGeneration() async throws {
+        try await runTestStaticSnapshotLRUEvictionPreservesRetainedSearchCatalogGeneration()
+    }
+
+    func testSessionBoundStaticSnapshotInvalidatesForMutationAndRootUnload() async throws {
+        try await runTestSessionBoundStaticSnapshotInvalidatesForMutationAndRootUnload()
     }
 
     func testResolvedClipboardPackagingRendersStoreCodemaps() async throws {

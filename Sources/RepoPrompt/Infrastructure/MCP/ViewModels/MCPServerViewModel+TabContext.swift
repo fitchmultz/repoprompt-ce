@@ -1708,11 +1708,31 @@ extension MCPServerViewModel {
         from metadata: RequestMetadata
     ) async -> WorkspaceLookupContext {
         let purpose = metadata.runPurpose ?? .unknown
-        let resolved = try? resolveTabContextSnapshot(
+        var resolved = try? resolveTabContextSnapshot(
             from: metadata,
             toolName: "file_tool_lookup_scope",
             policy: .allowLegacyImplicitRouting
         )
+        if var snapshot = resolved?.snapshot,
+           let sessionID = snapshot.activeAgentSessionID,
+           snapshot.worktreeBindingState == .unhydrated,
+           let agentWorktreeBindingStateResolver
+        {
+            snapshot.worktreeBindingState = await agentWorktreeBindingStateResolver(sessionID, snapshot.tabID)
+            resolved?.snapshot = snapshot
+            if let connectionID = metadata.connectionID,
+               var bound = tabContextByConnectionID[connectionID],
+               bound.tabID == snapshot.tabID,
+               bound.windowID == snapshot.windowID,
+               bound.workspaceID == snapshot.workspaceID,
+               bound.runID == snapshot.runID,
+               bound.activeAgentSessionID == snapshot.activeAgentSessionID,
+               bound.readFileAutoSelectionGeneration == snapshot.readFileAutoSelectionGeneration
+            {
+                bound.worktreeBindingState = snapshot.worktreeBindingState
+                tabContextByConnectionID[connectionID] = bound
+            }
+        }
         let baseScope = Self.resolveFileToolLookupRootScope(purpose: purpose, resolvedContext: resolved)
         guard let resolved else {
             return WorkspaceLookupContext(rootScope: baseScope, bindingProjection: nil)

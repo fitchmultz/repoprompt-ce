@@ -22,7 +22,7 @@ final class MCPCodeStructureWorktreeTests: XCTestCase {
         XCTAssertTrue(repair.snapshotsByFileID[file.id]?.fileAPI?.apiDescription.contains("DirectSessionWorktreeType") == true)
     }
 
-    func testMissingWorktreeSnapshotSelfHealsFromPhysicalFileAndRendersLogicalPath() async throws {
+    func testMissingWorktreeSnapshotReturnsPendingThenRendersRefreshedLogicalPath() async throws {
         let logicalRootURL = try makeTemporaryRoot(name: "Logical")
         let worktreeRootURL = try makeTemporaryRoot(name: "Worktree")
         try write(
@@ -49,27 +49,159 @@ final class MCPCodeStructureWorktreeTests: XCTestCase {
 
         let snapshotBeforeRepair = await store.codemapSnapshot(fileID: file.id)
         XCTAssertNil(snapshotBeforeRepair)
-        let dto = try await window.mcpServer.buildCodeStructureDTO(
+        let pendingDTO = try await window.mcpServer.buildCodeStructureDTO(
             fromRecords: [file],
             maxResults: 10,
             includeUnmappedPaths: true,
-            lookupContext: lookupContext,
-            selfHealTimeout: .seconds(12)
+            lookupContext: lookupContext
         )
 
-        XCTAssertEqual(dto.fileCount, 1)
-        XCTAssertTrue(dto.content.contains("WorktreeOnlyType"), dto.content)
-        XCTAssertFalse(dto.content.contains("CanonicalOnlyType"), dto.content)
-        XCTAssertTrue(dto.content.contains("Sources/App.swift"), dto.content)
-        XCTAssertFalse(dto.content.contains(worktreeRoot.standardizedFullPath), dto.content)
-        XCTAssertNil(dto.pendingPaths)
-        XCTAssertEqual(dto.worktreeScope?.rootMappings.first?.logicalRootPath, logicalRoot.standardizedFullPath)
-        XCTAssertEqual(dto.worktreeScope?.rootMappings.first?.effectiveRootPath, worktreeRoot.standardizedFullPath)
-        let snapshotAfterRepair = await store.codemapSnapshot(fileID: file.id)
-        XCTAssertNotNil(snapshotAfterRepair)
+        XCTAssertEqual(pendingDTO.fileCount, 0)
+        XCTAssertEqual(pendingDTO.pendingPaths, ["Sources/App.swift"])
+        XCTAssertNil(pendingDTO.unmappedPaths)
+        _ = try await waitForCodemapSnapshot(store: store, fileID: file.id, timeout: .seconds(12))
+
+        let refreshedDTO = try await window.mcpServer.buildCodeStructureDTO(
+            fromRecords: [file],
+            maxResults: 10,
+            includeUnmappedPaths: true,
+            lookupContext: lookupContext
+        )
+        XCTAssertEqual(refreshedDTO.fileCount, 1)
+        XCTAssertTrue(refreshedDTO.content.contains("WorktreeOnlyType"), refreshedDTO.content)
+        XCTAssertFalse(refreshedDTO.content.contains("CanonicalOnlyType"), refreshedDTO.content)
+        XCTAssertTrue(refreshedDTO.content.contains("Sources/App.swift"), refreshedDTO.content)
+        XCTAssertFalse(refreshedDTO.content.contains(worktreeRoot.standardizedFullPath), refreshedDTO.content)
+        XCTAssertNil(refreshedDTO.pendingPaths)
+        XCTAssertEqual(refreshedDTO.worktreeScope?.rootMappings.first?.logicalRootPath, logicalRoot.standardizedFullPath)
+        XCTAssertEqual(refreshedDTO.worktreeScope?.rootMappings.first?.effectiveRootPath, worktreeRoot.standardizedFullPath)
     }
 
     #if DEBUG
+        func testNewlySubmittedCodeStructureScanDoesNotBlockPendingResponse() async throws {
+            let logicalRootURL = try makeTemporaryRoot(name: "NonblockingLogical")
+            let worktreeRootURL = try makeTemporaryRoot(name: "NonblockingWorktree")
+            let fileURL = worktreeRootURL.appendingPathComponent("Sources/App.swift")
+            try write("struct NonblockingCodeStructureType {}\n", to: fileURL)
+
+            let window = try await makeWindow(root: logicalRootURL)
+            defer { WindowStatesManager.shared.unregisterWindowState(window) }
+            let store = window.workspaceFileContextStore
+            let logicalRoot = try await WorkspaceRootLoadTestSupport.loadRootMatchingCurrentFileSystemSettings(
+                in: window,
+                path: logicalRootURL.path
+            )
+            let worktreeRoot = try await store.loadRoot(path: worktreeRootURL.path, kind: .sessionWorktree)
+            let projection = makeProjection(logicalRoot: logicalRoot, physicalRoot: worktreeRoot, worktreeID: "nonblocking-code")
+            let lookupContext = WorkspaceLookupContext(rootScope: projection.lookupRootScope, bindingProjection: projection)
+            let file = try await fileRecord(at: fileURL, store: store, rootScope: projection.lookupRootScope)
+            let scanGate = AsyncGate()
+            await store.setCodemapScanWillStartHandlerForTesting { scannedFileID in
+                guard scannedFileID == file.id else { return }
+                await scanGate.markStartedAndWaitForRelease()
+            }
+            defer {
+                Task {
+                    await scanGate.release()
+                    await store.setCodemapScanWillStartHandlerForTesting(nil)
+                }
+            }
+
+            let responseCompleted = expectation(description: "get_code_structure returns while scan is gated")
+            var responseDTO: ToolResultDTOs.SelectedCodeStructureDTO?
+            var responseError: Error?
+            Task { @MainActor in
+                defer { responseCompleted.fulfill() }
+                do {
+                    responseDTO = try await window.mcpServer.buildCodeStructureDTO(
+                        fromRecords: [file],
+                        maxResults: 10,
+                        includeUnmappedPaths: false,
+                        lookupContext: lookupContext
+                    )
+                } catch {
+                    responseError = error
+                }
+            }
+
+            await scanGate.waitUntilStarted()
+            await fulfillment(of: [responseCompleted], timeout: 1)
+            if let responseError { throw responseError }
+            let dto = try XCTUnwrap(responseDTO)
+            XCTAssertEqual(dto.fileCount, 0)
+            XCTAssertEqual(dto.pendingPaths, ["Sources/App.swift"])
+            XCTAssertNil(dto.unmappedPaths)
+        }
+
+        func testDefaultWorkspaceContextDoesNotBlockOnNewlySubmittedScan() async throws {
+            let logicalRootURL = try makeTemporaryRoot(name: "ContextNonblockingLogical")
+            let worktreeRootURL = try makeTemporaryRoot(name: "ContextNonblockingWorktree")
+            let logicalFileURL = logicalRootURL.appendingPathComponent("Sources/App.swift")
+            let physicalFileURL = worktreeRootURL.appendingPathComponent("Sources/App.swift")
+            try write("struct CanonicalContextType {}\n", to: logicalFileURL)
+            try write("struct WorktreeContextType {}\n", to: physicalFileURL)
+
+            let window = try await makeWindow(root: logicalRootURL)
+            defer { WindowStatesManager.shared.unregisterWindowState(window) }
+            let store = window.workspaceFileContextStore
+            let logicalRoot = try await WorkspaceRootLoadTestSupport.loadRootMatchingCurrentFileSystemSettings(
+                in: window,
+                path: logicalRootURL.path
+            )
+            let worktreeRoot = try await store.loadRoot(path: worktreeRootURL.path, kind: .sessionWorktree)
+            let projection = makeProjection(logicalRoot: logicalRoot, physicalRoot: worktreeRoot, worktreeID: "nonblocking-context")
+            let lookupContext = WorkspaceLookupContext(rootScope: projection.lookupRootScope, bindingProjection: projection)
+            let file = try await fileRecord(at: physicalFileURL, store: store, rootScope: projection.lookupRootScope)
+            let context = MCPServerViewModel.TabContextSnapshot(
+                tabID: UUID(),
+                windowID: window.windowID,
+                workspaceID: window.workspaceManager.activeWorkspace?.id,
+                promptText: "Nonblocking context",
+                selection: StoredSelection(selectedPaths: [logicalFileURL.path], codemapAutoEnabled: false),
+                selectedMetaPromptIDs: [],
+                tabName: "Agent",
+                runID: nil,
+                frozenLookupContext: lookupContext,
+                explicitlyBound: true
+            )
+            let scanGate = AsyncGate()
+            await store.setCodemapScanWillStartHandlerForTesting { scannedFileID in
+                guard scannedFileID == file.id else { return }
+                await scanGate.markStartedAndWaitForRelease()
+            }
+            defer {
+                Task {
+                    await scanGate.release()
+                    await store.setCodemapScanWillStartHandlerForTesting(nil)
+                }
+            }
+
+            let responseCompleted = expectation(description: "default workspace_context returns while scan is gated")
+            var responseDTO: ToolResultDTOs.PromptContextDTO?
+            var responseError: Error?
+            Task { @MainActor in
+                defer { responseCompleted.fulfill() }
+                do {
+                    responseDTO = try await window.mcpServer.buildTabWorkspaceContext(
+                        context: context,
+                        include: ["prompt", "selection", "code", "tokens"],
+                        display: .relative,
+                        activeTabCompatibility: false
+                    )
+                } catch {
+                    responseError = error
+                }
+            }
+
+            await scanGate.waitUntilStarted()
+            await fulfillment(of: [responseCompleted], timeout: 1)
+            if let responseError { throw responseError }
+            let dto = try XCTUnwrap(responseDTO)
+            XCTAssertEqual(dto.codeStructure?.fileCount, 0)
+            XCTAssertEqual(dto.codeStructure?.pendingPaths, ["Sources/App.swift"])
+            XCTAssertNil(dto.codeStructure?.unmappedPaths)
+        }
+
         func testActiveWorktreeScanIsPreservedAndReportedPendingWithoutWaiting() async throws {
             let logicalRootURL = try makeTemporaryRoot(name: "ActiveScanLogical")
             let worktreeRootURL = try makeTemporaryRoot(name: "ActiveScanWorktree")
@@ -82,8 +214,18 @@ final class MCPCodeStructureWorktreeTests: XCTestCase {
             let window = try await makeWindow(root: logicalRootURL)
             defer { WindowStatesManager.shared.unregisterWindowState(window) }
             let store = window.workspaceFileContextStore
-            let logicalRoot = try await WorkspaceRootLoadTestSupport.loadRootMatchingCurrentFileSystemSettings(in: window, path: logicalRootURL.path)
-            let worktreeRoot = try await WorkspaceRootLoadTestSupport.loadRootMatchingCurrentFileSystemSettings(in: window, path: worktreeRootURL.path, kind: .sessionWorktree)
+            let logicalRoot = try await WorkspaceRootLoadTestSupport.loadRootMatchingCurrentFileSystemSettings(
+                in: window,
+                path: logicalRootURL.path
+            )
+            let worktreeRoot = try await WorkspaceRootLoadTestSupport.loadRootMatchingCurrentFileSystemSettings(
+                in: window,
+                path: worktreeRootURL.path,
+                kind: .sessionWorktree
+            )
+            let loadedWorktreeService = await store.fileSystemServiceForTesting(rootID: worktreeRoot.id)
+            let worktreeService = try XCTUnwrap(loadedWorktreeService)
+            await worktreeService.stopWatchingForChanges()
             let projection = makeProjection(logicalRoot: logicalRoot, physicalRoot: worktreeRoot, worktreeID: "active")
             let lookupContext = WorkspaceLookupContext(rootScope: projection.lookupRootScope, bindingProjection: projection)
             let file = try await fileRecord(at: fileURL, store: store, rootScope: projection.lookupRootScope)
@@ -118,8 +260,7 @@ final class MCPCodeStructureWorktreeTests: XCTestCase {
                 fromRecords: [file],
                 maxResults: 10,
                 includeUnmappedPaths: false,
-                lookupContext: lookupContext,
-                selfHealTimeout: .seconds(4)
+                lookupContext: lookupContext
             )
             let elapsed = start.duration(to: clock.now)
 
@@ -198,8 +339,7 @@ final class MCPCodeStructureWorktreeTests: XCTestCase {
             fromRecords: [fileA],
             maxResults: 10,
             includeUnmappedPaths: true,
-            lookupContext: WorkspaceLookupContext(rootScope: projectionA.lookupRootScope, bindingProjection: projectionA),
-            selfHealTimeout: .seconds(12)
+            lookupContext: WorkspaceLookupContext(rootScope: projectionA.lookupRootScope, bindingProjection: projectionA)
         )
         XCTAssertTrue(dtoA.content.contains("WorktreeAType"), dtoA.content)
 
@@ -207,8 +347,7 @@ final class MCPCodeStructureWorktreeTests: XCTestCase {
             fromRecords: [fileA, fileB],
             maxResults: 10,
             includeUnmappedPaths: true,
-            lookupContext: WorkspaceLookupContext(rootScope: projectionB.lookupRootScope, bindingProjection: projectionB),
-            selfHealTimeout: .seconds(12)
+            lookupContext: WorkspaceLookupContext(rootScope: projectionB.lookupRootScope, bindingProjection: projectionB)
         )
 
         XCTAssertEqual(dtoB.fileCount, 1)
@@ -243,12 +382,12 @@ final class MCPCodeStructureWorktreeTests: XCTestCase {
             rootScope: projection.lookupRootScope
         )
 
+        _ = try await store.repairMissingCodemapSnapshots(for: [file], timeout: .seconds(12))
         let primed = try await window.mcpServer.buildCodeStructureDTO(
             fromRecords: [file],
             maxResults: 10,
             includeUnmappedPaths: true,
-            lookupContext: lookupContext,
-            selfHealTimeout: .seconds(12)
+            lookupContext: lookupContext
         )
         XCTAssertTrue(primed.content.contains("CachedDeletedWorktreeType"), primed.content)
         try FileManager.default.removeItem(at: worktreeRootURL)
@@ -258,8 +397,7 @@ final class MCPCodeStructureWorktreeTests: XCTestCase {
                 fromRecords: [file],
                 maxResults: 10,
                 includeUnmappedPaths: true,
-                lookupContext: lookupContext,
-                selfHealTimeout: .zero
+                lookupContext: lookupContext
             )
             XCTFail("Expected deleted worktree scope to fail closed")
         } catch {
@@ -298,23 +436,20 @@ final class MCPCodeStructureWorktreeTests: XCTestCase {
             )
         }
 
-        let dto = try await window.mcpServer.buildCodeStructureDTO(
+        let lookupContext = WorkspaceLookupContext(rootScope: projection.lookupRootScope, bindingProjection: projection)
+        let pendingDTO = try await window.mcpServer.buildCodeStructureDTO(
             fromRecords: files,
             maxResults: 1,
             includeUnmappedPaths: false,
-            lookupContext: WorkspaceLookupContext(rootScope: projection.lookupRootScope, bindingProjection: projection),
-            selfHealTimeout: .seconds(6)
+            lookupContext: lookupContext
         )
 
-        XCTAssertLessThanOrEqual(dto.fileCount, 1)
-        XCTAssertNil(dto.pendingPaths)
-        XCTAssertEqual(dto.unmappedPaths, ["Sources/File2.swift", "Sources/File3.swift"])
+        XCTAssertEqual(pendingDTO.fileCount, 0)
+        XCTAssertEqual(pendingDTO.pendingPaths, ["Sources/File1.swift"])
+        XCTAssertEqual(pendingDTO.unmappedPaths, ["Sources/File2.swift", "Sources/File3.swift"])
+        _ = try await waitForCodemapSnapshot(store: store, fileID: files[0].id)
         let firstSnapshot = await store.codemapSnapshot(fileID: files[0].id)
-        let secondSnapshot = await store.codemapSnapshot(fileID: files[1].id)
-        let thirdSnapshot = await store.codemapSnapshot(fileID: files[2].id)
         XCTAssertNotNil(firstSnapshot)
-        XCTAssertNil(secondSnapshot)
-        XCTAssertNil(thirdSnapshot)
     }
 
     func testUnavailableWorktreeScopeFailsClosedBeforeCanonicalScan() async throws {
@@ -346,8 +481,7 @@ final class MCPCodeStructureWorktreeTests: XCTestCase {
                 fromRecords: [],
                 maxResults: 10,
                 includeUnmappedPaths: true,
-                lookupContext: WorkspaceLookupContext(rootScope: projection.lookupRootScope, bindingProjection: projection),
-                selfHealTimeout: .zero
+                lookupContext: WorkspaceLookupContext(rootScope: projection.lookupRootScope, bindingProjection: projection)
             )
             XCTFail("Expected unavailable worktree scope to fail closed")
         } catch {
@@ -398,7 +532,13 @@ final class MCPCodeStructureWorktreeTests: XCTestCase {
         )
         let activeWorkspace = try XCTUnwrap(window.workspaceManager.activeWorkspace)
         window.promptManager.loadComposeTabsFromWorkspace(activeWorkspace, syncPromptText: true)
-        _ = try await WorkspaceRootLoadTestSupport.loadRootMatchingCurrentFileSystemSettings(in: window, path: root.path)
+        _ = try await WorkspaceRootLoadTestSupport.loadRootMatchingCurrentFileSystemSettings(
+            in: window,
+            path: root.path
+        )
+        addTeardownBlock { @MainActor in
+            await window.workspaceFilesViewModel.cancelAllScans()
+        }
         return window
     }
 

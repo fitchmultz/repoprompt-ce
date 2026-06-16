@@ -121,7 +121,10 @@ final class MCPSelectionToolProvider: MCPWindowToolProviding {
         let metadata = await dependencies.captureRequestMetadata()
         try Task.checkCancellation()
         await MCPToolExecutionHandlerPhaseContext.report(.manageSelectionAutoSelectionDrain)
-        guard await dependencies.drainReadFileAutoSelection(metadata, .mirroredSelectionAndMetrics) == .completed else {
+        let drainRequirement: MCPReadFileAutoSelectionCoordinator.DrainRequirement = op == "get"
+            ? .canonicalSelection
+            : .mirroredSelectionAndMetrics
+        guard await dependencies.drainReadFileAutoSelection(metadata, drainRequirement) == .completed else {
             throw CancellationError()
         }
         await MCPToolExecutionHandlerPhaseContext.report(.manageSelectionAutoSelectionDrain, transition: .completed)
@@ -130,9 +133,11 @@ final class MCPSelectionToolProvider: MCPWindowToolProviding {
         let lookupContext = await dependencies.resolveFileToolLookupContext(metadata)
         try Task.checkCancellation()
         let lookupRootScope = lookupContext.rootScope
-        await MCPToolExecutionHandlerPhaseContext.report(.manageSelectionIngressWait)
-        _ = await dependencies.promptVM.workspaceFileContextStore.awaitAppliedIngress(rootScope: lookupRootScope)
-        await MCPToolExecutionHandlerPhaseContext.report(.manageSelectionIngressWait, transition: .completed)
+        if op != "get" {
+            await MCPToolExecutionHandlerPhaseContext.report(.manageSelectionIngressWait)
+            _ = await dependencies.promptVM.workspaceFileContextStore.awaitAppliedIngress(rootScope: lookupRootScope)
+            await MCPToolExecutionHandlerPhaseContext.report(.manageSelectionIngressWait, transition: .completed)
+        }
         try Task.checkCancellation()
         await MCPToolExecutionHandlerPhaseContext.report(.manageSelectionConstruction)
         if !resolvedContext.usesActiveTabCompatibility {

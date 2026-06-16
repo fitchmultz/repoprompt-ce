@@ -249,7 +249,12 @@ extension MCPServerViewModel {
             stored: lookupContext.physicalizeSelection(selection),
             codeMapUsage: effectiveMCPCodeMapUsage(codeMapUsageOverride ?? promptVM.codeMapUsage)
         )
-        let collections = await SelectionReplyAssembler.collect(from: source, owner: self, rootScope: lookupContext.rootScope)
+        let collections = await SelectionReplyAssembler.collect(
+            from: source,
+            owner: self,
+            rootScope: lookupContext.rootScope,
+            contentPolicy: includeBlocks ? .loadContent : .cachedOnly
+        )
         let formatter = PathFormatter(format: display, owner: self, projection: lookupContext.bindingProjection)
         let tokens = TokenServices(owner: self)
         var reply = await SelectionReplyAssembler.buildSelectionReply(
@@ -293,11 +298,31 @@ extension MCPServerViewModel {
         }
         let effectiveSelection = lookupContext.physicalizeSelection(selection)
         let source = StoredSelectionSource(stored: effectiveSelection, codeMapUsage: effectiveOverride)
-        let collections = await SelectionReplyAssembler.collect(from: source, owner: self, rootScope: lookupContext.rootScope)
-        let evaluation = await evaluateVirtualPromptEntries(
-            for: effectiveSelection,
-            codeMapUsage: collections.codeMapUsage,
-            rootScope: lookupContext.rootScope
+        let collections = await SelectionReplyAssembler.collect(
+            from: source,
+            owner: self,
+            rootScope: lookupContext.rootScope,
+            contentPolicy: includeBlocks ? .loadContent : .cachedOnly
+        )
+        let resolvedPromptContext = promptVM.resolvePromptContext()
+        let accountingContext = virtualContext ?? TabContextSnapshot(
+            tabID: promptVM.activeComposeTabID ?? UUID(),
+            windowID: windowID,
+            workspaceID: workspaceManager?.activeWorkspace?.id,
+            promptText: promptVM.promptText,
+            selection: effectiveSelection,
+            selectedMetaPromptIDs: [],
+            tabName: "Active",
+            runID: nil,
+            explicitlyBound: false
+        )
+        let preparedAccounting = await prepareMCPTokenAccounting(
+            context: accountingContext,
+            effectiveSelection: effectiveSelection,
+            collections: collections,
+            resolvedContext: resolvedPromptContext,
+            lookupContext: lookupContext,
+            activeTabCompatibility: virtualContext == nil
         )
         let formatter = PathFormatter(format: display, owner: self, projection: lookupContext.bindingProjection)
         let tokens = TokenServices(owner: self)
@@ -314,23 +339,18 @@ extension MCPServerViewModel {
             tokens: tokens,
             userPresetState: userPresetState,
             copyUsage: copyUsage != .auto ? copyUsage : nil,
-            entryResultsByFileID: evaluation.entryResultsByFileID
+            entryResultsByFileID: preparedAccounting.entryResultsByFileID
         )
 
-        let tokenStatsOverride: ToolResultDTOs.TokenStats?
-        if let virtualContext {
-            let selectedFiles = collections.selected.map(\.file)
-            let codemapFiles = collections.codemap.map(\.file)
-            tokenStatsOverride = await buildVirtualSelectionTokenStats(
-                for: virtualContext,
-                filesReply: filesReply,
-                resolvedContext: promptVM.resolvePromptContext(),
-                selectedFiles: selectedFiles,
-                codemapFiles: codemapFiles,
-                lookupContext: lookupContext
-            )
+        let tokenStatsOverride: ToolResultDTOs.TokenStats = if let published = preparedAccounting.activePublishedSnapshot {
+            Self.publishedTokenStats(published)
         } else {
-            tokenStatsOverride = nil
+            Self.makeTokenStats(
+                filesTokens: filesReply.totalTokens,
+                filesContentTokens: (filesReply.summary?.fullTokens ?? 0) + (filesReply.summary?.sliceTokens ?? 0),
+                codemapsTokens: filesReply.summary?.codemapTokens,
+                breakdown: preparedAccounting.breakdown
+            )
         }
 
         var reply = await SelectionReplyAssembler.makeSelectionReply(
@@ -342,7 +362,8 @@ extension MCPServerViewModel {
             extraInvalid: extraInvalid,
             userPresetState: userPresetState,
             tokens: tokens,
-            tokenStatsOverride: tokenStatsOverride
+            tokenStatsOverride: tokenStatsOverride,
+            tokenAccountingOverride: preparedAccounting.tokenAccounting
         )
 
         // Inject minimal codeStructure.unmappedPaths to report pending codemaps
@@ -365,7 +386,8 @@ extension MCPServerViewModel {
                     userCopyTokens: reply.userCopyTokens,
                     userChatTokens: reply.userChatTokens,
                     normalizedCodeMapUsage: reply.normalizedCodeMapUsage,
-                    tokenStats: reply.tokenStats
+                    tokenStats: reply.tokenStats,
+                    tokenAccounting: reply.tokenAccounting
                 )
             }
         }

@@ -200,7 +200,12 @@ extension MCPServerViewModel {
             let normalizedCodeMapUsage: String
         }
 
-        static func collect(from source: SelectionSource, owner: MCPServerViewModel, rootScope: WorkspaceLookupRootScope = .allLoaded) async -> SelectionCollections {
+        static func collect(
+            from source: SelectionSource,
+            owner: MCPServerViewModel,
+            rootScope: WorkspaceLookupRootScope = .allLoaded,
+            contentPolicy: PromptContextAccountingContentPolicy = .loadContent
+        ) async -> SelectionCollections {
             let selection = await source.resolvedSelection()
             let usage = await source.currentCodeMapUsage()
             let store = await MainActor.run { owner.promptVM.workspaceFileContextStore }
@@ -211,7 +216,8 @@ extension MCPServerViewModel {
                 store: store,
                 rootScope: rootScope,
                 profile: .uiAssisted,
-                codeMapUsage: usage
+                codeMapUsage: usage,
+                contentPolicy: contentPolicy
             )
 
             let selected = resolution.entries.compactMap { entry -> SelectedEntry? in
@@ -602,6 +608,7 @@ extension MCPServerViewModel {
             userPresetState: UserPresetState? = nil,
             tokens: TokenServices? = nil,
             tokenStatsOverride: ToolResultDTOs.TokenStats? = nil,
+            tokenAccountingOverride: ToolResultDTOs.TokenAccountingDTO? = nil,
             pathProjection: WorkspaceRootBindingProjection? = nil
         ) async -> ToolResultDTOs.SelectionReply {
             var blocks: [String]? = nil
@@ -615,23 +622,20 @@ extension MCPServerViewModel {
                 invalid.append(candidate)
             }
 
-            // Compute workspace token stats if tokens service is available
-            let tokenStats: ToolResultDTOs.TokenStats? = if let tokenStatsOverride {
-                tokenStatsOverride
-            } else {
-                await {
-                    guard let tokens else { return nil }
-                    // Force immediate token recount to avoid stale breakdown values
-                    await tokens.owner.promptVM.tokenCountingViewModel.forceImmediateRecount()
-                    // Extract content vs codemap breakdown from summary
-                    let filesContentTokens = (filesReply.summary?.fullTokens ?? 0) + (filesReply.summary?.sliceTokens ?? 0)
-                    let codemapsTokens = filesReply.summary?.codemapTokens ?? 0
-                    return await tokens.owner.computeWorkspaceTokenStats(
-                        filesTokens: filesReply.totalTokens,
-                        filesContentTokens: filesContentTokens > 0 ? filesContentTokens : nil,
-                        codemapsTokens: codemapsTokens > 0 ? codemapsTokens : nil
-                    )
-                }()
+            // MCP replies never await an immediate recount. Use the latest published
+            // active-tab snapshot when no tab-scoped override was prepared.
+            let fallbackPublished = await MainActor.run {
+                tokens?.owner.promptVM.tokenCountingViewModel.latestPublishedTokenSnapshot(for: nil)
+            }
+            let tokenStats: ToolResultDTOs.TokenStats? = tokenStatsOverride
+                ?? fallbackPublished.map(MCPServerViewModel.publishedTokenStats)
+            let tokenAccounting = tokenAccountingOverride ?? fallbackPublished.map { snapshot in
+                ToolResultDTOs.TokenAccountingDTO(
+                    status: !snapshot.isComplete ? "incomplete" : (snapshot.isStale ? "stale" : "fresh"),
+                    source: "active_tab_published",
+                    refreshPending: snapshot.refreshPending,
+                    incompleteComponents: snapshot.isComplete ? nil : ["published_snapshot"]
+                )
             }
 
             return ToolResultDTOs.SelectionReply(
@@ -652,6 +656,7 @@ extension MCPServerViewModel {
                 userChatTokens: filesReply.userChatTokens ?? userPresetState?.chatTokens,
                 normalizedCodeMapUsage: filesReply.normalizedCodeMapUsage ?? userPresetState?.normalizedCodeMapUsage,
                 tokenStats: tokenStats,
+                tokenAccounting: tokenAccounting,
                 copyPresetProjection: filesReply.copyPresetProjection
             )
         }
@@ -737,7 +742,8 @@ extension MCPServerViewModel {
                 userChatTokens: reply.userChatTokens,
                 normalizedCodeMapUsage: reply.normalizedCodeMapUsage,
                 // Preserve workspace token stats (total breakdown stays the same even for filtered view)
-                tokenStats: reply.tokenStats
+                tokenStats: reply.tokenStats,
+                tokenAccounting: reply.tokenAccounting
             )
         }
     }
