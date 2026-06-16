@@ -301,7 +301,7 @@ class LifecycleQueueTests(LifecycleTestCase):
             self.assertEqual(silent_startup_seconds, conductor.ROOT_TEST_SILENT_STARTUP_RETRY_SECONDS)
             self.assertTrue(start_new_session)
 
-    def test_root_tests_retry_one_silent_suite_startup_timeout(self) -> None:
+    def test_root_tests_retry_one_silent_suite_startup_timeout_without_skip_build(self) -> None:
         tmp, _state = self.make_state()
         self.addCleanup(tmp.cleanup)
         completed = subprocess.CompletedProcess(
@@ -320,6 +320,14 @@ class LifecycleQueueTests(LifecycleTestCase):
 
         self.assertEqual(code, 0)
         self.assertEqual(stream.call_count, 2)
+        self.assertEqual(
+            stream.call_args_list[0].args[1],
+            ["swift", "test", "--skip-build", "--filter", "RepoPromptTests.SilentStartupTests"],
+        )
+        self.assertEqual(
+            stream.call_args_list[1].args[1],
+            ["swift", "test", "--filter", "RepoPromptTests.SilentStartupTests"],
+        )
 
     def test_streaming_silent_startup_guard_does_not_cap_active_process_runtime(self) -> None:
         script = "import time; print('ready', flush=True); time.sleep(0.2); print('done', flush=True)"

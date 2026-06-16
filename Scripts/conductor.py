@@ -3606,10 +3606,13 @@ def operation_root_tests(repo_root: Path) -> int:
         ordered_suites.append(checkout_suite)
 
     for suite in ordered_suites:
-        suite_argv = ["swift", "test", "--skip-build", "--filter", suite]
-        for attempt in range(1, 3):
+        suite_attempts = [
+            (f"swift test --skip-build --filter {suite}", ["swift", "test", "--skip-build", "--filter", suite]),
+            (f"swift test --filter {suite}", ["swift", "test", "--filter", suite]),
+        ]
+        for attempt, (suite_label, suite_argv) in enumerate(suite_attempts, start=1):
             code, _stdout, _stderr, output_seen = run_operation_command_streaming_with_silent_startup_guard(
-                f"swift test --skip-build --filter {suite}",
+                suite_label,
                 suite_argv,
                 repo_root,
                 silent_startup_seconds=ROOT_TEST_SILENT_STARTUP_RETRY_SECONDS,
@@ -3617,7 +3620,7 @@ def operation_root_tests(repo_root: Path) -> int:
             )
             if code == 124 and attempt == 1 and not output_seen:
                 print(
-                    f"WARNING: {suite} produced no output for {ROOT_TEST_SILENT_STARTUP_RETRY_SECONDS:.0f}s; retrying once",
+                    f"WARNING: {suite} produced no output for {ROOT_TEST_SILENT_STARTUP_RETRY_SECONDS:.0f}s; retrying once without --skip-build",
                     flush=True,
                 )
                 continue
