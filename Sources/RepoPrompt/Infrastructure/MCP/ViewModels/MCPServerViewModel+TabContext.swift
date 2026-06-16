@@ -219,41 +219,49 @@ extension MCPServerViewModel {
     struct PendingRunScopedContextStore {
         private var storage: [String: [Int: [UUID: TabScopedContext]]] = [:]
 
+        private static func storageKey(for clientName: String) -> String {
+            MCPClientIdentity.storageKey(clientName) ?? clientName
+        }
+
         var isEmpty: Bool {
             storage.isEmpty
         }
 
         func contains(clientName: String, windowID: Int, runID: UUID) -> Bool {
-            storage[clientName]?[windowID]?[runID] != nil
+            let clientKey = Self.storageKey(for: clientName)
+            return storage[clientKey]?[windowID]?[runID] != nil
         }
 
         @discardableResult
         mutating func enqueueReplacing(_ context: TabScopedContext, clientName: String, windowID: Int) -> Int {
             guard let runID = context.runID else { return queueLength(clientName: clientName, windowID: windowID) }
+            let clientKey = Self.storageKey(for: clientName)
 
-            // Keep exactly one pending entry per run for a client. If the run is reinstalled
-            // for a different window/tab before a socket claims it, the newest exact run
-            // context wins deterministically instead of leaving FIFO order to decide.
-            if var windowMap = storage[clientName] {
+            // Keep exactly one pending entry per run for a client family. Managed pi Context
+            // Builder queues under the provider client name (`pi`) while each extension helper
+            // connects as the schema/tool bridge (`pi-schema`); both must claim the same
+            // run-scoped context just like connection policy storage does.
+            if var windowMap = storage[clientKey] {
                 for existingWindowID in Array(windowMap.keys) {
                     windowMap[existingWindowID]?.removeValue(forKey: runID)
                     if windowMap[existingWindowID]?.isEmpty == true {
                         windowMap.removeValue(forKey: existingWindowID)
                     }
                 }
-                storage[clientName] = windowMap.isEmpty ? nil : windowMap
+                storage[clientKey] = windowMap.isEmpty ? nil : windowMap
             }
 
-            var windowMap = storage[clientName] ?? [:]
+            var windowMap = storage[clientKey] ?? [:]
             var runMap = windowMap[windowID] ?? [:]
             runMap[runID] = context
             windowMap[windowID] = runMap
-            storage[clientName] = windowMap
+            storage[clientKey] = windowMap
             return runMap.count
         }
 
         mutating func pop(clientName: String, windowID: Int, runID: UUID) -> (context: TabScopedContext?, remaining: Int) {
-            guard var windowMap = storage[clientName],
+            let clientKey = Self.storageKey(for: clientName)
+            guard var windowMap = storage[clientKey],
                   var runMap = windowMap[windowID]
             else {
                 return (nil, 0)
@@ -266,15 +274,16 @@ extension MCPServerViewModel {
                 windowMap[windowID] = runMap
             }
             if windowMap.isEmpty {
-                storage.removeValue(forKey: clientName)
+                storage.removeValue(forKey: clientKey)
             } else {
-                storage[clientName] = windowMap
+                storage[clientKey] = windowMap
             }
             return (context, runMap.count)
         }
 
         mutating func popByRunID(clientName: String, runID: UUID) -> (context: TabScopedContext?, windowID: Int?, remaining: Int) {
-            guard var windowMap = storage[clientName] else {
+            let clientKey = Self.storageKey(for: clientName)
+            guard var windowMap = storage[clientKey] else {
                 return (nil, nil, 0)
             }
 
@@ -288,9 +297,9 @@ extension MCPServerViewModel {
                     windowMap[windowID] = runMap
                 }
                 if windowMap.isEmpty {
-                    storage.removeValue(forKey: clientName)
+                    storage.removeValue(forKey: clientKey)
                 } else {
-                    storage[clientName] = windowMap
+                    storage[clientKey] = windowMap
                 }
                 return (context, windowID, runMap.count)
             }
@@ -299,23 +308,26 @@ extension MCPServerViewModel {
         }
 
         func queueLength(clientName: String, windowID: Int) -> Int {
-            storage[clientName]?[windowID]?.count ?? 0
+            let clientKey = Self.storageKey(for: clientName)
+            return storage[clientKey]?[windowID]?.count ?? 0
         }
 
         mutating func clear(clientName: String) {
-            storage.removeValue(forKey: clientName)
+            let clientKey = Self.storageKey(for: clientName)
+            storage.removeValue(forKey: clientKey)
         }
 
         /// Clear only one window queue for a given client.
         @discardableResult
         mutating func clear(clientName: String, windowID: Int) -> Int {
-            guard var windowMap = storage[clientName] else { return 0 }
+            let clientKey = Self.storageKey(for: clientName)
+            guard var windowMap = storage[clientKey] else { return 0 }
             let removed = windowMap[windowID]?.count ?? 0
             windowMap.removeValue(forKey: windowID)
             if windowMap.isEmpty {
-                storage.removeValue(forKey: clientName)
+                storage.removeValue(forKey: clientKey)
             } else {
-                storage[clientName] = windowMap
+                storage[clientKey] = windowMap
             }
             return removed
         }
@@ -359,9 +371,10 @@ extension MCPServerViewModel {
 
     @MainActor
     private func recordLastContext(clientName: String, context: TabScopedContext) {
-        var perWindow = lastContextByClientAndWindow[clientName] ?? [:]
+        let clientKey = MCPClientIdentity.storageKey(clientName) ?? clientName
+        var perWindow = lastContextByClientAndWindow[clientKey] ?? [:]
         perWindow[context.windowID] = context
-        lastContextByClientAndWindow[clientName] = perWindow
+        lastContextByClientAndWindow[clientKey] = perWindow
     }
 
     @MainActor

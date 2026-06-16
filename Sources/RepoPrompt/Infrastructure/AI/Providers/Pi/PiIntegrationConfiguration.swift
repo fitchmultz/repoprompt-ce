@@ -114,6 +114,7 @@ enum PiIntegrationConfiguration {
     static let managedRunEnvironmentKey = "REPOPROMPT_PI_MANAGED_RUN"
     static let managedRunEnvironmentValue = "1"
     static let permissionLevelEnvironmentKey = "REPOPROMPT_PI_PERMISSION_LEVEL"
+    static let inheritedSubagentExtensionsEnvironmentKey = "PI_SUBAGENT_INHERITED_EXTENSIONS_JSON"
 
     /// A pi model is eligible for RepoPrompt when pi reports a non-empty model
     /// identifier that can be selected by pi's RPC `set_model` contract. RepoPrompt
@@ -154,11 +155,19 @@ enum PiIntegrationConfiguration {
     }
 
     static func managedRunEnvironment(
-        permissionLevel: PiAgentToolPreferences.PermissionLevel? = nil
+        permissionLevel: PiAgentToolPreferences.PermissionLevel? = nil,
+        bridgeExtensionPath: String? = nil
     ) -> [String: String] {
         var environment = [managedRunEnvironmentKey: managedRunEnvironmentValue]
         if let permissionLevel {
             environment[permissionLevelEnvironmentKey] = permissionLevel.rawValue
+        }
+        if let bridgeExtensionPath,
+           !bridgeExtensionPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           let encoded = try? JSONEncoder().encode([bridgeExtensionPath]),
+           let json = String(data: encoded, encoding: .utf8)
+        {
+            environment[inheritedSubagentExtensionsEnvironmentKey] = json
         }
         return environment
     }

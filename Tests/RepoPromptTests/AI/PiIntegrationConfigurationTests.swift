@@ -115,6 +115,28 @@ final class PiIntegrationConfigurationTests: XCTestCase {
         XCTAssertFalse(arguments.contains("--no-builtin-tools"))
     }
 
+    func testManagedRunEnvironmentPublishesBridgeForPiSubagentInheritance() throws {
+        let environment = PiIntegrationConfiguration.managedRunEnvironment(
+            permissionLevel: .fullAccess,
+            bridgeExtensionPath: "/tmp/repoprompt-bridge.ts"
+        )
+
+        XCTAssertEqual(environment[PiIntegrationConfiguration.managedRunEnvironmentKey], PiIntegrationConfiguration.managedRunEnvironmentValue)
+        XCTAssertEqual(environment[PiIntegrationConfiguration.permissionLevelEnvironmentKey], PiAgentToolPreferences.PermissionLevel.fullAccess.rawValue)
+        let rawInheritedExtensions = try XCTUnwrap(environment[PiIntegrationConfiguration.inheritedSubagentExtensionsEnvironmentKey])
+        let decoded = try JSONDecoder().decode([String].self, from: Data(rawInheritedExtensions.utf8))
+        XCTAssertEqual(decoded, ["/tmp/repoprompt-bridge.ts"])
+    }
+
+    func testManagedRunEnvironmentOmitsBlankBridgeInheritance() {
+        let environment = PiIntegrationConfiguration.managedRunEnvironment(
+            permissionLevel: .fullAccess,
+            bridgeExtensionPath: "  "
+        )
+
+        XCTAssertNil(environment[PiIntegrationConfiguration.inheritedSubagentExtensionsEnvironmentKey])
+    }
+
     func testManagedRPCAvailabilityUsesColdStartTolerantProbeTimeouts() {
         XCTAssertGreaterThan(PiIntegrationConfiguration.managedRPCVersionProbeTimeout, 5)
         XCTAssertGreaterThan(

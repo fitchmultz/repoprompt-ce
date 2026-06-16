@@ -252,6 +252,91 @@ final class TabContextRoutingTests: XCTestCase {
         XCTAssertEqual(exact.remaining, 0)
     }
 
+    @MainActor
+    func testPendingRunScopedStoreUsesCanonicalPiFamilyKey() {
+        var store = MCPServerViewModel.PendingRunScopedContextStore()
+        let runID = UUID()
+        let context = makeTabContext(runID: runID, windowID: 11)
+
+        XCTAssertEqual(
+            store.enqueueReplacing(context, clientName: AgentProviderKind.piMCPClientID, windowID: 11),
+            1
+        )
+        XCTAssertEqual(
+            store.queueLength(
+                clientName: PiRepoPromptBridgeExtensionInstaller.managedBridgeExecutionClientName,
+                windowID: 11
+            ),
+            1
+        )
+
+        let exact = MCPServerViewModel.test_popPendingContextForBinding(
+            from: &store,
+            clientName: PiRepoPromptBridgeExtensionInstaller.managedBridgeExecutionClientName,
+            windowID: 11,
+            runHint: runID
+        )
+        XCTAssertEqual(exact.context?.runID, runID)
+        XCTAssertTrue(exact.usedRunHint)
+        XCTAssertEqual(exact.remaining, 0)
+        XCTAssertEqual(store.queueLength(clientName: AgentProviderKind.piMCPClientID, windowID: 11), 0)
+    }
+
+    @MainActor
+    func testPendingPiFamilyContextResolvesForManagedBridgeAlias() throws {
+        let previousAutoStart = GlobalSettingsStore.shared.mcpAutoStart()
+        GlobalSettingsStore.shared.setMCPAutoStart(false, commit: false)
+        let window = WindowState()
+        GlobalSettingsStore.shared.setMCPAutoStart(previousAutoStart, commit: false)
+        let runID = UUID()
+        let connectionID = UUID()
+        let context = makeTabContext(runID: runID, windowID: window.windowID)
+
+        defer {
+            window.mcpServer.removeTabContext(
+                forConnectionID: connectionID,
+                clientName: PiRepoPromptBridgeExtensionInstaller.managedBridgeExecutionClientName,
+                windowID: window.windowID,
+                runID: runID
+            )
+        }
+
+        window.mcpServer.installFrozenTabContext(
+            clientID: nil,
+            clientName: AgentProviderKind.piMCPClientID,
+            context: context,
+            signalRouting: false
+        )
+        XCTAssertEqual(window.mcpServer.pendingContextQueueLength(
+            clientName: PiRepoPromptBridgeExtensionInstaller.managedBridgeExecutionClientName,
+            windowID: window.windowID
+        ), 1)
+
+        XCTAssertTrue(window.mcpServer.registerRunIDMapping(
+            connectionID: connectionID,
+            runID: runID,
+            windowID: window.windowID,
+            signalRouting: false
+        ))
+
+        let resolved = try window.mcpServer.resolveTabContext(
+            connectionID: connectionID,
+            clientName: PiRepoPromptBridgeExtensionInstaller.managedBridgeExecutionClientName,
+            providedWindowID: window.windowID,
+            toolName: MCPWindowToolName.workspaceContext,
+            policy: .requireExplicitOrRunScoped,
+            runPurpose: .discoverRun
+        )
+
+        guard case let .tabContextSnapshot(snapshot, source) = resolved else {
+            return XCTFail("Expected pi bridge alias to resolve the pending run-scoped context")
+        }
+        XCTAssertEqual(snapshot.runID, runID)
+        XCTAssertEqual(snapshot.tabID, context.tabID)
+        XCTAssertEqual(source, .pendingRunScoped)
+        XCTAssertEqual(window.mcpServer.pendingContextQueueLength(clientName: AgentProviderKind.piMCPClientID, windowID: window.windowID), 0)
+    }
+
     func testRunHandoverRequiresExactForwardAndReverseMapping() {
         let runID = UUID()
         let connectionID = UUID()

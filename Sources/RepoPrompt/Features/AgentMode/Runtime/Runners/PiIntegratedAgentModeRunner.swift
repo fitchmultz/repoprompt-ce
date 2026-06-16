@@ -101,7 +101,8 @@ final class PiIntegratedAgentModeRunner {
                     launchPolicy: launchPolicyProvider()
                 ),
                 environmentOverrides: PiIntegrationConfiguration.managedRunEnvironment(
-                    permissionLevel: runtimePermission.piPermissionLevel ?? .managedDefault
+                    permissionLevel: runtimePermission.piPermissionLevel ?? .managedDefault,
+                    bridgeExtensionPath: bridgeExtensionURL.path
                 )
             )
         )
