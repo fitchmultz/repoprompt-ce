@@ -72,13 +72,21 @@ TEST_TIMEOUT_SECONDS = 15 * 60
 MEDIUM_TIMEOUT_SECONDS = 60 * 60
 RELEASE_TIMEOUT_SECONDS = 2 * 60 * 60
 DEFAULT_XCTEST_STALL_SECONDS = 120.0
+ROOT_TEST_TIMEOUT_SECONDS = MEDIUM_TIMEOUT_SECONDS
+ROOT_TEST_SUITE_STARTUP_TIMEOUT_SECONDS = 90.0
 SMOKE_AGENT_WAIT_SECONDS = 120.0
 WORKSPACE_FILE_CONTEXT_STORE_TEST_SHARDS = [
     "WorkspaceFileContextStoreCoreTests",
+    "WorkspaceFileContextStoreCorePart2Tests",
+    "WorkspaceFileContextStorePathLookupTests",
     "WorkspaceFileContextStoreIngressTests",
+    "WorkspaceFileContextStoreIngressPart2Tests",
     "WorkspaceFileContextStoreSearchTests",
+    "WorkspaceFileContextStoreSearchPart2Tests",
     "WorkspaceFileContextStoreMutationTests",
+    "WorkspaceFileContextStoreMutationPart2Tests",
     "WorkspaceFileContextStoreCodemapTests",
+    "WorkspaceFileContextStoreCodemapPart2Tests",
 ]
 CHECKOUT_REFRESH_TEST_FILTER = "WorkspaceCheckoutRefreshServiceTests"
 
@@ -1176,7 +1184,9 @@ class OperationRegistry:
         return [sys.executable, "-u", str(self.script_path), "__operation_runner", json_dumps(payload)]
 
     def _default_timeout(self, operation: Any, args: Dict[str, Any]) -> float:
-        if operation in {"test", "provider-test"}:
+        if operation == "test":
+            return TEST_TIMEOUT_SECONDS if args.get("filter") else ROOT_TEST_TIMEOUT_SECONDS
+        if operation == "provider-test":
             return TEST_TIMEOUT_SECONDS
         if operation in {"doctor", "guardrails", "debug-cli-status", "format-tools-status", "check-format-tools"}:
             return SHORT_TIMEOUT_SECONDS
@@ -1184,8 +1194,6 @@ class OperationRegistry:
             return SHORT_TIMEOUT_SECONDS
         if operation in {"package", "release"} and (args.get("config") == "release" or args.get("subcommand") in {"artifact", "package", "local-install"}):
             return RELEASE_TIMEOUT_SECONDS
-        if operation in {"test", "provider-test"}:
-            return TEST_TIMEOUT_SECONDS
         if operation == "smoke" and args.get("agentRun"):
             return MEDIUM_TIMEOUT_SECONDS
         if operation == "diagnostics":
@@ -3238,6 +3246,26 @@ def run_operation_command_streaming(
     env: Optional[Dict[str, str]] = None,
     allow_exit_codes: Optional[set[int]] = None,
 ) -> Tuple[int, str, str]:
+    code, stdout, stderr, _output_seen = run_operation_command_streaming_with_startup_watchdog(
+        name,
+        argv,
+        cwd,
+        env=env,
+        allow_exit_codes=allow_exit_codes,
+    )
+    return code, stdout, stderr
+
+
+def run_operation_command_streaming_with_startup_watchdog(
+    name: str,
+    argv: Sequence[str],
+    cwd: Path,
+    env: Optional[Dict[str, str]] = None,
+    allow_exit_codes: Optional[set[int]] = None,
+    startup_timeout: Optional[float] = None,
+    start_new_session: bool = False,
+) -> Tuple[int, str, str, bool]:
+    """Stream a command and optionally fail only if no initial output arrives."""
     allowed = allow_exit_codes if allow_exit_codes is not None else {0}
     print(f"\n==> {name}", flush=True)
     print(f"$ {format_argv(argv)}", flush=True)
@@ -3250,18 +3278,72 @@ def run_operation_command_streaming(
         stderr=subprocess.STDOUT,
         text=True,
         bufsize=1,
+        start_new_session=start_new_session,
     )
+    process_group_id: Optional[int] = None
+    if start_new_session:
+        try:
+            process_group_id = os.getpgid(process.pid)
+        except (ProcessLookupError, PermissionError, OSError):
+            process_group_id = None
     captured: List[str] = []
-    assert process.stdout is not None
-    for line in process.stdout:
-        captured.append(line)
-        print(line, end="", flush=True)
-    return_code = int(process.wait())
+    output_seen = threading.Event()
+
+    def relay_output() -> None:
+        assert process.stdout is not None
+        for line in process.stdout:
+            output_seen.set()
+            captured.append(line)
+            print(line, end="", flush=True)
+
+    def terminate_after_startup_timeout() -> None:
+        if process_group_id is not None:
+            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                os.killpg(process_group_id, signal.SIGTERM)
+        else:
+            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                process.terminate()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
+        if process_group_id is not None:
+            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                os.killpg(process_group_id, signal.SIGKILL)
+        elif process.poll() is None:
+            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                process.kill()
+        if process.poll() is None:
+            process.wait()
+
+    relay = threading.Thread(target=relay_output, daemon=True)
+    relay.start()
+    timed_out = False
+    if startup_timeout is not None:
+        deadline = time.monotonic() + startup_timeout
+        while not output_seen.is_set() and process.poll() is None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                terminate_after_startup_timeout()
+                break
+            time.sleep(min(0.05, remaining))
+    if timed_out:
+        return_code = 124
+    else:
+        return_code = int(process.wait())
+    relay.join(timeout=10)
+    if process.stdout is not None:
+        with contextlib.suppress(OSError):
+            process.stdout.close()
     stdout = "".join(captured)
-    print(f"status: {return_code}", flush=True)
+    if timed_out:
+        print(f"status: timed out after {startup_timeout}s without initial output", flush=True)
+    else:
+        print(f"status: {return_code}", flush=True)
     if return_code not in allowed:
         print(f"FAILED stage '{name}' with status {return_code}", flush=True)
-    return return_code, stdout, ""
+    return return_code, stdout, "", output_seen.is_set()
 
 
 def _print_captured(stdout: str, stderr: str) -> None:
@@ -3473,19 +3555,59 @@ def operation_workspace_file_context_store_tests(repo_root: Path) -> int:
 
 
 def operation_root_tests(repo_root: Path) -> int:
-    print("Running root tests with checkout refresh suite isolated", flush=True)
-    code, _stdout, _stderr = run_operation_command_streaming(
-        f"swift test --skip {CHECKOUT_REFRESH_TEST_FILTER}",
-        ["swift", "test", "--skip", CHECKOUT_REFRESH_TEST_FILTER],
-        repo_root,
+    print("Running root tests one XCTest class per process", flush=True)
+    list_argv = ["swift", "test", "list"]
+    print("\n==> swift test list", flush=True)
+    print(f"$ {format_argv(list_argv)}", flush=True)
+    completed = subprocess.run(
+        list_argv,
+        cwd=str(repo_root),
+        stdin=subprocess.DEVNULL,
+        text=True,
+        capture_output=True,
     )
-    if code != 0:
-        return code
-    return run_operation_command_streaming(
-        f"swift test --filter {CHECKOUT_REFRESH_TEST_FILTER}",
-        ["swift", "test", "--filter", CHECKOUT_REFRESH_TEST_FILTER],
-        repo_root,
-    )[0]
+    stdout = completed.stdout or ""
+    stderr = completed.stderr or ""
+    print(f"status: {completed.returncode}", flush=True)
+    if completed.returncode != 0:
+        _print_captured(stdout, stderr)
+        print("FAILED stage 'swift test list'", flush=True)
+        return int(completed.returncode)
+
+    suites = sorted({
+        line.split("/", 1)[0]
+        for line in stdout.splitlines()
+        if "/" in line and line.startswith("RepoPromptTests.")
+    })
+    if not suites:
+        print("ERROR: swift test list did not report any RepoPromptTests XCTest suites.", flush=True)
+        return 1
+
+    checkout_suite = f"RepoPromptTests.{CHECKOUT_REFRESH_TEST_FILTER}"
+    ordered_suites = [suite for suite in suites if suite != checkout_suite]
+    if checkout_suite in suites:
+        ordered_suites.append(checkout_suite)
+
+    for suite in ordered_suites:
+        suite_argv = ["swift", "test", "--skip-build", "--filter", suite]
+        for attempt in range(1, 3):
+            code, _stdout, _stderr, output_seen = run_operation_command_streaming_with_startup_watchdog(
+                f"swift test --skip-build --filter {suite}",
+                suite_argv,
+                repo_root,
+                startup_timeout=ROOT_TEST_SUITE_STARTUP_TIMEOUT_SECONDS,
+                start_new_session=True,
+            )
+            if code == 124 and attempt == 1 and not output_seen:
+                print(
+                    f"WARNING: {suite} produced no output for {ROOT_TEST_SUITE_STARTUP_TIMEOUT_SECONDS:.0f}s; retrying once",
+                    flush=True,
+                )
+                continue
+            if code != 0:
+                return code
+            break
+    return 0
 
 
 def operation_release_preflight_missing(_repo_root: Path) -> int:

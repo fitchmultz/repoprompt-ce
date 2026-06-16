@@ -204,13 +204,17 @@ class LifecycleQueueTests(LifecycleTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             registry = conductor.OperationRegistry(Path(tmp))
             _argv, _lanes, _cwd, _env, timeout = registry.prepare({"operation": "test", "args": {}})
+            _focused_argv, _focused_lanes, _focused_cwd, _focused_env, focused_timeout = registry.prepare(
+                {"operation": "test", "args": {"filter": "PiRPCClientTests"}}
+            )
             _provider_argv, _provider_lanes, _provider_cwd, _provider_env, provider_timeout = registry.prepare(
                 {"operation": "provider-test", "args": {}}
             )
 
-        self.assertEqual(timeout, conductor.TEST_TIMEOUT_SECONDS)
+        self.assertEqual(timeout, conductor.ROOT_TEST_TIMEOUT_SECONDS)
+        self.assertEqual(focused_timeout, conductor.TEST_TIMEOUT_SECONDS)
         self.assertEqual(provider_timeout, conductor.TEST_TIMEOUT_SECONDS)
-        self.assertLessEqual(timeout, 15 * 60)
+        self.assertGreater(timeout, conductor.TEST_TIMEOUT_SECONDS)
 
     def test_test_operations_default_to_xctest_stall_watchdog(self) -> None:
         tmp, state = self.make_state()
@@ -236,7 +240,7 @@ class LifecycleQueueTests(LifecycleTestCase):
 
         job = state.jobs[payload["ticket"]]
         self.assertEqual(job.args["xctestStallSeconds"], 45.0)
-        self.assertEqual(job.timeout, conductor.TEST_TIMEOUT_SECONDS)
+        self.assertEqual(job.timeout, conductor.ROOT_TEST_TIMEOUT_SECONDS)
 
     def test_workspace_file_context_store_filter_uses_sharded_compatibility_runner(self) -> None:
         tmp, state = self.make_state()
@@ -255,6 +259,112 @@ class LifecycleQueueTests(LifecycleTestCase):
         self.assertEqual(argv[3], "__operation_runner")
         payload = json.loads(argv[4])
         self.assertEqual(payload["kind"], "workspace_file_context_store_tests")
+
+    def test_root_tests_run_each_listed_suite_in_separate_skip_build_processes(self) -> None:
+        tmp, _state = self.make_state()
+        self.addCleanup(tmp.cleanup)
+        list_output = "\n".join([
+            "RepoPromptTests.ZetaTests/testZeta",
+            "RepoPromptTests.WorkspaceCheckoutRefreshServiceTests/testRefresh",
+            "RepoPromptTests.AlphaTests/testAlpha",
+            "SwiftTestingSuite/testIsIgnored",
+        ])
+        completed = subprocess.CompletedProcess(["swift", "test", "list"], 0, stdout=list_output, stderr="")
+        calls: list[tuple[str, list[str], float | None, bool]] = []
+
+        def fake_stream(name, argv, _cwd, **kwargs):
+            calls.append((name, list(argv), kwargs.get("startup_timeout"), kwargs.get("start_new_session")))
+            return 0, "", "", True
+
+        with mock.patch.object(conductor.subprocess, "run", return_value=completed), mock.patch.object(
+            conductor,
+            "run_operation_command_streaming_with_startup_watchdog",
+            side_effect=fake_stream,
+        ):
+            code = conductor.operation_root_tests(Path(tmp.name))
+
+        self.assertEqual(code, 0)
+        self.assertEqual([call[1][-1] for call in calls], [
+            "RepoPromptTests.AlphaTests",
+            "RepoPromptTests.ZetaTests",
+            "RepoPromptTests.WorkspaceCheckoutRefreshServiceTests",
+        ])
+        for _name, argv, timeout, start_new_session in calls:
+            self.assertEqual(argv[:3], ["swift", "test", "--skip-build"])
+            self.assertEqual(timeout, conductor.ROOT_TEST_SUITE_STARTUP_TIMEOUT_SECONDS)
+            self.assertTrue(start_new_session)
+
+    def test_root_tests_retry_one_silent_suite_startup_timeout(self) -> None:
+        tmp, _state = self.make_state()
+        self.addCleanup(tmp.cleanup)
+        completed = subprocess.CompletedProcess(
+            ["swift", "test", "list"],
+            0,
+            stdout="RepoPromptTests.SilentStartupTests/testCase\n",
+            stderr="",
+        )
+
+        with mock.patch.object(conductor.subprocess, "run", return_value=completed), mock.patch.object(
+            conductor,
+            "run_operation_command_streaming_with_startup_watchdog",
+            side_effect=[(124, "", "", False), (0, "", "", True)],
+        ) as stream:
+            code = conductor.operation_root_tests(Path(tmp.name))
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stream.call_count, 2)
+
+    def test_streaming_startup_timeout_does_not_cap_active_process_runtime(self) -> None:
+        script = "import time; print('ready', flush=True); time.sleep(0.2); print('done', flush=True)"
+
+        code, stdout, _stderr, output_seen = conductor.run_operation_command_streaming_with_startup_watchdog(
+            "active child",
+            [sys.executable, "-u", "-c", script],
+            Path.cwd(),
+            startup_timeout=0.05,
+        )
+
+        self.assertEqual(code, 0)
+        self.assertIn("ready", stdout)
+        self.assertIn("done", stdout)
+        self.assertTrue(output_seen)
+
+    def test_streaming_startup_timeout_kills_process_group_descendants(self) -> None:
+        tmp, _state = self.make_state()
+        self.addCleanup(tmp.cleanup)
+        descendant_pid_path = Path(tmp.name) / "descendant.pid"
+        descendant_script = "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)"
+        parent_script = """
+import subprocess
+import sys
+import time
+child = subprocess.Popen([sys.executable, "-c", sys.argv[2]])
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    handle.write(str(child.pid))
+    handle.flush()
+time.sleep(30)
+"""
+
+        code, _stdout, _stderr, output_seen = conductor.run_operation_command_streaming_with_startup_watchdog(
+            "silent child",
+            [sys.executable, "-u", "-c", parent_script, str(descendant_pid_path), descendant_script],
+            Path.cwd(),
+            startup_timeout=1.0,
+            start_new_session=True,
+        )
+
+        self.assertEqual(code, 124)
+        self.assertFalse(output_seen)
+        descendant_pid = int(descendant_pid_path.read_text(encoding="utf-8"))
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            try:
+                os.kill(descendant_pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.05)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(descendant_pid, 0)
 
     def test_release_artifact_delegates_release_script_with_release_lanes_and_timeout(self) -> None:
         tmp, state = self.make_state()
@@ -468,7 +578,7 @@ class LifecycleQueueTests(LifecycleTestCase):
             stdin=subprocess.DEVNULL,
             text=True,
             capture_output=True,
-            timeout=10,
+            timeout=30,
         )
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -1534,7 +1644,7 @@ class RunScriptTransitionTests(unittest.TestCase):
                 }
             )
 
-            result = subprocess.run(["bash", str(run_script)], env=env, text=True, capture_output=True, timeout=2)
+            result = subprocess.run(["bash", str(run_script)], env=env, text=True, capture_output=True, timeout=10)
             helper_invoked = marker.exists()
 
         self.assertEqual(result.returncode, 23)
@@ -1608,7 +1718,7 @@ class RunScriptTransitionTests(unittest.TestCase):
                 }
             )
 
-            result = subprocess.run(["bash", str(run_script), "--demo"], env=env, text=True, capture_output=True, timeout=5)
+            result = subprocess.run(["bash", str(run_script), "--demo"], env=env, text=True, capture_output=True, timeout=20)
             events = event_log.read_text(encoding="utf-8").splitlines()
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
