@@ -157,6 +157,55 @@ final class AgentRunWorktreeStartTests: XCTestCase {
         }
     }
 
+    func testAgentRunStartResolvesBuiltInWorkflowPromptsForNestedManagedRuns() async throws {
+        for workflow in [AgentWorkflow.orchestrate, .review, .deepPlan] {
+            let root = try makeTemporaryDirectory(named: "workflow-root")
+            let worktree = try makeTemporaryDirectory(named: "workflow-worktree")
+            let window = try await makeWindow(root: root)
+            defer { WindowStatesManager.shared.unregisterWindowState(window) }
+            let sourceTabID = try XCTUnwrap(window.workspaceManager.activeWorkspace?.activeComposeTabID)
+            let parentID = UUID()
+            let parentBinding = makeBinding(logicalRoot: root.path, worktreeRoot: worktree.path)
+            installParentAgentSession(parentID, binding: parentBinding, sourceTabID: sourceTabID, in: window)
+            let recorder = AgentRunStartRecorder()
+            let service = makeRecordingAgentRunStartService(window: window, sourceTabID: sourceTabID, recorder: recorder)
+            let userMessage = "complete pi workflow routing for \(workflow.displayName)"
+
+            let value = try await service.execute(args: [
+                "op": .string("start"),
+                "message": .string(userMessage),
+                "workflow_name": .string(workflow.displayName),
+                "detach": .bool(true),
+                "timeout": .int(0)
+            ])
+
+            let object = try XCTUnwrap(value.objectValue)
+            XCTAssertEqual(object["workflow_id"]?.stringValue, workflow.definition.id)
+            XCTAssertEqual(object["workflow_name"]?.stringValue, workflow.displayName)
+            let observation = try XCTUnwrap(recorder.observations.first)
+            XCTAssertEqual(recorder.observations.count, 1)
+            XCTAssertEqual(observation.message, userMessage)
+            XCTAssertEqual(observation.workflow?.builtInWorkflow, workflow)
+            XCTAssertNotEqual(observation.tabID, sourceTabID)
+            XCTAssertEqual(observation.bindings, [parentBinding])
+            XCTAssertEqual(recorder.boundTabs, [observation.tabID])
+
+            let child = window.agentModeViewModel.session(for: observation.tabID)
+            XCTAssertEqual(child.parentSessionID, parentID)
+            XCTAssertEqual(child.worktreeBindings, [parentBinding])
+            XCTAssertEqual(try window.agentModeViewModel.effectiveWorkspacePath(for: child), worktree.path)
+
+            let wrapped = try XCTUnwrap(observation.workflow).wrapUserText(
+                observation.message,
+                includeBuiltInSessionCleanupGuidance: false
+            )
+            XCTAssertFalse(wrapped.hasPrefix("---"), "Workflow dispatch must strip prompt frontmatter before provider delivery.")
+            XCTAssertTrue(wrapped.contains(userMessage))
+            let missingExpectations = missingManagedAgentWorkflowPromptExpectations(wrapped, for: workflow)
+            XCTAssertTrue(missingExpectations.isEmpty, "\(workflow.displayName) prompt missing expectations: \(missingExpectations)")
+        }
+    }
+
     func testAgentRunTopLevelStartWithoutSpawnSourceRemainsAllowed() async throws {
         let root = try makeTemporaryDirectory(named: "root")
         let window = try await makeWindow(root: root)
@@ -1420,6 +1469,19 @@ final class AgentRunWorktreeStartTests: XCTestCase {
         case cancellation
     }
 
+    private final class AgentRunStartRecorder {
+        struct Observation {
+            let sessionID: UUID
+            let tabID: UUID
+            let message: String
+            let workflow: AgentWorkflowDefinition?
+            let bindings: [AgentSessionWorktreeBinding]
+        }
+
+        var observations: [Observation] = []
+        var boundTabs: [UUID] = []
+    }
+
     private final class ExploreStartRecorder {
         struct Observation {
             let sessionID: UUID
@@ -1529,6 +1591,68 @@ final class AgentRunWorktreeStartTests: XCTestCase {
         )
     }
 
+    private func makeRecordingAgentRunStartService(
+        window: WindowState,
+        sourceTabID: UUID?,
+        recorder: AgentRunStartRecorder
+    ) -> AgentRunMCPToolService {
+        var service = AgentRunMCPToolService(
+            toolName: MCPWindowToolName.agentRun,
+            captureRequestMetadata: {
+                MCPServerViewModel.RequestMetadata(connectionID: nil, clientName: "agent-run-workflow-start", windowID: window.windowID)
+            },
+            requireTargetWindow: { window },
+            resolveRequestedTabID: { _ in nil },
+            resolveSpawnSourceTabID: { _ in sourceTabID },
+            resolveSpawnParentSessionID: { _, _ in nil },
+            bindCurrentRequestToTab: { tabID, _ in
+                recorder.boundTabs.append(tabID)
+            },
+            withHeartbeat: { _, _, _, _, operation in try await operation() },
+            startRun: { target, message, metadata, bindCurrentRequestToTab, agentModeVM, agentRaw, modelRaw, reasoningEffortRaw, _, workflow in
+                guard let sessionID = target.sessionID else {
+                    throw MCPError.internalError("Test workflow target did not resolve a session ID.")
+                }
+                try await bindCurrentRequestToTab(target.tabID, metadata)
+                let bindings = agentModeVM.worktreeBindings(forAgentSessionID: sessionID, tabID: target.tabID)
+                let session = agentModeVM.session(for: target.tabID)
+                recorder.observations.append(
+                    .init(
+                        sessionID: sessionID,
+                        tabID: target.tabID,
+                        message: message,
+                        workflow: workflow,
+                        bindings: bindings
+                    )
+                )
+                let snapshot = AgentRunMCPSnapshot(
+                    sessionID: sessionID,
+                    tabID: target.tabID,
+                    sessionName: "Workflow Start Test",
+                    agentRaw: agentRaw,
+                    agentDisplayName: agentRaw.flatMap { AgentProviderKind(rawValue: $0)?.displayName },
+                    modelRaw: modelRaw,
+                    reasoningEffortRaw: reasoningEffortRaw,
+                    status: .running,
+                    statusText: "Test harness running",
+                    latestAssistantPreview: nil,
+                    interaction: nil,
+                    transcriptItemCount: 0,
+                    updatedAt: Date(),
+                    parentSessionID: session.parentSessionID,
+                    failureReason: nil,
+                    worktreeBindings: bindings.map { AgentRunMCPSnapshot.WorktreeBinding(binding: $0) },
+                    activeWorktreeMerges: []
+                )
+                return AgentExternalMCPRunStarter.StartOutcome(snapshot: snapshot, delivery: .startedRun)
+            }
+        )
+        service.resolveSpawnParentSessionIDFromSourceTabID = { (sourceTabID: UUID, window: WindowState) async -> UUID? in
+            window.agentModeViewModel.mcpSpawnParentSessionID(sourceTabID: sourceTabID)
+        }
+        return service
+    }
+
     private func makeAgentRunStartService(window: WindowState, sourceTabID: UUID?) -> AgentRunMCPToolService {
         var service = AgentRunMCPToolService(
             toolName: MCPWindowToolName.agentRun,
@@ -1585,6 +1709,43 @@ final class AgentRunWorktreeStartTests: XCTestCase {
         source.testInstallPersistentSessionBinding(sessionID: parentID)
         source.mcpControlContext = makeMCPControlContext(sessionID: parentID)
         source.worktreeBindings = [binding]
+    }
+
+    private func missingManagedAgentWorkflowPromptExpectations(
+        _ prompt: String,
+        for workflow: AgentWorkflow
+    ) -> [String] {
+        var missing: [String] = []
+        func requireContains(_ needle: String) {
+            if !prompt.contains(needle) { missing.append("contains \(needle)") }
+        }
+        func requireOmits(_ needle: String) {
+            if prompt.contains(needle) { missing.append("omits \(needle)") }
+        }
+
+        switch workflow {
+        case .orchestrate:
+            requireContains("Agent Mode delegation boundary")
+            requireContains("use RepoPrompt-managed `agent_run` / `agent_manage` sessions")
+            requireContains("Do not create sub-agents by shelling out to external agent CLIs")
+            requireContains("`pi -p`")
+            requireContains("If `agent_run` is unavailable, stop and report the blocker")
+        case .review:
+            requireContains("response_type: \"review\"")
+            requireContains("context_builder")
+            requireContains("ask_oracle")
+            requireOmits("oracle_send")
+        case .deepPlan:
+            requireContains("agent_run")
+            requireContains("\"model_id\":\"explore\"")
+            requireContains("\"model_id\":\"design\"")
+            requireContains("context_builder")
+            requireContains("ask_oracle")
+            requireOmits("oracle_send")
+        default:
+            missing.append("unexpected workflow \(workflow)")
+        }
+        return missing
     }
 
     private func makeMCPControlContext(

@@ -35,8 +35,6 @@ You are a deep-planning orchestrator. Produce one polished, executable plan docu
 		case .agent: chatTool = "`ask_oracle`"; chatToolName = "ask_oracle"
 		case .mcp: chatTool = "`oracle_send`"; chatToolName = "oracle_send"
 		}
-		_ = chatTool
-		_ = chatToolName
 
 		return """
 This workflow is delegation-heavy. Explore agents map seams and pull external research. \(builderName) produces architectural bones in plan mode. A design agent does a bounded critique. **You own the writing**, the structure, and the final shape.
@@ -241,6 +239,26 @@ Key findings from explore agents:
 - <finding 2 with file:line>
 
 Produce a concrete approach + ordered work items. Note tradeoffs only when they change the recommended path.</context>" --response-type plan --export'
+```
+"""))
+
+If the builder output leaves an architectural ambiguity that changes the plan, ask one focused follow-up in the same planning chat with \(chatTool) before merging. Keep it bounded: the follow-up should resolve a specific seam, tradeoff, or missing dependency, not restart discovery.
+
+\(example(variant,
+	mcp: """
+```json
+{"tool":"\(chatToolName)","args":{
+	"chat_id":"<from context_builder>",
+	"message":"Resolve this one planning ambiguity: <specific seam/tradeoff>. Give the recommended path and why.",
+	"mode":"plan",
+	"new_chat":false,
+	"export_response":true
+}}
+```
+""",
+	cli: """
+```bash
+rpce-cli -w <window_id> -t '<tab_id>' -e 'chat "Resolve this one planning ambiguity: <specific seam/tradeoff>. Give the recommended path and why." --mode plan --export'
 ```
 """))
 

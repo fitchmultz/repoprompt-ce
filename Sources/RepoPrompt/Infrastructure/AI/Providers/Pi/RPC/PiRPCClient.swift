@@ -367,7 +367,8 @@ actor PiRPCClient {
             command: resolvedCommand,
             arguments: config.launchArguments,
             environment: environment,
-            workingDirectory: workingDirectory
+            workingDirectory: workingDirectory,
+            processGroup: .newProcessGroup
         )
         process = spawned
         await registerExpectedAgentPIDIfNeeded(for: spawned.pid)
@@ -383,10 +384,7 @@ actor PiRPCClient {
             spawned.stdin?.closeFile()
             process = nil
             await clearRegisteredExpectedAgentPIDIfNeeded()
-            _ = await ProcessTermination.terminateAndReap(
-                pid: spawned.pid,
-                logger: config.enableDebugLogging ? { print("[PiRPCClient] \($0)") } : { _ in }
-            )
+            _ = await terminate(spawned)
             throw ClientError.readerSetupFailed("Failed to start pi RPC readers: \(error.localizedDescription)")
         }
         if config.enableDebugLogging {
@@ -421,15 +419,24 @@ actor PiRPCClient {
                 expectedAgentPIDToClear.runID
             )
         }
-        if let pid = activeProcess?.pid {
-            _ = await ProcessTermination.terminateAndReap(
-                pid: pid,
-                logger: config.enableDebugLogging ? { print("[PiRPCClient] \($0)") } : { _ in }
-            )
+        if let activeProcess {
+            _ = await terminate(activeProcess)
         }
         eventsContinuation?.finish()
         eventsContinuation = nil
         isShuttingDown = false
+    }
+
+    private func terminate(_ process: SpawnedProcess) async -> Int32 {
+        let logger: (String) -> Void = config.enableDebugLogging ? { print("[PiRPCClient] \($0)") } : { _ in }
+        if let processGroupID = process.processGroupID {
+            return await ProcessTermination.terminateProcessGroupAndReapRoot(
+                pid: process.pid,
+                processGroupID: processGroupID,
+                logger: logger
+            )
+        }
+        return await ProcessTermination.terminateAndReap(pid: process.pid, logger: logger)
     }
 
     func getState() async throws -> SessionState {
@@ -750,10 +757,7 @@ actor PiRPCClient {
                 expectedAgentPIDToClear.runID
             )
         }
-        let exitCode = await ProcessTermination.terminateAndReap(
-            pid: activeProcess.pid,
-            logger: config.enableDebugLogging ? { print("[PiRPCClient] \($0)") } : { _ in }
-        )
+        let exitCode = await terminate(activeProcess)
         if config.enableDebugLogging {
             print("[PiRPCClient] reaped pid=\(activeProcess.pid) after stdout EOF with exitCode=\(exitCode)")
         }

@@ -4,6 +4,7 @@ import RepoPromptShared
 
 struct SpawnedProcess: @unchecked Sendable {
     let pid: pid_t
+    let processGroupID: pid_t?
     let stdin: FileHandle?
     let stdinDescriptor: Int32?
     let stdout: FileHandle
@@ -20,17 +21,24 @@ enum ProcessLauncherError: Error {
 }
 
 enum ProcessLauncher {
+    enum ProcessGroupPolicy {
+        case inherited
+        case newProcessGroup
+    }
+
     static func spawn(
         command: String,
         arguments: [String],
         environment: [String: String],
-        workingDirectory: String?
+        workingDirectory: String?,
+        processGroup: ProcessGroupPolicy = .inherited
     ) throws -> SpawnedProcess {
         try spawn(
             command: command,
             arguments: arguments,
             environment: environment,
             workingDirectory: workingDirectory,
+            processGroup: processGroup,
             initializationFailure: nil
         )
     }
@@ -57,6 +65,7 @@ enum ProcessLauncher {
                 arguments: arguments,
                 environment: environment,
                 workingDirectory: workingDirectory,
+                processGroup: .inherited,
                 initializationFailure: failure
             )
         }
@@ -72,6 +81,7 @@ enum ProcessLauncher {
         arguments: [String],
         environment: [String: String],
         workingDirectory: String?,
+        processGroup: ProcessGroupPolicy,
         initializationFailure: InitializationFailure?
     ) throws -> SpawnedProcess {
         var stdinPipe: [Int32] = [-1, -1]
@@ -216,6 +226,16 @@ enum ProcessLauncher {
         }
 
         var configuredSpawnFlags = spawnFlags | Int16(POSIX_SPAWN_SETSIGDEF)
+        if processGroup == .newProcessGroup {
+            let setProcessGroupResult = posix_spawnattr_setpgroup(&attributes, 0)
+            if setProcessGroupResult != 0 {
+                closePipe(&stdinPipe)
+                closePipe(&stdoutPipe)
+                closePipe(&stderrPipe)
+                throw ProcessLauncherError.spawnAttributesFailed(operation: "setpgroup", errno: setProcessGroupResult)
+            }
+            configuredSpawnFlags |= Int16(POSIX_SPAWN_SETPGROUP)
+        }
         #if canImport(Darwin)
             configuredSpawnFlags |= Int16(POSIX_SPAWN_CLOEXEC_DEFAULT)
         #endif
@@ -279,6 +299,7 @@ enum ProcessLauncher {
 
         return SpawnedProcess(
             pid: pid,
+            processGroupID: processGroup == .newProcessGroup ? pid : nil,
             stdin: stdinHandle,
             stdinDescriptor: stdinPipe[1],
             stdout: stdoutHandle,

@@ -88,13 +88,19 @@ final class WorkflowPromptCatalogTests: XCTestCase {
 
     func testAgentDeepPlanPromptKeepsPlanningDelegationInsideManagedAgentMode() {
         let rendered = RepoPromptWorkflowPrompts.render(id: .deepPlan, variant: .agent)
+        let renderedWithoutCleanupGuidance = RepoPromptWorkflowPrompts.rpDeepPlan(
+            variant: .agent,
+            includeSessionCleanupGuidance: false
+        )
 
-        XCTAssertTrue(rendered.contains("agent_run"), rendered)
-        XCTAssertTrue(rendered.contains("\"model_id\":\"explore\""), rendered)
-        XCTAssertTrue(rendered.contains("\"model_id\":\"design\""), rendered)
-        XCTAssertTrue(rendered.contains("context_builder"), rendered)
-        XCTAssertTrue(rendered.contains("ask_oracle"), rendered)
-        XCTAssertFalse(rendered.contains("oracle_send"), rendered)
+        for prompt in [rendered, renderedWithoutCleanupGuidance] {
+            XCTAssertTrue(prompt.contains("agent_run"), prompt)
+            XCTAssertTrue(prompt.contains("\"model_id\":\"explore\""), prompt)
+            XCTAssertTrue(prompt.contains("\"model_id\":\"design\""), prompt)
+            XCTAssertTrue(prompt.contains("context_builder"), prompt)
+            XCTAssertTrue(prompt.contains("ask_oracle"), prompt)
+            XCTAssertFalse(prompt.contains("oracle_send"), prompt)
+        }
     }
 
     func testTopLevelAgentModePromptForbidsExternalAgentCLIDelegation() {

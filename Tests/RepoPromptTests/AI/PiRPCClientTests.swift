@@ -417,6 +417,71 @@ final class PiRPCClientTests: XCTestCase {
         XCTAssertTrue(exitedProcessWasReaped, "PiRPCClient must reap the raw posix_spawn child after stdout EOF instead of leaving a zombie pi process.")
     }
 
+    func testStdoutEOFTerminatesPiProcessGroupChildren() async throws {
+        let directory = try makeTemporaryDirectory()
+        let childPIDURL = directory.appendingPathComponent("child-pid.txt")
+        let scriptURL = try makeFakePiExitAfterStateWithChildScript(childPIDRecordURL: childPIDURL)
+        let client = PiRPCClient(config: .init(
+            commandName: scriptURL.path,
+            additionalPathHints: [],
+            requestTimeout: 2,
+            launchArguments: [],
+            requiresSupportedVersionCheck: false
+        ))
+        addTeardownBlock {
+            await client.shutdown()
+            if let childPID = Self.recordedPID(at: childPIDURL) {
+                Self.terminateProcessIfExists(childPID)
+            }
+        }
+
+        let state = try await client.getState()
+        XCTAssertEqual(state.sessionID, "session-exit-child")
+        let childPID = try await waitForRecordedPID(at: childPIDURL)
+
+        let childWasReaped = await eventually(timeout: 3) {
+            Self.processNoLongerExists(childPID)
+        }
+        XCTAssertTrue(
+            childWasReaped,
+            "PiRPCClient must terminate the whole managed pi process group after stdout EOF so child/subagent processes do not become orphaned."
+        )
+    }
+
+    func testShutdownTerminatesPiProcessGroupChildren() async throws {
+        let directory = try makeTemporaryDirectory()
+        let childPIDURL = directory.appendingPathComponent("child-pid.txt")
+        let scriptURL = try makeFakePiStayRunningWithChildScript(childPIDRecordURL: childPIDURL)
+        let client = PiRPCClient(config: .init(
+            commandName: scriptURL.path,
+            additionalPathHints: [],
+            requestTimeout: 2,
+            launchArguments: [],
+            requiresSupportedVersionCheck: false
+        ))
+        addTeardownBlock {
+            await client.shutdown()
+            if let childPID = Self.recordedPID(at: childPIDURL) {
+                Self.terminateProcessIfExists(childPID)
+            }
+        }
+
+        let state = try await client.getState()
+        XCTAssertEqual(state.sessionID, "session-running-child")
+        let childPID = try await waitForRecordedPID(at: childPIDURL)
+        XCTAssertFalse(Self.processNoLongerExists(childPID))
+
+        await client.shutdown()
+
+        let childWasReaped = await eventually(timeout: 3) {
+            Self.processNoLongerExists(childPID)
+        }
+        XCTAssertTrue(
+            childWasReaped,
+            "PiRPCClient shutdown must terminate the managed pi process group so Stop/cancel does not leave child or subagent processes orphaned."
+        )
+    }
+
     func testCommandAfterStdoutEOFStartsFreshRPCProcess() async throws {
         let scriptURL = try makeFakePiExitAfterStateScript()
         let recorder = ExpectedPIDRecorder()
@@ -748,6 +813,93 @@ final class PiRPCClientTests: XCTestCase {
         return scriptURL
     }
 
+    private func makeFakePiExitAfterStateWithChildScript(childPIDRecordURL: URL) throws -> URL {
+        let scriptURL = childPIDRecordURL.deletingLastPathComponent().appendingPathComponent("fake_pi_exit_after_state_with_child.py")
+        let recordPath = try Self.pythonStringLiteral(childPIDRecordURL.path)
+        let script = #"""
+        #!/usr/bin/env python3
+        import json
+        import subprocess
+        import sys
+
+        RECORD_PATH = __RECORD_PATH__
+
+        for line in sys.stdin:
+            try:
+                request = json.loads(line)
+            except Exception:
+                continue
+            child = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(60)"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
+            )
+            with open(RECORD_PATH, "w", encoding="utf-8") as handle:
+                handle.write(str(child.pid))
+            print(json.dumps({
+                "type": "response",
+                "id": request.get("id"),
+                "command": request.get("type"),
+                "success": True,
+                "data": {
+                    "sessionId": "session-exit-child",
+                    "isStreaming": False,
+                    "isCompacting": False
+                }
+            }), flush=True)
+            raise SystemExit(0)
+        """#.replacingOccurrences(of: "__RECORD_PATH__", with: recordPath)
+        try script.write(to: scriptURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
+        return scriptURL
+    }
+
+    private func makeFakePiStayRunningWithChildScript(childPIDRecordURL: URL) throws -> URL {
+        let scriptURL = childPIDRecordURL.deletingLastPathComponent().appendingPathComponent("fake_pi_stay_running_with_child.py")
+        let recordPath = try Self.pythonStringLiteral(childPIDRecordURL.path)
+        let script = #"""
+        #!/usr/bin/env python3
+        import json
+        import subprocess
+        import sys
+
+        RECORD_PATH = __RECORD_PATH__
+        child = None
+
+        for line in sys.stdin:
+            try:
+                request = json.loads(line)
+            except Exception:
+                continue
+            if child is None:
+                child = subprocess.Popen(
+                    [sys.executable, "-c", "import time; time.sleep(60)"],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    close_fds=True,
+                )
+                with open(RECORD_PATH, "w", encoding="utf-8") as handle:
+                    handle.write(str(child.pid))
+            print(json.dumps({
+                "type": "response",
+                "id": request.get("id"),
+                "command": request.get("type"),
+                "success": True,
+                "data": {
+                    "sessionId": "session-running-child",
+                    "isStreaming": False,
+                    "isCompacting": False
+                }
+            }), flush=True)
+        """#.replacingOccurrences(of: "__RECORD_PATH__", with: recordPath)
+        try script.write(to: scriptURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
+        return scriptURL
+    }
+
     private func makeFakePiVersionedRPCScript(version: String, versionProbeRecordURL: URL? = nil) throws -> URL {
         let directory = try makeTemporaryDirectory()
         let scriptURL = directory.appendingPathComponent("fake_pi_versioned_rpc.py")
@@ -840,6 +992,26 @@ final class PiRPCClientTests: XCTestCase {
     private static func processNoLongerExists(_ pid: pid_t) -> Bool {
         errno = 0
         return kill(pid, 0) == -1 && errno == ESRCH
+    }
+
+    private static func terminateProcessIfExists(_ pid: pid_t) {
+        guard pid > 1, !processNoLongerExists(pid) else { return }
+        _ = kill(pid, SIGKILL)
+    }
+
+    private func waitForRecordedPID(at url: URL) async throws -> pid_t {
+        for _ in 0 ..< 80 {
+            if let pid = Self.recordedPID(at: url) { return pid }
+            try await Task.sleep(nanoseconds: 25_000_000)
+        }
+        throw PiRPCClient.ClientError.invalidResponse("Fake pi script did not record child PID at \(url.path).")
+    }
+
+    private static func recordedPID(at url: URL) -> pid_t? {
+        guard let text = try? String(contentsOf: url, encoding: .utf8),
+              let rawPID = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines))
+        else { return nil }
+        return pid_t(rawPID)
     }
 
     private func waitForRecordedObjects(at url: URL, count: Int) async throws -> [[String: Any]] {

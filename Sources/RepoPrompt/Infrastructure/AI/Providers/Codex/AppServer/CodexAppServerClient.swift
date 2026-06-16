@@ -1529,6 +1529,7 @@ actor CodexAppServerClient {
             let stderrPipe = Pipe()
             process = SpawnedProcess(
                 pid: pid_t.max,
+                processGroupID: nil,
                 stdin: stdinPipe.fileHandleForWriting,
                 stdinDescriptor: stdinPipe.fileHandleForWriting.fileDescriptor,
                 stdout: stdoutPipe.fileHandleForReading,

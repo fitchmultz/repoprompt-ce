@@ -168,6 +168,124 @@ enum ProcessTermination {
         return normalizedExitCode(status)
     }
 
+    private static func signalProcessGroup(_ processGroupID: pid_t, signal: Int32, logger: (String) -> Void) -> Bool {
+        guard processGroupID > 1 else { return false }
+        if kill(-processGroupID, signal) == 0 { return true }
+        if errno == ESRCH { return false }
+        logger("Failed to send signal \(signal) to process group \(processGroupID): \(String(cString: strerror(errno)))")
+        return false
+    }
+
+    private static func processGroupExists(_ processGroupID: pid_t) -> Bool {
+        guard processGroupID > 1 else { return false }
+        errno = 0
+        if kill(-processGroupID, 0) == 0 { return true }
+        return errno == EPERM
+    }
+
+    private static func waitForProcessGroupExitUntil(
+        processGroupID: pid_t,
+        deadline: TimeInterval,
+        pollIntervalNs: UInt64
+    ) async -> Bool {
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            if !processGroupExists(processGroupID) { return true }
+            try? await Task.sleep(nanoseconds: pollIntervalNs)
+        }
+        return !processGroupExists(processGroupID)
+    }
+
+    private static func waitForRootAndProcessGroupExitUntil(
+        pid: pid_t,
+        processGroupID: pid_t,
+        status: inout Int32,
+        deadline: TimeInterval,
+        pollIntervalNs: UInt64,
+        logger: (String) -> Void
+    ) async -> Bool {
+        var rootExited = false
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            if !rootExited {
+                let r = waitpid(pid, &status, WNOHANG)
+                if r == pid || (r == -1 && errno == ECHILD) {
+                    rootExited = true
+                } else if r == -1, errno == EINTR {
+                    continue
+                } else if r == -1 {
+                    logger("waitpid failed while reaping process \(pid): \(String(cString: strerror(errno)))")
+                    rootExited = true
+                }
+            }
+
+            if rootExited, !processGroupExists(processGroupID) { return true }
+            try? await Task.sleep(nanoseconds: pollIntervalNs)
+        }
+        return rootExited && !processGroupExists(processGroupID)
+    }
+
+    private static func terminateProcessGroupAndReapRoot(
+        pid: pid_t,
+        processGroupID: pid_t,
+        status: inout Int32,
+        sigtermGrace: TimeInterval,
+        sigkillGrace: TimeInterval,
+        logger: (String) -> Void
+    ) async -> Int32 {
+        let shortPollNs = UInt64(pollInterval * 1_000_000_000)
+        var lastSignal: Int32?
+
+        if signalProcessGroup(processGroupID, signal: SIGTERM, logger: logger) {
+            lastSignal = SIGTERM
+        } else if kill(pid, SIGTERM) == 0 {
+            lastSignal = SIGTERM
+        } else if errno == ESRCH, !processGroupExists(processGroupID) {
+            return normalizedExitCode(status)
+        }
+
+        let sigtermDeadline = ProcessInfo.processInfo.systemUptime + max(sigtermGrace, 0)
+        if await waitForRootAndProcessGroupExitUntil(
+            pid: pid,
+            processGroupID: processGroupID,
+            status: &status,
+            deadline: sigtermDeadline,
+            pollIntervalNs: shortPollNs,
+            logger: logger
+        ) {
+            return normalizedExitCode(status)
+        }
+
+        logger("Process group \(processGroupID) did not exit after SIGTERM; sending SIGKILL")
+        if signalProcessGroup(processGroupID, signal: SIGKILL, logger: logger) {
+            lastSignal = SIGKILL
+        } else if kill(pid, SIGKILL) == 0 {
+            lastSignal = SIGKILL
+        } else if errno == ESRCH, !processGroupExists(processGroupID) {
+            return normalizedExitCode(status)
+        }
+
+        let sigkillDeadline = ProcessInfo.processInfo.systemUptime + max(sigkillGrace, 0)
+        if await waitForRootAndProcessGroupExitUntil(
+            pid: pid,
+            processGroupID: processGroupID,
+            status: &status,
+            deadline: sigkillDeadline,
+            pollIntervalNs: shortPollNs,
+            logger: logger
+        ) {
+            return normalizedExitCode(status)
+        }
+
+        _ = await waitForProcessGroupExitUntil(
+            processGroupID: processGroupID,
+            deadline: ProcessInfo.processInfo.systemUptime + max(sigkillGrace, 0),
+            pollIntervalNs: shortPollNs
+        )
+        if let signal = lastSignal {
+            return 128 &+ signal
+        }
+        return normalizedExitCode(status)
+    }
+
     static func waitForTermination(
         pid: pid_t,
         timeout: TimeInterval?,
@@ -266,6 +384,25 @@ enum ProcessTermination {
         let timing = currentTiming()
         return await terminateAndReap(
             pid: pid,
+            status: &status,
+            sigtermGrace: sigtermGrace ?? timing.sigtermGrace,
+            sigkillGrace: sigkillGrace ?? timing.sigkillGrace,
+            logger: logger
+        )
+    }
+
+    static func terminateProcessGroupAndReapRoot(
+        pid: pid_t,
+        processGroupID: pid_t,
+        sigtermGrace: TimeInterval? = nil,
+        sigkillGrace: TimeInterval? = nil,
+        logger: (String) -> Void = { _ in }
+    ) async -> Int32 {
+        var status: Int32 = 0
+        let timing = currentTiming()
+        return await terminateProcessGroupAndReapRoot(
+            pid: pid,
+            processGroupID: processGroupID,
             status: &status,
             sigtermGrace: sigtermGrace ?? timing.sigtermGrace,
             sigkillGrace: sigkillGrace ?? timing.sigkillGrace,
