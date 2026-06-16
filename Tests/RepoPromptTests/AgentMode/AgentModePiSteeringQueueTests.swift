@@ -540,7 +540,9 @@ final class AgentModePiSteeringQueueTests: XCTestCase {
             requiresSupportedVersionCheck: false
         ))
         let controller = PiNativeSessionController(client: client)
-        _ = try await controller.startOrResume(existing: nil)
+        addTeardownBlock {
+            await controller.shutdown()
+        }
         let viewModel = makeViewModel(testWorkspacePath: directory.path, testMCPServer: mcpServer)
         let tabID = UUID()
         viewModel.ensureSession(for: tabID)

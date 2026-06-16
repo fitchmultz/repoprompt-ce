@@ -140,6 +140,8 @@ make dev-check-format-tools
 make dev-install-format-tools
 ```
 
+Hard test timeout policy: never run `make dev-test`, bare `./conductor test`, or equivalent root test validation with a harness/tool timeout greater than 900 seconds. The conductor `test` operation itself must also reject timeouts above 900 seconds. If root tests cannot complete inside 900 seconds, treat that as a broken test/runner/sharding problem and fix the cause rather than extending the timeout.
+
 Lane detail: the mutating `format` daemon job also claims `build` (it rewrites files the compiler reads); non-mutating `format-check` and `lint` use only `style`; read-only `format-tools-status` is intentionally unlaned so it never queues behind a build.
 
 Daemon lanes coordinate daemon-submitted operations only; they do not freeze source files against editor changes, direct commands, or edits from another agent. Avoid starting a coordinated build or relaunch while another actor is editing the same checkout. If compilation fails because an input file was modified during the build, wait for edits/builds to settle before retrying; for stable compiler errors, fix them and retry. A compile/rebuild failure is not lifecycle supersession.

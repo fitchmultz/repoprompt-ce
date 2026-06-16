@@ -72,8 +72,7 @@ TEST_TIMEOUT_SECONDS = 15 * 60
 MEDIUM_TIMEOUT_SECONDS = 60 * 60
 RELEASE_TIMEOUT_SECONDS = 2 * 60 * 60
 DEFAULT_XCTEST_STALL_SECONDS = 120.0
-ROOT_TEST_TIMEOUT_SECONDS = MEDIUM_TIMEOUT_SECONDS
-ROOT_TEST_SUITE_STARTUP_TIMEOUT_SECONDS = 90.0
+ROOT_TEST_SILENT_STARTUP_RETRY_SECONDS = 90.0
 SMOKE_AGENT_WAIT_SECONDS = 120.0
 WORKSPACE_FILE_CONTEXT_STORE_TEST_SHARDS = [
     "WorkspaceFileContextStoreCoreTests",
@@ -1025,8 +1024,11 @@ class OperationRegistry:
         args = self.normalize_operation_args(operation, request.get("args") or {})
         timeout = request.get("timeout")
         verbose = bool(request.get("verbose"))
-        if timeout is not None and float(timeout) < 0:
+        explicit_timeout = float(timeout) if timeout is not None else None
+        if explicit_timeout is not None and explicit_timeout < 0:
             raise ConductorError("timeout must be non-negative")
+        if operation == "test" and explicit_timeout is not None and explicit_timeout > TEST_TIMEOUT_SECONDS:
+            raise ConductorError("test timeout must not exceed 900 seconds; if root tests exceed this, fix or shard the test work")
 
         if operation in {"sleep", "fake-sleep"}:
             return self._prepare_sleep(operation, args, timeout, request)
@@ -1038,8 +1040,8 @@ class OperationRegistry:
 
         env = self._base_env(verbose, request)
         effective_timeout = self._default_timeout(operation, args)
-        if timeout is not None:
-            effective_timeout = float(timeout)
+        if explicit_timeout is not None:
+            effective_timeout = explicit_timeout
 
         script = lambda name: str(self.repo_root / "Scripts" / name)
         lanes: List[str] = []
@@ -1185,7 +1187,7 @@ class OperationRegistry:
 
     def _default_timeout(self, operation: Any, args: Dict[str, Any]) -> float:
         if operation == "test":
-            return TEST_TIMEOUT_SECONDS if args.get("filter") else ROOT_TEST_TIMEOUT_SECONDS
+            return TEST_TIMEOUT_SECONDS
         if operation == "provider-test":
             return TEST_TIMEOUT_SECONDS
         if operation in {"doctor", "guardrails", "debug-cli-status", "format-tools-status", "check-format-tools"}:
@@ -3246,7 +3248,7 @@ def run_operation_command_streaming(
     env: Optional[Dict[str, str]] = None,
     allow_exit_codes: Optional[set[int]] = None,
 ) -> Tuple[int, str, str]:
-    code, stdout, stderr, _output_seen = run_operation_command_streaming_with_startup_watchdog(
+    code, stdout, stderr, _output_seen = run_operation_command_streaming_with_silent_startup_guard(
         name,
         argv,
         cwd,
@@ -3256,16 +3258,15 @@ def run_operation_command_streaming(
     return code, stdout, stderr
 
 
-def run_operation_command_streaming_with_startup_watchdog(
+def run_operation_command_streaming_with_silent_startup_guard(
     name: str,
     argv: Sequence[str],
     cwd: Path,
     env: Optional[Dict[str, str]] = None,
     allow_exit_codes: Optional[set[int]] = None,
-    startup_timeout: Optional[float] = None,
+    silent_startup_seconds: Optional[float] = None,
     start_new_session: bool = False,
 ) -> Tuple[int, str, str, bool]:
-    """Stream a command and optionally fail only if no initial output arrives."""
     allowed = allow_exit_codes if allow_exit_codes is not None else {0}
     print(f"\n==> {name}", flush=True)
     print(f"$ {format_argv(argv)}", flush=True)
@@ -3282,10 +3283,8 @@ def run_operation_command_streaming_with_startup_watchdog(
     )
     process_group_id: Optional[int] = None
     if start_new_session:
-        try:
+        with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
             process_group_id = os.getpgid(process.pid)
-        except (ProcessLookupError, PermissionError, OSError):
-            process_group_id = None
     captured: List[str] = []
     output_seen = threading.Event()
 
@@ -3321,7 +3320,7 @@ def run_operation_command_streaming_with_startup_watchdog(
             with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
                 os.kill(pid, sig)
 
-    def terminate_after_startup_timeout() -> None:
+    def terminate_silent_startup() -> None:
         root_targets = {process.pid}
         pgids, pids = collect_signal_targets(root_targets)
         signal_targets(pgids, pids, signal.SIGTERM)
@@ -3337,13 +3336,13 @@ def run_operation_command_streaming_with_startup_watchdog(
     relay = threading.Thread(target=relay_output, daemon=True)
     relay.start()
     timed_out = False
-    if startup_timeout is not None:
-        deadline = time.monotonic() + startup_timeout
+    if silent_startup_seconds is not None:
+        deadline = time.monotonic() + silent_startup_seconds
         while not output_seen.is_set() and process.poll() is None:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 timed_out = True
-                terminate_after_startup_timeout()
+                terminate_silent_startup()
                 break
             time.sleep(min(0.05, remaining))
     if timed_out:
@@ -3356,7 +3355,7 @@ def run_operation_command_streaming_with_startup_watchdog(
             process.stdout.close()
     stdout = "".join(captured)
     if timed_out:
-        print(f"status: timed out after {startup_timeout}s without initial output", flush=True)
+        print(f"status: no output after {silent_startup_seconds}s", flush=True)
     else:
         print(f"status: {return_code}", flush=True)
     if return_code not in allowed:
@@ -3609,16 +3608,16 @@ def operation_root_tests(repo_root: Path) -> int:
     for suite in ordered_suites:
         suite_argv = ["swift", "test", "--skip-build", "--filter", suite]
         for attempt in range(1, 3):
-            code, _stdout, _stderr, output_seen = run_operation_command_streaming_with_startup_watchdog(
+            code, _stdout, _stderr, output_seen = run_operation_command_streaming_with_silent_startup_guard(
                 f"swift test --skip-build --filter {suite}",
                 suite_argv,
                 repo_root,
-                startup_timeout=ROOT_TEST_SUITE_STARTUP_TIMEOUT_SECONDS,
+                silent_startup_seconds=ROOT_TEST_SILENT_STARTUP_RETRY_SECONDS,
                 start_new_session=True,
             )
             if code == 124 and attempt == 1 and not output_seen:
                 print(
-                    f"WARNING: {suite} produced no output for {ROOT_TEST_SUITE_STARTUP_TIMEOUT_SECONDS:.0f}s; retrying once",
+                    f"WARNING: {suite} produced no output for {ROOT_TEST_SILENT_STARTUP_RETRY_SECONDS:.0f}s; retrying once",
                     flush=True,
                 )
                 continue
