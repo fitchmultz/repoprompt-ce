@@ -313,7 +313,7 @@ final class AgentModelsSettingsViewModel: ObservableObject {
         settings.contextBuilderAgentModelRaw = drift.globalModelRaw
         settings.didUserSetContextBuilderDefaults = true
         settingsStore.updateChatSettings(settings, commit: true)
-        promptVM.commitContextBuilderSettings()
+        postContextBuilderDriftResolved(workspaceID: workspaceID)
         refresh()
     }
 
@@ -335,8 +335,16 @@ final class AgentModelsSettingsViewModel: ObservableObject {
         settings.contextBuilderAgentModelRaw = modelRaw
         settings.didUserSetContextBuilderDefaults = true
         settingsStore.updateChatSettings(settings, commit: true)
-        promptVM.commitContextBuilderSettings()
+        postContextBuilderDriftResolved(workspaceID: workspaceID)
         refresh()
+    }
+
+    private func postContextBuilderDriftResolved(workspaceID: UUID) {
+        notificationCenter.post(
+            name: .recommendationsDidApply,
+            object: nil,
+            userInfo: ["workspaceID": workspaceID]
+        )
     }
 
     // MARK: - Context Builder Menu

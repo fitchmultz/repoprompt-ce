@@ -438,6 +438,82 @@ final class ContextBuilderModelStartupSelectionTests: XCTestCase {
         XCTAssertTrue(didRestore)
     }
 
+    func testDriftResolutionUsingWorkspaceDoesNotRecommitStalePromptSelection() async throws {
+        AgentPiModelRegistry.shared.test_reset()
+        addTeardownBlock { AgentPiModelRegistry.shared.test_reset() }
+        let settingsFixture = try makeStoreFixture()
+
+        let workspaceRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PromptPiContextBuilderDrift-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: workspaceRoot, withIntermediateDirectories: true)
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: workspaceRoot)
+        }
+
+        let piModelRaw = "openai-codex/gpt-5.5:medium"
+        XCTAssertTrue(AgentPiModelRegistry.shared.updateDiscoveredModels(
+            PiDiscoveredModels(
+                options: [AgentModelOption(rawValue: piModelRaw, displayName: "GPT 5.5 Medium", description: nil, isDefault: true)],
+                currentModelRaw: piModelRaw
+            ),
+            workspacePath: workspaceRoot.path
+        ))
+        settingsFixture.store.setGlobalContextBuilderAgentSelection(
+            agentRaw: AgentProviderKind.claudeCode.rawValue,
+            modelRaw: AgentModel.claudeOpus.rawValue,
+            markUserDefined: true
+        )
+
+        let composition = WindowStateCompositionFactory.make(
+            windowID: -814,
+            deferredInitialAgentSystemWorkspaceRefresh: true,
+            sharedMCPService: MCPService(),
+            settingsStore: settingsFixture.store,
+            contextBuilderPiModelPollingService: RecordingPiModelPollingService()
+        )
+        await composition.workspaceManager.awaitInitialized()
+        let workspace = composition.workspaceManager.createWorkspace(
+            name: "Prompt pi Context Builder drift",
+            repoPaths: [workspaceRoot.path],
+            ephemeral: true
+        )
+        _ = await composition.workspaceManager.switchWorkspace(
+            to: workspace,
+            saveState: false,
+            reason: "PromptPiContextBuilderDriftTest"
+        )
+
+        var workspaceSettings = settingsFixture.store.chatSettings(for: workspace.id)
+        workspaceSettings.contextBuilderAgentRaw = AgentProviderKind.pi.rawValue
+        workspaceSettings.contextBuilderAgentModelRaw = piModelRaw
+        workspaceSettings.didUserSetContextBuilderDefaults = true
+        settingsFixture.store.updateChatSettings(workspaceSettings, commit: true)
+
+        composition.apiSettingsViewModel.isPiConnected = true
+        composition.apiSettingsViewModel.test_completeContextBuilderProviderValidation(verifiedProviders: [.pi])
+
+        let viewModel = AgentModelsSettingsViewModel(
+            promptVM: composition.promptManager,
+            contextBuilderVM: composition.contextBuilderAgentViewModel,
+            apiSettingsVM: composition.apiSettingsViewModel,
+            settingsStore: settingsFixture.store
+        )
+        viewModel.refresh()
+        XCTAssertNotNil(viewModel.contextBuilderDrift)
+
+        viewModel.resolveContextBuilderDriftUsingWorkspace()
+
+        let persisted = settingsFixture.store.persistedGlobalContextBuilderAgentSelection()
+        XCTAssertEqual(persisted.agentRaw, AgentProviderKind.pi.rawValue)
+        XCTAssertEqual(persisted.modelRaw, piModelRaw)
+
+        let promptSynced = await eventually {
+            composition.promptManager.contextBuilderAgent == .pi
+                && composition.promptManager.contextBuilderAgentModelRaw == piModelRaw
+        }
+        XCTAssertTrue(promptSynced)
+    }
+
     func testUnavailablePersistedSelectionFallsBackToRecommendedAvailableProvider() throws {
         let resolved = try XCTUnwrap(AutoRecommendationEngine.resolveContextBuilderSelection(
             persistedAgentRaw: AgentProviderKind.claudeCode.rawValue,
