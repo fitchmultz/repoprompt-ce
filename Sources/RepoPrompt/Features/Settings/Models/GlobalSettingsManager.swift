@@ -359,7 +359,7 @@ class GlobalSettingsStore: ObservableObject {
     private static let defaultSelectedFilesSortMethodRaw = "nameAscending"
     private static let defaultFileEditFormatRaw = "Diff"
     private static let defaultComplexEditStrategyRaw = "Sequential split"
-    private static let contextBuilderLegacyWorkspacePromotionVersion = 1
+    private static let contextBuilderLegacyWorkspacePromotionVersion = 2
     private static let settingsWriteDiagnosticsLimit = 80
 
     private var settingsWriteDiagnostics: [GlobalSettingsWriteDiagnostic] = []
@@ -1446,6 +1446,17 @@ class GlobalSettingsStore: ObservableObject {
         return trimmed.isEmpty ? nil : trimmed
     }
 
+    private func contextBuilderAgentKind(from raw: String) -> AgentProviderKind {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return AgentProviderKind(rawValue: trimmed)
+            ?? AgentModelCatalog.normalizeSelection(agentRaw: trimmed, modelRaw: nil).agent
+    }
+
+    private func contextBuilderModelRawForPersistence(_ raw: String, agent: AgentProviderKind) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? AgentModelCatalog.defaultModelRaw(for: agent) : trimmed
+    }
+
     private func isLegacyContextBuilderGlobalDefault(agentRaw: String?, modelRaw: String?) -> Bool {
         guard let agentRaw = normalizedNonEmptyRaw(agentRaw) else { return true }
         guard agentRaw.caseInsensitiveCompare(AgentProviderKind.claudeCode.rawValue) == .orderedSame else { return false }
@@ -1498,12 +1509,13 @@ class GlobalSettingsStore: ObservableObject {
         function: StaticString = #function
     ) {
         let oldSelection = globalContextBuilderAgentSelection()
-        let normalized = AgentModelCatalog.normalizePersistedSelection(agentRaw: agentRaw, modelRaw: modelRaw)
-        globalDefaults.discoverAgentRaw = normalized.agent.rawValue
+        let agent = contextBuilderAgentKind(from: agentRaw)
+        let persistedModelRaw = contextBuilderModelRawForPersistence(modelRaw, agent: agent)
+        globalDefaults.discoverAgentRaw = agent.rawValue
         if globalDefaults.discoverModelsByAgent == nil {
             globalDefaults.discoverModelsByAgent = [:]
         }
-        globalDefaults.discoverModelsByAgent?[normalized.agent.rawValue] = normalized.modelRaw
+        globalDefaults.discoverModelsByAgent?[agent.rawValue] = persistedModelRaw
         if markUserDefined {
             globalDefaults.didUserSetDiscoverAgentDefaults = true
         }
@@ -1512,7 +1524,7 @@ class GlobalSettingsStore: ObservableObject {
             oldValue: oldSelection.agentRaw.flatMap { oldAgentRaw in
                 oldSelection.modelRaw.map { "\(oldAgentRaw):\($0)" } ?? oldAgentRaw
             },
-            newValue: "\(normalized.agent.rawValue):\(normalized.modelRaw)",
+            newValue: "\(agent.rawValue):\(persistedModelRaw)",
             commit: true,
             markUserDefined: markUserDefined,
             reason: reason,
@@ -1537,23 +1549,18 @@ class GlobalSettingsStore: ObservableObject {
         function: StaticString = #function
     ) {
         let oldSelection = globalContextBuilderAgentSelection()
-        let trimmedAgentRaw = agentRaw.trimmingCharacters(in: .whitespacesAndNewlines)
-        let agent = AgentProviderKind(rawValue: trimmedAgentRaw)
-            ?? AgentModelCatalog.normalizeSelection(agentRaw: trimmedAgentRaw, modelRaw: modelRaw).agent
+        let agent = contextBuilderAgentKind(from: agentRaw)
         globalDefaults.discoverAgentRaw = agent.rawValue
 
         let trimmedModelRaw = modelRaw?.trimmingCharacters(in: .whitespacesAndNewlines)
         let newModelRaw: String?
         if let trimmedModelRaw, !trimmedModelRaw.isEmpty {
-            let normalized = AgentModelCatalog.normalizePersistedSelection(
-                agentRaw: agent.rawValue,
-                modelRaw: trimmedModelRaw
-            )
+            let persistedModelRaw = contextBuilderModelRawForPersistence(trimmedModelRaw, agent: agent)
             if globalDefaults.discoverModelsByAgent == nil {
                 globalDefaults.discoverModelsByAgent = [:]
             }
-            globalDefaults.discoverModelsByAgent?[normalized.agent.rawValue] = normalized.modelRaw
-            newModelRaw = normalized.modelRaw
+            globalDefaults.discoverModelsByAgent?[agent.rawValue] = persistedModelRaw
+            newModelRaw = persistedModelRaw
         } else {
             globalDefaults.discoverModelsByAgent?[agent.rawValue] = nil
             newModelRaw = nil
@@ -1748,21 +1755,25 @@ class GlobalSettingsStore: ObservableObject {
 
     /// Seed new workspace chat settings with defaults.
     /// Called when creating brand new ChatGlobalSettings for a workspace.
-    /// NOTE: Context Builder agent/model are now GLOBAL (not per-workspace), so we don't seed those here.
-    /// The workspace lastUsedDiscover* fields are legacy and kept only for backwards compatibility.
+    /// Context Builder execution uses global settings; legacy workspace fields only mirror a real
+    /// persisted global selection for older readers.
     private func seedChatSettingsDefaults(_ settings: inout ChatGlobalSettings) {
-        // Legacy: seed workspace discover settings from global for backwards compatibility
-        // These are no longer the source of truth - global settings are.
+        // Legacy: seed workspace discover settings from global for backwards compatibility.
+        // These are no longer the source of truth, so never invent a Claude/Opus workspace default.
+        let persistedGlobalContextBuilder = persistedGlobalContextBuilderAgentSelection()
         if settings.lastUsedDiscoverAgentRaw == nil {
-            settings.lastUsedDiscoverAgentRaw = globalDefaults.discoverAgentRaw ?? "claudeCode"
+            settings.lastUsedDiscoverAgentRaw = persistedGlobalContextBuilder.agentRaw
         }
         if settings.lastUsedDiscoverModelsByAgent == nil {
-            settings.lastUsedDiscoverModelsByAgent = globalDefaults.discoverModelsByAgent ?? [:]
+            settings.lastUsedDiscoverModelsByAgent = globalDefaults.discoverModelsByAgent
         }
 
-        // Seed context-builder agent from global defaults (legacy feature)
+        // Legacy context-builder fields mirror the real global selection only when one exists.
         if settings.contextBuilderAgentRaw == nil {
-            settings.contextBuilderAgentRaw = globalDefaults.contextBuilderAgentRaw ?? "claudeCode"
+            settings.contextBuilderAgentRaw = persistedGlobalContextBuilder.agentRaw
+        }
+        if settings.contextBuilderAgentModelRaw == nil {
+            settings.contextBuilderAgentModelRaw = persistedGlobalContextBuilder.modelRaw
         }
 
         // Mark as seeded (not user-defined) for recommendation auto-apply

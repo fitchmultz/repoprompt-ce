@@ -83,6 +83,171 @@ final class ContextBuilderModelStartupSelectionTests: XCTestCase {
         ))
     }
 
+    func testGlobalContextBuilderSelectionPreservesPiThinkingModelWithoutCatalog() throws {
+        AgentPiModelRegistry.shared.test_reset()
+        addTeardownBlock {
+            AgentPiModelRegistry.shared.test_reset()
+        }
+        let fixture = try makeStoreFixture()
+        let modelRaw = "openai-codex/gpt-5.5:medium"
+
+        fixture.store.setGlobalContextBuilderAgentSelection(
+            agentRaw: AgentProviderKind.pi.rawValue,
+            modelRaw: modelRaw,
+            markUserDefined: true
+        )
+
+        let persisted = fixture.store.persistedGlobalContextBuilderAgentSelection()
+        XCTAssertEqual(persisted.agentRaw, AgentProviderKind.pi.rawValue)
+        XCTAssertEqual(persisted.modelRaw, modelRaw)
+        XCTAssertEqual(
+            fixture.store.globalContextBuilderRememberedModelRaw(for: AgentProviderKind.pi.rawValue),
+            modelRaw
+        )
+
+        let reloadedStore = GlobalSettingsStore(defaults: fixture.defaults, fileStore: fixture.fileStore)
+        let reloaded = reloadedStore.persistedGlobalContextBuilderAgentSelection()
+        XCTAssertEqual(reloaded.agentRaw, AgentProviderKind.pi.rawValue)
+        XCTAssertEqual(reloaded.modelRaw, modelRaw)
+    }
+
+    func testExplicitWorkspaceSelectionPromotesAfterPreviousLegacyPromotionVersionWasRecorded() throws {
+        AgentPiModelRegistry.shared.test_reset()
+        addTeardownBlock {
+            AgentPiModelRegistry.shared.test_reset()
+        }
+        let piModelRaw = "openai-codex/gpt-5.5"
+        let selectedModelRaw = "\(piModelRaw):medium"
+        XCTAssertTrue(AgentPiModelRegistry.shared.updateDiscoveredModels(PiDiscoveredModels(
+            options: [AgentModelOption(
+                rawValue: piModelRaw,
+                displayName: "GPT-5.5",
+                description: nil,
+                isDefault: true,
+                supportedPiThinkingLevels: PiThinkingLevel.standardModelOrder
+            )],
+            currentModelRaw: piModelRaw
+        )))
+
+        let fixture = try makeStoreFixture()
+        let workspaceID = UUID()
+        var workspaceSettings = ChatGlobalSettings(workspaceID: workspaceID)
+        workspaceSettings.contextBuilderAgentRaw = AgentProviderKind.pi.rawValue
+        workspaceSettings.contextBuilderAgentModelRaw = selectedModelRaw
+        workspaceSettings.didUserSetContextBuilderDefaults = true
+
+        var globalDefaults = GlobalDefaults(
+            discoverAgentRaw: AgentProviderKind.claudeCode.rawValue,
+            discoverModelsByAgent: [
+                AgentProviderKind.claudeCode.rawValue: AgentModel.claudeOpus.rawValue,
+                AgentProviderKind.pi.rawValue: selectedModelRaw
+            ]
+        )
+        globalDefaults.didUserSetDiscoverAgentDefaults = true
+        globalDefaults.contextBuilderLegacyWorkspacePromotionVersion = 1
+        try fixture.fileStore.save(GlobalSettingsDocument(
+            chatSettings: [workspaceID: workspaceSettings],
+            globalDefaults: globalDefaults
+        ))
+        let store = GlobalSettingsStore(defaults: fixture.defaults, fileStore: fixture.fileStore)
+
+        let promoted = try XCTUnwrap(store.promoteLegacyWorkspaceContextBuilderSelectionIfNeeded(
+            workspaceID: workspaceID,
+            availability: .init(
+                claudeCodeAvailable: true,
+                codexAvailable: true,
+                openCodeAvailable: false,
+                cursorAvailable: false,
+                piAvailable: true
+            ),
+            enabledRecommendationProviders: Set(RecommendationProviderKind.allCases)
+        ))
+
+        XCTAssertEqual(promoted.agentRaw, AgentProviderKind.pi.rawValue)
+        XCTAssertEqual(promoted.modelRaw, selectedModelRaw)
+        let persisted = store.persistedGlobalContextBuilderAgentSelection()
+        XCTAssertEqual(persisted.agentRaw, AgentProviderKind.pi.rawValue)
+        XCTAssertEqual(persisted.modelRaw, selectedModelRaw)
+    }
+
+    func testCurrentPromotionVersionDoesNotOverwriteExplicitClaudeOpusGlobalSelection() throws {
+        AgentPiModelRegistry.shared.test_reset()
+        addTeardownBlock {
+            AgentPiModelRegistry.shared.test_reset()
+        }
+        let piModelRaw = "openai-codex/gpt-5.5"
+        let selectedModelRaw = "\(piModelRaw):medium"
+        XCTAssertTrue(AgentPiModelRegistry.shared.updateDiscoveredModels(PiDiscoveredModels(
+            options: [AgentModelOption(
+                rawValue: piModelRaw,
+                displayName: "GPT-5.5",
+                description: nil,
+                isDefault: true,
+                supportedPiThinkingLevels: PiThinkingLevel.standardModelOrder
+            )],
+            currentModelRaw: piModelRaw
+        )))
+
+        let fixture = try makeStoreFixture()
+        let workspaceID = UUID()
+        var workspaceSettings = ChatGlobalSettings(workspaceID: workspaceID)
+        workspaceSettings.contextBuilderAgentRaw = AgentProviderKind.pi.rawValue
+        workspaceSettings.contextBuilderAgentModelRaw = selectedModelRaw
+        workspaceSettings.didUserSetContextBuilderDefaults = true
+
+        var globalDefaults = GlobalDefaults(
+            discoverAgentRaw: AgentProviderKind.claudeCode.rawValue,
+            discoverModelsByAgent: [
+                AgentProviderKind.claudeCode.rawValue: AgentModel.claudeOpus.rawValue,
+                AgentProviderKind.pi.rawValue: selectedModelRaw
+            ]
+        )
+        globalDefaults.didUserSetDiscoverAgentDefaults = true
+        globalDefaults.contextBuilderLegacyWorkspacePromotionVersion = 2
+        try fixture.fileStore.save(GlobalSettingsDocument(
+            chatSettings: [workspaceID: workspaceSettings],
+            globalDefaults: globalDefaults
+        ))
+        let store = GlobalSettingsStore(defaults: fixture.defaults, fileStore: fixture.fileStore)
+
+        XCTAssertNil(store.promoteLegacyWorkspaceContextBuilderSelectionIfNeeded(
+            workspaceID: workspaceID,
+            availability: .init(
+                claudeCodeAvailable: true,
+                codexAvailable: true,
+                openCodeAvailable: false,
+                cursorAvailable: false,
+                piAvailable: true
+            ),
+            enabledRecommendationProviders: Set(RecommendationProviderKind.allCases)
+        ))
+
+        let persisted = store.persistedGlobalContextBuilderAgentSelection()
+        XCTAssertEqual(persisted.agentRaw, AgentProviderKind.claudeCode.rawValue)
+        XCTAssertEqual(persisted.modelRaw, AgentModel.claudeOpus.rawValue)
+    }
+
+    func testNewWorkspaceLegacyFieldsDoNotInventClaudeOpusDefaults() throws {
+        let fixture = try makeStoreFixture()
+        let unsetSettings = fixture.store.chatSettings(for: UUID())
+        XCTAssertNil(unsetSettings.contextBuilderAgentRaw)
+        XCTAssertNil(unsetSettings.contextBuilderAgentModelRaw)
+        XCTAssertNil(unsetSettings.lastUsedDiscoverAgentRaw)
+        XCTAssertNil(unsetSettings.lastUsedDiscoverModelsByAgent)
+
+        let modelRaw = "openai-codex/gpt-5.5:medium"
+        fixture.store.setGlobalContextBuilderAgentSelection(
+            agentRaw: AgentProviderKind.pi.rawValue,
+            modelRaw: modelRaw,
+            markUserDefined: true
+        )
+        let seededSettings = fixture.store.chatSettings(for: UUID())
+        XCTAssertEqual(seededSettings.contextBuilderAgentRaw, AgentProviderKind.pi.rawValue)
+        XCTAssertEqual(seededSettings.contextBuilderAgentModelRaw, modelRaw)
+        XCTAssertEqual(seededSettings.lastUsedDiscoverAgentRaw, AgentProviderKind.pi.rawValue)
+        XCTAssertEqual(seededSettings.lastUsedDiscoverModelsByAgent?[AgentProviderKind.pi.rawValue], modelRaw)
+    }
+
     func testContextBuilderStartupSelectsReadyPiAheadOfOpenCodeAndCursor() throws {
         AgentPiModelRegistry.shared.test_reset()
         addTeardownBlock { AgentPiModelRegistry.shared.test_reset() }
