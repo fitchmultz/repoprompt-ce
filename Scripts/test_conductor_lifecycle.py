@@ -338,7 +338,7 @@ class LifecycleQueueTests(LifecycleTestCase):
 import subprocess
 import sys
 import time
-child = subprocess.Popen([sys.executable, "-c", sys.argv[2]])
+child = subprocess.Popen([sys.executable, "-c", sys.argv[2]], start_new_session=True)
 with open(sys.argv[1], "w", encoding="utf-8") as handle:
     handle.write(str(child.pid))
     handle.flush()

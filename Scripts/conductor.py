@@ -3296,23 +3296,41 @@ def run_operation_command_streaming_with_startup_watchdog(
             captured.append(line)
             print(line, end="", flush=True)
 
+    def collect_signal_targets(seed_pids: Set[int]) -> Tuple[Set[int], Set[int]]:
+        parent_table = process_parent_table()
+        pids: Set[int] = {pid for pid in seed_pids if pid > 0}
+        for pid in list(pids):
+            pids.update(descendant_pids(pid, parent_table))
+        pgids: Set[int] = set()
+        if start_new_session:
+            for pid in pids:
+                with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                    pgid = os.getpgid(pid)
+                    if pgid > 0:
+                        pgids.add(pgid)
+            if process_group_id is not None:
+                pgids.add(process_group_id)
+        return pgids, pids
+
+    def signal_targets(pgids: Set[int], pids: Set[int], sig: signal.Signals) -> None:
+        if start_new_session:
+            for pgid in sorted(pgids):
+                with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                    os.killpg(pgid, sig)
+        for pid in sorted(pids):
+            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                os.kill(pid, sig)
+
     def terminate_after_startup_timeout() -> None:
-        if process_group_id is not None:
-            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
-                os.killpg(process_group_id, signal.SIGTERM)
-        else:
-            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
-                process.terminate()
+        root_targets = {process.pid}
+        pgids, pids = collect_signal_targets(root_targets)
+        signal_targets(pgids, pids, signal.SIGTERM)
         try:
             process.wait(timeout=10)
         except subprocess.TimeoutExpired:
             pass
-        if process_group_id is not None:
-            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
-                os.killpg(process_group_id, signal.SIGKILL)
-        elif process.poll() is None:
-            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
-                process.kill()
+        kill_pgids, kill_pids = collect_signal_targets(pids | root_targets)
+        signal_targets(pgids | kill_pgids, pids | kill_pids, signal.SIGKILL)
         if process.poll() is None:
             process.wait()
 
