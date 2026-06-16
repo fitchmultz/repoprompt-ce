@@ -2,10 +2,21 @@ import CoreServices
 @testable import RepoPrompt
 import XCTest
 
-final class WorkspaceFileContextStoreTests: XCTestCase {
+class WorkspaceFileContextStoreTestCase: XCTestCase {
     private var temporaryRoots: [URL] = []
 
+    override func setUpWithError() throws {
+        WorkspaceContextStoreTestSerialExecutor.lock.lock()
+        do {
+            try super.setUpWithError()
+        } catch {
+            WorkspaceContextStoreTestSerialExecutor.lock.unlock()
+            throw error
+        }
+    }
+
     override func tearDownWithError() throws {
+        defer { WorkspaceContextStoreTestSerialExecutor.lock.unlock() }
         for url in temporaryRoots {
             try? FileManager.default.removeItem(at: url)
         }
@@ -13,7 +24,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         try super.tearDownWithError()
     }
 
-    func testRootLoadIndexesFilesFoldersReadsContentAndLooksUpPaths() async throws {
+    func runTestRootLoadIndexesFilesFoldersReadsContentAndLooksUpPaths() async throws {
         let rootA = try makeTemporaryRoot(name: "RootA")
         let rootB = try makeTemporaryRoot(name: "RootB")
         try write("alpha", to: rootA.appendingPathComponent("Sources/A.swift"))
@@ -49,7 +60,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertEqual(scopedA?.location.absolutePath, rootA.appendingPathComponent("shared/file.txt").path)
     }
 
-    func testResolvedClipboardPackagingRendersStoreCodemaps() async throws {
+    func runTestResolvedClipboardPackagingRendersStoreCodemaps() async throws {
         let root = try makeTemporaryRoot(name: "ResolvedClipboard")
         let fileURL = root.appendingPathComponent("A.swift")
         try write("struct A { func fullContent() {} }", to: fileURL)
@@ -92,7 +103,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertFalse(clipboard.contains("fullContent"))
     }
 
-    func testWatcherReplayAppliesAddRemoveModifyAndFolderRemoveEvents() async throws {
+    func runTestWatcherReplayAppliesAddRemoveModifyAndFolderRemoveEvents() async throws {
         let root = try makeTemporaryRoot(name: "WatcherReplay")
         try write("old", to: root.appendingPathComponent("Existing.swift"))
         try write("nested", to: root.appendingPathComponent("Gone/Nested.swift"))
@@ -139,7 +150,27 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertNil(removedNestedFile)
     }
 
-    func testWatcherReplayDuplicateDeltasAreIdempotent() async throws {
+    func runTestWatcherReplayStaleRemovalDeltasKeepFilesAndFoldersPresentOnDisk() async throws {
+        let root = try makeTemporaryRoot(name: "WatcherReplayStaleRemoval")
+        try write("still here", to: root.appendingPathComponent("Present.swift"))
+        try write("nested", to: root.appendingPathComponent("PresentFolder/Nested.swift"))
+
+        let store = WorkspaceFileContextStore()
+        let record = try await store.loadRoot(path: root.path)
+        await store.replayObservedFileSystemDeltas(rootID: record.id, deltas: [
+            .fileRemoved("Present.swift"),
+            .folderRemoved("PresentFolder")
+        ])
+
+        let file = await store.file(rootID: record.id, relativePath: "Present.swift")
+        let folder = await store.folder(rootID: record.id, relativePath: "PresentFolder")
+        let nested = await store.file(rootID: record.id, relativePath: "PresentFolder/Nested.swift")
+        XCTAssertNotNil(file)
+        XCTAssertNotNil(folder)
+        XCTAssertNotNil(nested)
+    }
+
+    func runTestWatcherReplayDuplicateDeltasAreIdempotent() async throws {
         let root = try makeTemporaryRoot(name: "DuplicateDeltas")
         try write("content", to: root.appendingPathComponent("A.swift"))
 
@@ -151,7 +182,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
     }
 
     #if DEBUG
-        func testFlushWaitsForPublisherIngressAlreadyEmittedBeforeBarrier() async throws {
+        func runTestFlushWaitsForPublisherIngressAlreadyEmittedBeforeBarrier() async throws {
             let root = try makeTemporaryRoot(name: "FlushPublisherIngress")
             let lateFileURL = root.appendingPathComponent("Late.swift")
             let store = WorkspaceFileContextStore()
@@ -199,7 +230,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             await store.stopWatchingRoot(id: rootID)
         }
 
-        func testFlushWaitsForSyntheticMutationPublisherIngress() async throws {
+        func runTestFlushWaitsForSyntheticMutationPublisherIngress() async throws {
             let root = try makeTemporaryRoot(name: "FlushSyntheticPublisherIngress")
             let store = WorkspaceFileContextStore()
             let record = try await store.loadRoot(path: root.path)
@@ -246,7 +277,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             await store.stopWatchingRoot(id: rootID)
         }
 
-        func testCancelledCreateSettlesBeforeUncancellableIOAndReconcilesCatalogAfterCompletion() async throws {
+        func runTestCancelledCreateSettlesBeforeUncancellableIOAndReconcilesCatalogAfterCompletion() async throws {
             let root = try makeTemporaryRoot(name: "CancelledCreateReconciliation")
             let store = WorkspaceFileContextStore()
             let record = try await store.loadRoot(path: root.path)
@@ -312,7 +343,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             await store.stopWatchingRoot(id: record.id)
         }
 
-        func testCancelledOverwriteSettlesBeforeUncancellableIOAndReconcilesCatalogAfterCompletion() async throws {
+        func runTestCancelledOverwriteSettlesBeforeUncancellableIOAndReconcilesCatalogAfterCompletion() async throws {
             let root = try makeTemporaryRoot(name: "CancelledOverwriteReconciliation")
             let fileURL = root.appendingPathComponent("OverwriteAfterCancellation.swift")
             try write("old", to: fileURL)
@@ -385,7 +416,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             await store.stopWatchingRoot(id: record.id)
         }
 
-        func testCancelledMoveDeleteAndTrashSettleBeforeIOAndReconcileAfterCompletion() async throws {
+        func runTestCancelledMoveDeleteAndTrashSettleBeforeIOAndReconcileAfterCompletion() async throws {
             let root = try makeTemporaryRoot(name: "CancelledMutationReconciliation")
             try write("move", to: root.appendingPathComponent("MoveSource.swift"))
             try write("delete", to: root.appendingPathComponent("Delete.swift"))
@@ -509,7 +540,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             )
         }
 
-        func testStopWatchingRootDrainsTrackedPublisherIngress() async throws {
+        func runTestStopWatchingRootDrainsTrackedPublisherIngress() async throws {
             let root = try makeTemporaryRoot(name: "StopWatcherPublisherIngress")
             let lateFileURL = root.appendingPathComponent("Late.swift")
             let store = WorkspaceFileContextStore()
@@ -554,7 +585,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             await store.setPublisherIngressWillWaitHandler(nil)
         }
 
-        func testUnloadRootDrainsTrackedPublisherIngressWithoutPostDetachMutation() async throws {
+        func runTestUnloadRootDrainsTrackedPublisherIngressWithoutPostDetachMutation() async throws {
             let root = try makeTemporaryRoot(name: "UnloadPublisherIngress")
             let lateFileURL = root.appendingPathComponent("Late.swift")
             let sleeper = ManualWorkspaceRootUnloadSleeper()
@@ -619,7 +650,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             await store.setRootUnloadTerminationDidCompleteHandler(nil)
         }
 
-        func testUnloadRootForceDiscardsWedgedPublisherIngressAndReleasesWaiters() async throws {
+        func runTestUnloadRootForceDiscardsWedgedPublisherIngressAndReleasesWaiters() async throws {
             let root = try makeTemporaryRoot(name: "UnloadForcedPublisherIngress")
             let firstURL = root.appendingPathComponent("First.swift")
             let secondURL = root.appendingPathComponent("Second.swift")
@@ -720,7 +751,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             await store.setRootUnloadTerminationDidCompleteHandler(nil)
         }
 
-        func testWatcherBoundedWaitPrefersCompletionThatRacesTimeout() async {
+        func runTestWatcherBoundedWaitPrefersCompletionThatRacesTimeout() async {
             let latch = WorkspaceRootUnloadCompletionLatch()
 
             let outcome = await WorkspaceRootUnloadBoundedWait.waitForCompletion(
@@ -739,7 +770,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             )
         }
 
-        func testUnloadRootBoundsWatcherStopCallerSideWithoutInterruptClaim() async throws {
+        func runTestUnloadRootBoundsWatcherStopCallerSideWithoutInterruptClaim() async throws {
             let root = try makeTemporaryRoot(name: "UnloadWatcherStopBound")
             let sleeper = ManualWorkspaceRootUnloadSleeper()
             let store = WorkspaceFileContextStore(
@@ -790,7 +821,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             await store.setRootUnloadTerminationDidCompleteHandler(nil)
         }
 
-        func testUnloadRootReportsCompletedWatcherStopWhenStopFinishesWithinGrace() async throws {
+        func runTestUnloadRootReportsCompletedWatcherStopWhenStopFinishesWithinGrace() async throws {
             let root = try makeTemporaryRoot(name: "UnloadWatcherStopCompleted")
             let sleeper = ManualWorkspaceRootUnloadSleeper()
             let store = WorkspaceFileContextStore(
@@ -819,7 +850,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             await store.setRootUnloadTerminationDidCompleteHandler(nil)
         }
 
-        func testCancelledUnloadReportsWatcherStopCancelledWhileDetachedStopIsBlocked() async throws {
+        func runTestCancelledUnloadReportsWatcherStopCancelledWhileDetachedStopIsBlocked() async throws {
             let root = try makeTemporaryRoot(name: "UnloadWatcherStopCancelled")
             let sleeper = ManualWorkspaceRootUnloadSleeper()
             let store = WorkspaceFileContextStore(
@@ -863,7 +894,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             await store.setRootUnloadTerminationDidCompleteHandler(nil)
         }
 
-        func testStalePublisherLifetimeCannotMutateCurrentRootState() async throws {
+        func runTestStalePublisherLifetimeCannotMutateCurrentRootState() async throws {
             let root = try makeTemporaryRoot(name: "StalePublisherLifetime")
             let lateURL = root.appendingPathComponent("Late.swift")
             let store = WorkspaceFileContextStore()
@@ -889,7 +920,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         }
 
         @MainActor
-        func testRecoveryFullResyncPublicationFlagsAppliedIndexEvent() async throws {
+        func runTestRecoveryFullResyncPublicationFlagsAppliedIndexEvent() async throws {
             let root = try makeTemporaryRoot(name: "RecoveryFullResyncAppliedIndex")
             let store = WorkspaceFileContextStore()
             let record = try await store.loadRoot(path: root.path)
@@ -909,7 +940,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             XCTAssertEqual(event?.requiresFullResync, true)
         }
 
-        func testWatcherActivationFailureThrowsAndRollsBackStoreLifecycle() async throws {
+        func runTestWatcherActivationFailureThrowsAndRollsBackStoreLifecycle() async throws {
             let root = try makeTemporaryRoot(name: "WatcherActivationFailure")
             let store = WorkspaceFileContextStore()
             let record = try await store.loadRoot(path: root.path)
@@ -939,7 +970,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         }
 
         @MainActor
-        func testRedundantStartWatchingRootKeepsPublisherSinkAttached() async throws {
+        func runTestRedundantStartWatchingRootKeepsPublisherSinkAttached() async throws {
             let root = try makeTemporaryRoot(name: "RedundantStartWatcherPublisherIngress")
             let lateFileURL = root.appendingPathComponent("Late.swift")
             let store = WorkspaceFileContextStore()
@@ -964,7 +995,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             await store.stopWatchingRoot(id: rootID)
         }
 
-        func testWatcherRestartWinsRaceWithStaleStopReconciliation() async throws {
+        func runTestWatcherRestartWinsRaceWithStaleStopReconciliation() async throws {
             let root = try makeTemporaryRoot(name: "WatcherRestartWinsStaleStop")
             let lateFileURL = root.appendingPathComponent("Late.swift")
             let store = WorkspaceFileContextStore()
@@ -998,7 +1029,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             await store.stopWatchingRoot(id: rootID)
         }
 
-        func testAcceptedCallbackBeforeActorEntryDelaysBarrierUntilCanonicalApply() async throws {
+        func runTestAcceptedCallbackBeforeActorEntryDelaysBarrierUntilCanonicalApply() async throws {
             let root = try makeTemporaryRoot(name: "AcceptedCallbackCanonicalBarrier")
             let store = WorkspaceFileContextStore()
             let record = try await store.loadRoot(path: root.path)
@@ -1037,7 +1068,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             await store.stopWatchingRoot(id: rootID)
         }
 
-        func testBarrierCaptureCutExcludesCallbackAcceptedAfterCaptureUntilNextBarrier() async throws {
+        func runTestBarrierCaptureCutExcludesCallbackAcceptedAfterCaptureUntilNextBarrier() async throws {
             let root = try makeTemporaryRoot(name: "AcceptedCallbackCaptureCut")
             let store = WorkspaceFileContextStore()
             let record = try await store.loadRoot(path: root.path)
@@ -1075,13 +1106,13 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             await store.stopWatchingRoot(id: rootID)
         }
 
-        func testSyntheticPublicationAppliesWithoutAdvancingWatcherAcceptedWatermark() async throws {
+        func runTestSyntheticPublicationAppliesWithoutAdvancingWatcherAcceptedWatermark() async throws {
             let root = try makeTemporaryRoot(name: "SyntheticPublicationWatermark")
             let lateFileURL = root.appendingPathComponent("Synthetic.swift")
             try write("synthetic", to: lateFileURL)
             let store = WorkspaceFileContextStore()
             let record = try await store.loadRoot(path: root.path)
-            try await store.startWatchingRoot(id: record.id)
+            _ = try await store.attachPublisherIngressWithoutStartingWatcherForTesting(rootID: record.id)
             let baselineIngress = await store.appliedIngressSnapshotForTesting(rootID: record.id)
             let baselineWatcherWatermark = try await store.acceptedWatcherWatermarkForTesting(rootID: record.id)
 
@@ -1101,7 +1132,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             await store.stopWatchingRoot(id: record.id)
         }
 
-        func testBarrierAfterWatcherRestartDoesNotWaitForPublicationEmittedWhileSinkDetached() async throws {
+        func runTestBarrierAfterWatcherRestartDoesNotWaitForPublicationEmittedWhileSinkDetached() async throws {
             let root = try makeTemporaryRoot(name: "DetachedPublicationRestartBarrier")
             let store = WorkspaceFileContextStore()
             let record = try await store.loadRoot(path: root.path)
@@ -1184,7 +1215,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             XCTAssertNil(fileAfterBarrier)
         }
 
-        func testWorkspaceIngressCoordinatorDrainsPublicationsInAcceptedOrder() async {
+        func runTestWorkspaceIngressCoordinatorDrainsPublicationsInAcceptedOrder() async {
             let coordinator = WorkspaceFileSystemIngressCoordinator()
             let rootID = UUID()
             let recorder = OrderedIngressRecorder()
@@ -1228,7 +1259,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         }
 
         #if DEBUG
-            func testWorkspaceIngressCoordinatorCancelledWaiterDetachesWhileLiveWaiterCompletes() async {
+            func runTestWorkspaceIngressCoordinatorCancelledWaiterDetachesWhileLiveWaiterCompletes() async {
                 let coordinator = WorkspaceFileSystemIngressCoordinator()
                 let rootID = UUID()
                 let applyGate = AsyncGate()
@@ -1285,7 +1316,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
                 XCTAssertEqual(settled.appliedWatcherWatermark, 13)
             }
 
-            func testWorkspaceIngressCoordinatorDebugSnapshotReportsDepthGapAndOldestAge() async {
+            func runTestWorkspaceIngressCoordinatorDebugSnapshotReportsDepthGapAndOldestAge() async {
                 let clock = LockedWorkspaceDiagnosticsClock(nowNanoseconds: 2_000_000_000)
                 let coordinator = WorkspaceFileSystemIngressCoordinator(debugNowNanoseconds: { clock.now() })
                 let rootID = UUID()
@@ -1344,7 +1375,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             }
         #endif
 
-        func testWorkspaceIngressCoordinatorForcedTerminationDropsQueuedWorkReleasesWaitersAndReportsSnapshot() async throws {
+        func runTestWorkspaceIngressCoordinatorForcedTerminationDropsQueuedWorkReleasesWaitersAndReportsSnapshot() async throws {
             let clock = LockedWorkspaceDiagnosticsClock(nowNanoseconds: 7_000_000_000)
             let coordinator = WorkspaceFileSystemIngressCoordinator(debugNowNanoseconds: { clock.now() })
             let rootID = UUID()
@@ -1427,7 +1458,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             XCTAssertEqual(recordedAfterRelease, [1])
         }
 
-        func testWorkspaceIngressCoordinatorTerminationDoesNotForceReopenedIngressDuringGrace() async {
+        func runTestWorkspaceIngressCoordinatorTerminationDoesNotForceReopenedIngressDuringGrace() async {
             let coordinator = WorkspaceFileSystemIngressCoordinator()
             let rootID = UUID()
             let oldApplyGate = AsyncGate()
@@ -1493,7 +1524,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             XCTAssertEqual(reopenedSequences, [41, 42])
         }
 
-        func testWorkspaceIngressCoordinatorLateForcedDrainCannotCorruptReopenedSameRootState() async {
+        func runTestWorkspaceIngressCoordinatorLateForcedDrainCannotCorruptReopenedSameRootState() async {
             let rootID = UUID()
             let oldFinishApplyingLatch = WorkspaceRootUnloadCompletionLatch()
             let coordinator = WorkspaceFileSystemIngressCoordinator(
@@ -1569,7 +1600,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             XCTAssertEqual(newRecordedSequences, [1])
         }
 
-        func testWorkspaceIngressCoordinatorTerminationPreservesGracefulCompletionWithinBound() async throws {
+        func runTestWorkspaceIngressCoordinatorTerminationPreservesGracefulCompletionWithinBound() async throws {
             let coordinator = WorkspaceFileSystemIngressCoordinator()
             let rootID = UUID()
             let applyGate = AsyncGate()
@@ -1609,7 +1640,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             XCTAssertEqual(coordinator.pendingPublisherIngressCount(rootIDs: [rootID]), 0)
         }
 
-        func testWorkspaceIngressCoordinatorFinishResolvesOutstandingWaiter() async {
+        func runTestWorkspaceIngressCoordinatorFinishResolvesOutstandingWaiter() async {
             let coordinator = WorkspaceFileSystemIngressCoordinator()
             let rootID = UUID()
             _ = coordinator.openPublisherIngress(rootID: rootID) { _, _ in }
@@ -1629,7 +1660,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             XCTAssertTrue(completedAfterFinish)
         }
 
-        func testScopedAppliedIngressConcurrentSameRootRequestsJoinOneFlight() async throws {
+        func runTestScopedAppliedIngressConcurrentSameRootRequestsJoinOneFlight() async throws {
             let root = try makeTemporaryRoot(name: "ScopedIngressSingleFlight")
             let store = WorkspaceFileContextStore()
             let record = try await store.loadRoot(path: root.path)
@@ -1667,7 +1698,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             await store.setScopedIngressBarrierWillFlushHandler(nil)
         }
 
-        func testScopedAppliedIngressCancelledFollowerDetachesWhileLeaderCompletes() async throws {
+        func runTestScopedAppliedIngressCancelledFollowerDetachesWhileLeaderCompletes() async throws {
             let root = try makeTemporaryRoot(name: "ScopedIngressFollowerCancellation")
             let store = WorkspaceFileContextStore()
             let record = try await store.loadRoot(path: root.path)
@@ -1718,7 +1749,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             await store.setScopedIngressBarrierWillFlushHandler(nil)
         }
 
-        func testScopedAppliedIngressCancelledLauncherDoesNotCancelLiveJoiner() async throws {
+        func runTestScopedAppliedIngressCancelledLauncherDoesNotCancelLiveJoiner() async throws {
             let root = try makeTemporaryRoot(name: "ScopedIngressLauncherCancellation")
             let store = WorkspaceFileContextStore()
             let record = try await store.loadRoot(path: root.path)
@@ -1767,7 +1798,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             await store.setScopedIngressBarrierWillFlushHandler(nil)
         }
 
-        func testScopedAppliedIngressCancelledPendingCallerDoesNotCancelLiveCoalescedJoiner() async throws {
+        func runTestScopedAppliedIngressCancelledPendingCallerDoesNotCancelLiveCoalescedJoiner() async throws {
             let root = try makeTemporaryRoot(name: "ScopedIngressPendingCancellation")
             let addedURL = root.appendingPathComponent("Added.swift")
             try write("added", to: addedURL)
@@ -1844,7 +1875,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             await store.stopWatchingRoot(id: rootID)
         }
 
-        func testScopedAppliedIngressAllCancelledCallersStillReachIdleCleanup() async throws {
+        func runTestScopedAppliedIngressAllCancelledCallersStillReachIdleCleanup() async throws {
             let root = try makeTemporaryRoot(name: "ScopedIngressAllCancellation")
             let addedURL = root.appendingPathComponent("Added.swift")
             let store = WorkspaceFileContextStore()
@@ -1963,7 +1994,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             await store.stopWatchingRoot(id: rootID)
         }
 
-        func testCancelledReadFreshnessJoinThrowsBeforeCanonicalFlightCompletes() async throws {
+        func runTestCancelledReadFreshnessJoinThrowsBeforeCanonicalFlightCompletes() async throws {
             let root = try makeTemporaryRoot(name: "ReadFreshnessCancellation")
             let fileURL = root.appendingPathComponent("Seed.swift")
             try write("seed", to: fileURL)
@@ -2006,7 +2037,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             await store.setScopedIngressBarrierWillFlushHandler(nil)
         }
 
-        func testCancelledFileSearchJoinThrowsBeforeCanonicalFlightCompletes() async throws {
+        func runTestCancelledFileSearchJoinThrowsBeforeCanonicalFlightCompletes() async throws {
             let root = try makeTemporaryRoot(name: "SearchFreshnessCancellation")
             try write("needle", to: root.appendingPathComponent("Seed.swift"))
             let store = WorkspaceFileContextStore()
@@ -2049,7 +2080,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             await store.setScopedIngressBarrierWillFlushHandler(nil)
         }
 
-        func testScopedAppliedIngressCoalescesNewerSameRootTargetsIntoOnePendingSuccessor() async throws {
+        func runTestScopedAppliedIngressCoalescesNewerSameRootTargetsIntoOnePendingSuccessor() async throws {
             let root = try makeTemporaryRoot(name: "ScopedIngressSuccessor")
             let firstAddedURL = root.appendingPathComponent("FirstAdded.swift")
             let secondAddedURL = root.appendingPathComponent("SecondAdded.swift")
@@ -2163,7 +2194,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             await store.stopWatchingRoot(id: rootID)
         }
 
-        func testScopedAppliedIngressDifferentRootsFlushConcurrently() async throws {
+        func runTestScopedAppliedIngressDifferentRootsFlushConcurrently() async throws {
             let rootA = try makeTemporaryRoot(name: "ScopedIngressConcurrentA")
             let rootB = try makeTemporaryRoot(name: "ScopedIngressConcurrentB")
             let store = WorkspaceFileContextStore()
@@ -2196,7 +2227,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             await store.setScopedIngressBarrierWillFlushHandler(nil)
         }
 
-        func testAggressiveAppliedIngressLimitsConcurrentRootFlushFanOut() async throws {
+        func runTestAggressiveAppliedIngressLimitsConcurrentRootFlushFanOut() async throws {
             let store = WorkspaceFileContextStore()
             var records: [WorkspaceRootRecord] = []
             for index in 0 ..< 9 {
@@ -2229,7 +2260,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             await store.setScopedIngressBarrierWillFlushHandler(nil)
         }
 
-        func testExplicitAbsoluteFreshnessBarrierTargetsOnlyContainingRoot() async throws {
+        func runTestExplicitAbsoluteFreshnessBarrierTargetsOnlyContainingRoot() async throws {
             let rootA = try makeTemporaryRoot(name: "ExplicitFreshnessA")
             let rootB = try makeTemporaryRoot(name: "ExplicitFreshnessB")
             let fileA = rootA.appendingPathComponent("A.swift")
@@ -2266,7 +2297,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             XCTAssertEqual(statsBAfterExternalRequest.launchCount, 0)
         }
 
-        func testCompletedCutNoopFastPathDoesNotHideImmediatelyAcceptedCallback() async throws {
+        func runTestCompletedCutNoopFastPathDoesNotHideImmediatelyAcceptedCallback() async throws {
             let root = try makeTemporaryRoot(name: "CompletedCutNoopFreshness")
             let seedURL = root.appendingPathComponent("Seed.swift")
             let addedURL = root.appendingPathComponent("Added.swift")
@@ -2312,7 +2343,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             await store.stopWatchingRoot(id: record.id)
         }
 
-        func testExplicitAggressiveFreshnessBarrierStillFlushesAllLoadedRoots() async throws {
+        func runTestExplicitAggressiveFreshnessBarrierStillFlushesAllLoadedRoots() async throws {
             let rootA = try makeTemporaryRoot(name: "AggressiveFreshnessA")
             let rootB = try makeTemporaryRoot(name: "AggressiveFreshnessB")
             let store = WorkspaceFileContextStore()
@@ -2327,7 +2358,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             XCTAssertEqual(statsB.launchCount, 1)
         }
 
-        func testScopedIngressBarrierDiagnosticsReportActiveTargetAndCompletedTiming() async throws {
+        func runTestScopedIngressBarrierDiagnosticsReportActiveTargetAndCompletedTiming() async throws {
             let root = try makeTemporaryRoot(name: "ScopedIngressDiagnostics")
             let clock = LockedWorkspaceDiagnosticsClock(nowNanoseconds: 3_000_000_000)
             let store = WorkspaceFileContextStore(debugNowNanoseconds: { clock.now() })
@@ -2374,7 +2405,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             await store.setScopedIngressBarrierWillFlushHandler(nil)
         }
 
-        func testRootUnloadCancelsActiveAndPendingScopedIngressFlightsAndReleasesDetachedService() async throws {
+        func runTestRootUnloadCancelsActiveAndPendingScopedIngressFlightsAndReleasesDetachedService() async throws {
             let root = try makeTemporaryRoot(name: "ScopedIngressUnloadRelease")
             let addedURL = root.appendingPathComponent("Pending.swift")
             try write("pending", to: addedURL)
@@ -2430,7 +2461,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             await store.setScopedIngressBarrierWillFlushHandler(nil)
         }
 
-        func testLargePublicationUsesOneSelectiveInvalidationCycleAndPreservesFinalCatalog() async throws {
+        func runTestLargePublicationUsesOneSelectiveInvalidationCycleAndPreservesFinalCatalog() async throws {
             let root = try makeTemporaryRoot(name: "PublicationInvalidationBatch")
             let store = WorkspaceFileContextStore()
             let record = try await store.loadRoot(path: root.path)
@@ -2492,7 +2523,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             XCTAssertEqual(catalog.files.map(\.standardizedRelativePath), relativePaths)
         }
 
-        func testLargeModificationPublicationUsesOneDecodedCacheInvalidationAndPreservesFreshContent() async throws {
+        func runTestLargeModificationPublicationUsesOneDecodedCacheInvalidationAndPreservesFreshContent() async throws {
             let root = try makeTemporaryRoot(name: "PublicationContentInvalidationBatch")
             let fileCount = 64
             let relativePaths = (0 ..< fileCount).map { String(format: "Content-%03d.swift", $0) }
@@ -2551,7 +2582,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             }
         }
 
-        func testPublicationInvalidationDiagnosticsRetainOnlyLatestThirtyTwoSamples() async throws {
+        func runTestPublicationInvalidationDiagnosticsRetainOnlyLatestThirtyTwoSamples() async throws {
             let root = try makeTemporaryRoot(name: "PublicationInvalidationRetention")
             try write("seed", to: root.appendingPathComponent("Seed.swift"))
             let store = WorkspaceFileContextStore()
@@ -2601,7 +2632,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             await store.stopWatchingRoot(id: record.id)
         }
 
-        func testSearchCatalogSnapshotCacheReusesUnchangedScopeAndPreservesOrderingDiagnostics() async throws {
+        func runTestSearchCatalogSnapshotCacheReusesUnchangedScopeAndPreservesOrderingDiagnostics() async throws {
             let rootA = try makeTemporaryRoot(name: "SearchSnapshotReuseA")
             let rootB = try makeTemporaryRoot(name: "SearchSnapshotReuseB")
             try write("b", to: rootA.appendingPathComponent("Nested/B.swift"))
@@ -2641,7 +2672,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         }
     #endif
 
-    func testSearchCatalogSnapshotCacheInvalidatesAcrossAddRemoveMoveAndRootLifecycle() async throws {
+    func runTestSearchCatalogSnapshotCacheInvalidatesAcrossAddRemoveMoveAndRootLifecycle() async throws {
         let rootA = try makeTemporaryRoot(name: "SearchSnapshotLifecycleA")
         let rootB = try makeTemporaryRoot(name: "SearchSnapshotLifecycleB")
         try write("seed", to: rootA.appendingPathComponent("Seed.swift"))
@@ -2676,7 +2707,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
     }
 
     #if DEBUG
-        func testSearchCatalogSnapshotCacheClearsImmediatelyWhenRootUnloadDetachesBeforeAwaitedTeardown() async throws {
+        func runTestSearchCatalogSnapshotCacheClearsImmediatelyWhenRootUnloadDetachesBeforeAwaitedTeardown() async throws {
             let retainedRoot = try makeTemporaryRoot(name: "SearchSnapshotRetainedDuringUnload")
             let detachedRoot = try makeTemporaryRoot(name: "SearchSnapshotDetachedDuringUnload")
             try write("retained", to: retainedRoot.appendingPathComponent("Retained.swift"))
@@ -2711,7 +2742,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         }
     #endif
 
-    func testEnsureIndexedFilesClearsWarmSearchSnapshotAcrossMultipleLateFiles() async throws {
+    func runTestEnsureIndexedFilesClearsWarmSearchSnapshotAcrossMultipleLateFiles() async throws {
         let root = try makeTemporaryRoot(name: "SearchSnapshotEnsureIndexedMultiple")
         try write("seed", to: root.appendingPathComponent("Seed.swift"))
 
@@ -2732,7 +2763,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
     }
 
     #if DEBUG
-        func testEnsureIndexedFilesSkipsEligibleFileWhenRootUnloadsDuringEligibilitySuspension() async throws {
+        func runTestEnsureIndexedFilesSkipsEligibleFileWhenRootUnloadsDuringEligibilitySuspension() async throws {
             let root = try makeTemporaryRoot(name: "EnsureIndexedUnloadDuringEligibility")
             try write("seed", to: root.appendingPathComponent("Seed.swift"))
 
@@ -2773,7 +2804,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             XCTAssertFalse(snapshot.files.contains { $0.standardizedFullPath == latePath })
         }
 
-        func testEnsureIndexedFilesPreservesConcurrentRootLocalMutationDuringEligibilitySuspension() async throws {
+        func runTestEnsureIndexedFilesPreservesConcurrentRootLocalMutationDuringEligibilitySuspension() async throws {
             let root = try makeTemporaryRoot(name: "EnsureIndexedConcurrentMutation")
             try write("seed", to: root.appendingPathComponent("Seed.swift"))
 
@@ -2823,7 +2854,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         }
     #endif
 
-    func testSearchCatalogSnapshotCacheKeepsManagedOnlyIgnoredFileHiddenAndReflectsPromotion() async throws {
+    func runTestSearchCatalogSnapshotCacheKeepsManagedOnlyIgnoredFileHiddenAndReflectsPromotion() async throws {
         let root = try makeTemporaryRoot(name: "SearchSnapshotManagedOnlyPromotion")
         try write("*.ignored\n", to: root.appendingPathComponent(".gitignore"))
         let store = WorkspaceFileContextStore()
@@ -2845,7 +2876,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertFalse(snapshot.files.contains { $0.standardizedRelativePath == "Hidden.ignored" })
     }
 
-    func testDisplayRootRefsSnapshotMatchesExistingScopesPreservesLoadOrderAndRemainsStable() async throws {
+    func runTestDisplayRootRefsSnapshotMatchesExistingScopesPreservesLoadOrderAndRemainsStable() async throws {
         let visibleRootA = try makeTemporaryRoot(name: "DisplayRootSnapshotVisibleA")
         let supplementalRoot = try makeTemporaryRoot(name: "DisplayRootSnapshotSupplemental")
         let visibleRootB = try makeTemporaryRoot(name: "DisplayRootSnapshotVisibleB")
@@ -2873,7 +2904,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertEqual(freshSnapshot.allRoots.map(\.id), [visibleA.id, supplemental.id, visibleB.id, laterVisible.id])
     }
 
-    func testSearchCatalogSnapshotCacheSeparatesStaticScopes() async throws {
+    func runTestSearchCatalogSnapshotCacheSeparatesStaticScopes() async throws {
         let visibleRoot = try makeTemporaryRoot(name: "SearchSnapshotVisible")
         let gitDataRoot = try makeTemporaryRoot(name: "SearchSnapshotGitData")
         let supplementalRoot = try makeTemporaryRoot(name: "SearchSnapshotSupplemental")
@@ -2900,7 +2931,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertEqual(warmAllLoadedSnapshot, allLoadedSnapshot)
     }
 
-    func testSearchCatalogSnapshotCacheSeparatesSessionBoundScopesAndInvalidatesWorktreeChanges() async throws {
+    func runTestSearchCatalogSnapshotCacheSeparatesSessionBoundScopesAndInvalidatesWorktreeChanges() async throws {
         let logicalRoot = try makeTemporaryRoot(name: "SearchSnapshotLogical")
         let worktreeA = try makeTemporaryRoot(name: "SearchSnapshotWorktreeA")
         let worktreeB = try makeTemporaryRoot(name: "SearchSnapshotWorktreeB")
@@ -2934,7 +2965,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
     }
 
     #if DEBUG
-        func testSearchCatalogSnapshotCacheSelectivelyRetainsUnaffectedScopes() async throws {
+        func runTestSearchCatalogSnapshotCacheSelectivelyRetainsUnaffectedScopes() async throws {
             let visibleRoot = try makeTemporaryRoot(name: "SelectiveSnapshotVisible")
             let gitDataRoot = try makeTemporaryRoot(name: "SelectiveSnapshotGitData")
             let supplementalRoot = try makeTemporaryRoot(name: "SelectiveSnapshotSupplemental")
@@ -3002,7 +3033,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             XCTAssertFalse(invalidation.evictedScopes.contains { $0.contains(worktreeB.path) })
         }
 
-        func testGitDataPublicationRetainsWarmVisibleWorkspaceCatalog() async throws {
+        func runTestGitDataPublicationRetainsWarmVisibleWorkspaceCatalog() async throws {
             let visibleRoot = try makeTemporaryRoot(name: "GitDataRetentionVisible")
             let gitDataRoot = try makeTemporaryRoot(name: "GitDataRetentionArtifact")
             try write("visible", to: visibleRoot.appendingPathComponent("Visible.swift"))
@@ -3042,7 +3073,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             XCTAssertEqual(invalidation.evictedScopes, ["all_loaded", "visible_workspace_plus_git_data"])
         }
 
-        func testSessionCatalogDependencyTokenChangesAcrossUnloadAndReload() async throws {
+        func runTestSessionCatalogDependencyTokenChangesAcrossUnloadAndReload() async throws {
             let logicalRoot = try makeTemporaryRoot(name: "SessionDependencyLogical")
             let worktree = try makeTemporaryRoot(name: "SessionDependencyWorktree")
             try write("logical", to: logicalRoot.appendingPathComponent("Logical.swift"))
@@ -3070,7 +3101,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             XCTAssertNotEqual(unloaded.generation, reloaded.generation)
         }
 
-        func testSearchCatalogSnapshotCacheEvictsOnlyLeastRecentlyUsedEntryAtCapacity() async {
+        func runTestSearchCatalogSnapshotCacheEvictsOnlyLeastRecentlyUsedEntryAtCapacity() async {
             let store = WorkspaceFileContextStore()
             let scopes = (0 ... 16).map { index in
                 WorkspaceLookupRootScope.sessionBoundWorkspace(
@@ -3107,7 +3138,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             XCTAssertTrue(capacityEvents[1].evictedScopes[0].contains("/physical/2"))
         }
 
-        func testEnsureIndexedFilesUsesOneSelectiveInvalidationCycle() async throws {
+        func runTestEnsureIndexedFilesUsesOneSelectiveInvalidationCycle() async throws {
             let root = try makeTemporaryRoot(name: "EnsureIndexedSelectiveInvalidation")
             try write("seed", to: root.appendingPathComponent("Seed.swift"))
             let store = WorkspaceFileContextStore()
@@ -3130,7 +3161,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             XCTAssertEqual(invalidation.evictedScopes, ["all_loaded", "visible_workspace"])
         }
 
-        func testRootUnloadUsesOneSelectiveInvalidationCycle() async throws {
+        func runTestRootUnloadUsesOneSelectiveInvalidationCycle() async throws {
             let root = try makeTemporaryRoot(name: "UnloadSelectiveInvalidation")
             try write("seed", to: root.appendingPathComponent("Seed.swift"))
             let store = WorkspaceFileContextStore()
@@ -3151,7 +3182,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         }
     #endif
 
-    func testFileTreeSnapshotSupportsFoldersOnlyMode() async throws {
+    func runTestFileTreeSnapshotSupportsFoldersOnlyMode() async throws {
         let root = try makeTemporaryRoot(name: "FoldersOnlyTree")
         let selectedURL = root.appendingPathComponent("Sources/Selected.swift")
         try write("selected", to: selectedURL)
@@ -3181,7 +3212,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertFalse(tree.contains("README.md"))
     }
 
-    func testFileTreeSnapshotHonorsExplicitMaxDepth() async throws {
+    func runTestFileTreeSnapshotHonorsExplicitMaxDepth() async throws {
         let root = try makeTemporaryRoot(name: "MaxDepthTree")
         try write("deep", to: root.appendingPathComponent("Sources/Deep/Deep.swift"))
         try write("top", to: root.appendingPathComponent("Top.swift"))
@@ -3210,7 +3241,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertFalse(tree.contains("Deep.swift"))
     }
 
-    func testFileTreeSnapshotCanStartAtResolvedSubtree() async throws {
+    func runTestFileTreeSnapshotCanStartAtResolvedSubtree() async throws {
         let root = try makeTemporaryRoot(name: "SubtreeTree")
         try write("a", to: root.appendingPathComponent("Sources/A.swift"))
         try write("b", to: root.appendingPathComponent("Sources/Nested/B.swift"))
@@ -3242,7 +3273,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertFalse(tree.contains("Other.swift"))
     }
 
-    func testValuePathResolutionReportsAmbiguousRelativePathWithExistingRendererMessage() async throws {
+    func runTestValuePathResolutionReportsAmbiguousRelativePathWithExistingRendererMessage() async throws {
         let parentA = try makeTemporaryRoot(name: "AmbiguousParentA")
         let parentB = try makeTemporaryRoot(name: "AmbiguousParentB")
         let rootA = parentA.appendingPathComponent("SharedRoot", isDirectory: true)
@@ -3263,7 +3294,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertTrue(message.contains("SharedRoot"))
     }
 
-    func testFolderExpansionAndSelectionMutationServiceAreDeterministicByRelativePath() async throws {
+    func runTestFolderExpansionAndSelectionMutationServiceAreDeterministicByRelativePath() async throws {
         let root = try makeTemporaryRoot(name: "SelectionMutation")
         try write("b", to: root.appendingPathComponent("Sources/B.swift"))
         try write("a", to: root.appendingPathComponent("Sources/Nested/A.swift"))
@@ -3293,7 +3324,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertEqual(addResult.resolvedMap["Sources"], "Sources")
     }
 
-    func testCodemapOnlyCandidateFilteringPreservesUnsupportedMessages() async throws {
+    func runTestCodemapOnlyCandidateFilteringPreservesUnsupportedMessages() async throws {
         let root = try makeTemporaryRoot(name: "CodemapFiltering")
         try write("struct A {}", to: root.appendingPathComponent("Sources/A.swift"))
         try write("notes", to: root.appendingPathComponent("Sources/notes.txt"))
@@ -3321,7 +3352,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertEqual(folder.codemapUnavailable, ["codemap unavailable: 1 file(s) in Sources skipped (unsupported)"])
     }
 
-    func testSelectionMutationPromoteDemoteAndRemoveOperateOnStoredSelectionValues() async throws {
+    func runTestSelectionMutationPromoteDemoteAndRemoveOperateOnStoredSelectionValues() async throws {
         let root = try makeTemporaryRoot(name: "PromoteDemote")
         let swiftURL = root.appendingPathComponent("A.swift")
         let textURL = root.appendingPathComponent("notes.txt")
@@ -3357,7 +3388,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertEqual(removed.selection.selectedPaths, [textURL.path])
     }
 
-    func testManageSelectionSliceSetPreservesFullFilesAndReplacesOnlySpecifiedSlices() async throws {
+    func runTestManageSelectionSliceSetPreservesFullFilesAndReplacesOnlySpecifiedSlices() async throws {
         let root = try makeTemporaryRoot(name: "SliceSetFileScoped")
         let fullURL = root.appendingPathComponent("Full.swift")
         let firstURL = root.appendingPathComponent("A.swift")
@@ -3405,7 +3436,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertEqual(replaced.selection.slices[secondURL.path], [LineRange(start: 5, end: 6)])
     }
 
-    func testManageSelectionSliceSetRejectsInvalidRequestsWithoutMutation() async throws {
+    func runTestManageSelectionSliceSetRejectsInvalidRequestsWithoutMutation() async throws {
         let root = try makeTemporaryRoot(name: "SliceSetRejectsInvalid")
         let fileURL = root.appendingPathComponent("A.swift")
         try write("struct A {}", to: fileURL)
@@ -3444,7 +3475,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertEqual(parseFailure.invalidPaths, ["Invalid slice 'abc' for path 'A.swift#Labc'"])
     }
 
-    func testManageSelectionMixedAddPreservesExistingFullFilesAndAddsSlices() async throws {
+    func runTestManageSelectionMixedAddPreservesExistingFullFilesAndAddsSlices() async throws {
         let root = try makeTemporaryRoot(name: "MixedAddSafe")
         let existingURL = root.appendingPathComponent("A.swift")
         let addedFullURL = root.appendingPathComponent("B.swift")
@@ -3476,7 +3507,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertEqual(addSlice.selection.slices[addedSliceURL.path], [LineRange(start: 1, end: 2)])
     }
 
-    func testManageSelectionCodemapOnlySetRejectsSlices() async throws {
+    func runTestManageSelectionCodemapOnlySetRejectsSlices() async throws {
         let root = try makeTemporaryRoot(name: "CodemapOnlyRejectsSlices")
         let fileURL = root.appendingPathComponent("A.swift")
         try write("struct A {}", to: fileURL)
@@ -3497,7 +3528,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertEqual(result.invalidPaths, ["mode 'codemap_only' cannot be used with slices"])
     }
 
-    func testManageSelectionFullSetWithSlicesRemainsDestructive() async throws {
+    func runTestManageSelectionFullSetWithSlicesRemainsDestructive() async throws {
         let root = try makeTemporaryRoot(name: "FullSetDestructive")
         let oldFullURL = root.appendingPathComponent("OldFull.swift")
         let oldSliceURL = root.appendingPathComponent("OldSlice.swift")
@@ -3532,7 +3563,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertNil(result.selection.slices[oldSliceURL.path])
     }
 
-    func testCRUDAndRootUnloadPublishAppliedIndexEvents() async throws {
+    func runTestCRUDAndRootUnloadPublishAppliedIndexEvents() async throws {
         let root = try makeTemporaryRoot(name: "CRUDEvents")
         try write("seed", to: root.appendingPathComponent("Seed.swift"))
         try write("nested", to: root.appendingPathComponent("Folder/Nested.swift"))
@@ -3570,7 +3601,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertEqual(event?.requiresFullResync, true)
     }
 
-    func testBatchRootUnloadDeduplicatesIDsPublishesEventsAndClearsLoadedRoots() async throws {
+    func runTestBatchRootUnloadDeduplicatesIDsPublishesEventsAndClearsLoadedRoots() async throws {
         let rootA = try makeTemporaryRoot(name: "BatchUnloadDedupA")
         let rootB = try makeTemporaryRoot(name: "BatchUnloadDedupB")
         let rootC = try makeTemporaryRoot(name: "BatchUnloadDedupC")
@@ -3615,7 +3646,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertNil(fileCAfterFinalUnload)
     }
 
-    func testWorkspaceFileMutationServiceCreatesReadsAndOverwritesThroughStore() async throws {
+    func runTestWorkspaceFileMutationServiceCreatesReadsAndOverwritesThroughStore() async throws {
         let root = try makeTemporaryRoot(name: "MutationService")
         try write("old", to: root.appendingPathComponent("Existing.swift"))
 
@@ -3643,7 +3674,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertNotNil(exactExisting)
     }
 
-    func testWorkspaceFileEditHostOverwriteCreatesMissingAndReplacesExisting() async throws {
+    func runTestWorkspaceFileEditHostOverwriteCreatesMissingAndReplacesExisting() async throws {
         let root = try makeTemporaryRoot(name: "EditHostOverwrite")
         try write("old", to: root.appendingPathComponent("Existing.swift"))
 
@@ -3665,7 +3696,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertEqual(overwrittenContent, "new")
     }
 
-    func testApplyEditsRewriteCreateImmediatelyMaterializesForStoreLookupAndRead() async throws {
+    func runTestApplyEditsRewriteCreateImmediatelyMaterializesForStoreLookupAndRead() async throws {
         let root = try makeTemporaryRoot(name: "ApplyEditsCreatePostcondition")
         let store = WorkspaceFileContextStore()
         let record = try await store.loadRoot(path: root.path)
@@ -3696,7 +3727,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertEqual(lookupFiles["Created.swift"]?.id, recordFromStore.id)
     }
 
-    func testIgnoredCreateRemainsExactlyManageableWithoutDiscoveryExposure() async throws {
+    func runTestIgnoredCreateRemainsExactlyManageableWithoutDiscoveryExposure() async throws {
         let root = try makeTemporaryRoot(name: "IgnoredCreatePostcondition")
         try write("*.ignored\nignored/\n", to: root.appendingPathComponent(".gitignore"))
 
@@ -3798,7 +3829,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertTrue(ignoredSubtree.roots.isEmpty)
     }
 
-    func testVisibleSiblingPromotesManagedOnlyParentWithoutExposingIgnoredSibling() async throws {
+    func runTestVisibleSiblingPromotesManagedOnlyParentWithoutExposingIgnoredSibling() async throws {
         let root = try makeTemporaryRoot(name: "IgnoredParentPromotion")
         try write("private/*.ignored\n", to: root.appendingPathComponent(".gitignore"))
         let store = WorkspaceFileContextStore()
@@ -3817,7 +3848,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertFalse(searchSnapshot.files.contains { $0.standardizedRelativePath == "private/secret.ignored" })
     }
 
-    func testExistingIgnoredFileMaterializesOnlyForExactReadAndEdit() async throws {
+    func runTestExistingIgnoredFileMaterializesOnlyForExactReadAndEdit() async throws {
         let root = try makeTemporaryRoot(name: "ExistingIgnoredExact")
         try write("*.ignored\n", to: root.appendingPathComponent(".gitignore"))
         let ignoredURL = root.appendingPathComponent("existing.ignored")
@@ -3844,7 +3875,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertFalse(searchSnapshot.files.contains { $0.standardizedRelativePath == "existing.ignored" })
     }
 
-    func testIgnoredManagedFileDeleteRemovesCatalogWithoutRediscovery() async throws {
+    func runTestIgnoredManagedFileDeleteRemovesCatalogWithoutRediscovery() async throws {
         let root = try makeTemporaryRoot(name: "IgnoredDelete")
         try write("*.ignored\n", to: root.appendingPathComponent(".gitignore"))
         let store = WorkspaceFileContextStore()
@@ -3861,7 +3892,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertNil(deletedFile)
     }
 
-    func testMoveTransitionsBetweenDiscoverableAndManagedOnlyIgnoredFiles() async throws {
+    func runTestMoveTransitionsBetweenDiscoverableAndManagedOnlyIgnoredFiles() async throws {
         let root = try makeTemporaryRoot(name: "IgnoredMove")
         try write("*.ignored\n", to: root.appendingPathComponent(".gitignore"))
         try write("visible", to: root.appendingPathComponent("Visible.md"))
@@ -3883,7 +3914,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertTrue(searchSnapshot.files.contains { $0.standardizedRelativePath == "VisibleAgain.md" })
     }
 
-    func testExplicitCatalogLookupFastPathsSingleInterpretation() async throws {
+    func runTestExplicitCatalogLookupFastPathsSingleInterpretation() async throws {
         let root = try makeTemporaryRoot(name: "CatalogFastPath")
         let fileURL = root.appendingPathComponent("Sources/Visible.swift")
         try write("visible", to: fileURL)
@@ -3905,7 +3936,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertEqual(absoluteFile.id, relativeFile.id)
     }
 
-    func testExplicitCatalogLookupDoesNotProbeIgnoredShadowForRelativeMultiRootPath() async throws {
+    func runTestExplicitCatalogLookupDoesNotProbeIgnoredShadowForRelativeMultiRootPath() async throws {
         let rootA = try makeTemporaryRoot(name: "CatalogFastPathVisible")
         let rootB = try makeTemporaryRoot(name: "CatalogFastPathIgnored")
         let visibleURL = rootA.appendingPathComponent("same.md")
@@ -3933,7 +3964,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertNil(ignoredRecord)
     }
 
-    func testAmbiguousRelativeIgnoredFileDoesNotMaterializeEitherRoot() async throws {
+    func runTestAmbiguousRelativeIgnoredFileDoesNotMaterializeEitherRoot() async throws {
         let rootA = try makeTemporaryRoot(name: "IgnoredAmbiguousA")
         let rootB = try makeTemporaryRoot(name: "IgnoredAmbiguousB")
         for root in [rootA, rootB] {
@@ -3963,7 +3994,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         }
     }
 
-    func testAmbiguousAliasIsTerminalForExplicitReadAndSelectionLookup() async throws {
+    func runTestAmbiguousAliasIsTerminalForExplicitReadAndSelectionLookup() async throws {
         let parentA = try makeTemporaryRoot(name: "AmbiguousAliasParentA")
         let parentB = try makeTemporaryRoot(name: "AmbiguousAliasParentB")
         let rootA = parentA.appendingPathComponent("App", isDirectory: true)
@@ -4000,7 +4031,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertTrue(snapshot.selectedFileIDs.isEmpty)
     }
 
-    func testMissingManagedIgnoredRecordIsPrunedByAbsoluteMutationRecovery() async throws {
+    func runTestMissingManagedIgnoredRecordIsPrunedByAbsoluteMutationRecovery() async throws {
         let rootA = try makeTemporaryRoot(name: "StaleIgnoredA")
         let rootB = try makeTemporaryRoot(name: "StaleIgnoredB")
         try write("*.ignored\n", to: rootA.appendingPathComponent(".gitignore"))
@@ -4032,7 +4063,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertNil(staleRecord)
     }
 
-    func testIgnoredFolderReplayStaysHiddenWhenHierarchicalIgnoresAreDisabled() async throws {
+    func runTestIgnoredFolderReplayStaysHiddenWhenHierarchicalIgnoresAreDisabled() async throws {
         let root = try makeTemporaryRoot(name: "IgnoredFolderReplaySimple")
         try write("ignored/\n", to: root.appendingPathComponent(".gitignore"))
         let store = WorkspaceFileContextStore()
@@ -4045,7 +4076,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertNil(ignoredFolder)
     }
 
-    func testEnsureIndexedFilesDoesNotExposeIgnoredDiskFile() async throws {
+    func runTestEnsureIndexedFilesDoesNotExposeIgnoredDiskFile() async throws {
         let root = try makeTemporaryRoot(name: "EnsureIndexedIgnored")
         try write("*.ignored\n", to: root.appendingPathComponent(".gitignore"))
         let ignoredURL = root.appendingPathComponent("late.ignored")
@@ -4062,7 +4093,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertFalse(searchSnapshot.files.contains { $0.standardizedFullPath == ignoredURL.path })
     }
 
-    func testIgnoredCreateRejectsSymlinkedParentWithoutWritingOutsideRoot() async throws {
+    func runTestIgnoredCreateRejectsSymlinkedParentWithoutWritingOutsideRoot() async throws {
         let root = try makeTemporaryRoot(name: "IgnoredCreateSymlink")
         let outside = try makeTemporaryRoot(name: "IgnoredCreateSymlinkOutside")
         try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("ignored"), withDestinationURL: outside)
@@ -4078,7 +4109,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: outside.appendingPathComponent("report.md").path))
     }
 
-    func testIgnoredCreateRejectsDanglingLeafSymlinkWithoutWritingOutsideRoot() async throws {
+    func runTestIgnoredCreateRejectsDanglingLeafSymlinkWithoutWritingOutsideRoot() async throws {
         let root = try makeTemporaryRoot(name: "IgnoredCreateDanglingSymlink")
         let outside = try makeTemporaryRoot(name: "IgnoredCreateDanglingSymlinkOutside")
         let outsideTarget = outside.appendingPathComponent("missing-report.md")
@@ -4095,7 +4126,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: outsideTarget.path))
     }
 
-    func testFileOnlyDeleteAndMoveRejectDirectoryReplacement() async throws {
+    func runTestFileOnlyDeleteAndMoveRejectDirectoryReplacement() async throws {
         let root = try makeTemporaryRoot(name: "MutationDirectoryReplacement")
         let replacedURL = root.appendingPathComponent("Replace.swift")
         try write("file", to: replacedURL)
@@ -4119,7 +4150,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("Moved.swift").path))
     }
 
-    func testTrashRejectsSymlinkedParentWithoutMovingOutsideRootFile() async throws {
+    func runTestTrashRejectsSymlinkedParentWithoutMovingOutsideRootFile() async throws {
         let root = try makeTemporaryRoot(name: "TrashSymlink")
         let outside = try makeTemporaryRoot(name: "TrashSymlinkOutside")
         let outsideFile = outside.appendingPathComponent("report.md")
@@ -4136,7 +4167,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: outsideFile.path))
     }
 
-    func testUnknownSymlinkedFolderReplayDoesNotIndexFolder() async throws {
+    func runTestUnknownSymlinkedFolderReplayDoesNotIndexFolder() async throws {
         let root = try makeTemporaryRoot(name: "ReplaySymlinkFolder")
         let outside = try makeTemporaryRoot(name: "ReplaySymlinkFolderOutside")
         try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("linked"), withDestinationURL: outside)
@@ -4149,7 +4180,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertNil(replayedFolder)
     }
 
-    func testPolicyIneligibleReplayDoesNotPublishRawDiscoveryDelta() async throws {
+    func runTestPolicyIneligibleReplayDoesNotPublishRawDiscoveryDelta() async throws {
         let root = try makeTemporaryRoot(name: "IgnoredRawReplay")
         try write("*.ignored\n", to: root.appendingPathComponent(".gitignore"))
         let store = WorkspaceFileContextStore()
@@ -4170,7 +4201,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         observation.cancel()
     }
 
-    func testPolicyIneligibleReplayDoesNotMaterializeIgnoredFile() async throws {
+    func runTestPolicyIneligibleReplayDoesNotMaterializeIgnoredFile() async throws {
         let root = try makeTemporaryRoot(name: "IgnoredReplayPostcondition")
         try write("*.ignored\n", to: root.appendingPathComponent(".gitignore"))
 
@@ -4186,7 +4217,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertNil(replayedIgnoredLookup)
     }
 
-    func testStaleCatalogRecordIsPrunedForExactMutationLookup() async throws {
+    func runTestStaleCatalogRecordIsPrunedForExactMutationLookup() async throws {
         let root = try makeTemporaryRoot(name: "StaleCatalogPrune")
         let staleURL = root.appendingPathComponent("Stale.swift")
         try write("stale", to: staleURL)
@@ -4207,7 +4238,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertNil(staleLookupAfterPrune)
     }
 
-    func testStaleAmbiguousExactMutationLookupPrunesMissingCandidate() async throws {
+    func runTestStaleAmbiguousExactMutationLookupPrunesMissingCandidate() async throws {
         let rootA = try makeTemporaryRoot(name: "StaleAmbiguousA")
         let rootB = try makeTemporaryRoot(name: "StaleAmbiguousB")
         let staleURL = rootA.appendingPathComponent("Sources/A.swift")
@@ -4234,7 +4265,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertNotNil(remainingAfterPrune)
     }
 
-    func testMaterializationFailureReportsClearPostconditionError() async throws {
+    func runTestMaterializationFailureReportsClearPostconditionError() async throws {
         let root = try makeTemporaryRoot(name: "MaterializationFailure")
         let store = WorkspaceFileContextStore()
         let record = try await store.loadRoot(path: root.path)
@@ -4252,7 +4283,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         }
     }
 
-    func testDeleteRemovesCatalogAndCodemapVisibility() async throws {
+    func runTestDeleteRemovesCatalogAndCodemapVisibility() async throws {
         let root = try makeTemporaryRoot(name: "DeletePostcondition")
         let fileURL = root.appendingPathComponent("Deleted.swift")
         try write("struct Deleted {}", to: fileURL)
@@ -4286,7 +4317,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertTrue(snapshot.selectedFileIDs.isEmpty)
     }
 
-    func testWorkspaceFileMutationServiceRequiresExactExistingFileForOverwriteResolution() async throws {
+    func runTestWorkspaceFileMutationServiceRequiresExactExistingFileForOverwriteResolution() async throws {
         let rootA = try makeTemporaryRoot(name: "OverwriteExactA")
         let rootB = try makeTemporaryRoot(name: "OverwriteExactB")
         try write("a", to: rootA.appendingPathComponent("Sources/A.swift"))
@@ -4308,7 +4339,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         }
     }
 
-    func testReadFileWorkDiagnosticsCaptureDiskBytesDecodeAndReturnedRange() async throws {
+    func runTestReadFileWorkDiagnosticsCaptureDiskBytesDecodeAndReturnedRange() async throws {
         let root = try makeTemporaryRoot(name: "ReadFileWorkDiagnostics")
         let body = "first\nsecond\nthird\n"
         try write(body, to: root.appendingPathComponent("Sample.txt"))
@@ -4342,7 +4373,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(snapshot.decodeMicroseconds, 0)
     }
 
-    func testWorkspaceReadableFileServiceResolvesAndReadsAlwaysReadableExternalFiles() async throws {
+    func runTestWorkspaceReadableFileServiceResolvesAndReadsAlwaysReadableExternalFiles() async throws {
         let home = try makeTemporaryRoot(name: "ReadableHome")
         let external = home.appendingPathComponent(".agents/skills/example/SKILL.md")
         try write("skill body", to: external)
@@ -4373,7 +4404,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testAttachRootShellFromPreloadedStoreRecordDoesNotMaterializeDescendants() async throws {
+    func runTestAttachRootShellFromPreloadedStoreRecordDoesNotMaterializeDescendants() async throws {
         let root = try makeTemporaryRoot(name: "RootShellAttach")
         let nestedFolderURL = root.appendingPathComponent("Sources")
         let fileURL = nestedFolderURL.appendingPathComponent("A.swift")
@@ -4404,7 +4435,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testLoadFolderWatcherFailureRetainsHydratedRootAndProjectedSlices() async throws {
+    func runTestLoadFolderWatcherFailureRetainsHydratedRootAndProjectedSlices() async throws {
         #if DEBUG
             let root = try makeTemporaryRoot(name: "LoadFolderWatcherFailureRetention")
             let fileURL = root.appendingPathComponent("Sliced.swift")
@@ -4469,7 +4500,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testWatcherAddedUIViewModelsUseStoreRecordIDs() async throws {
+    func runTestWatcherAddedUIViewModelsUseStoreRecordIDs() async throws {
         let root = try makeTemporaryRoot(name: "WatcherUIIdentity")
         try write("seed", to: root.appendingPathComponent("Existing.swift"))
 
@@ -4502,7 +4533,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
 
     #if DEBUG
         @MainActor
-        func testAppliedIndexProjectionDiagnosticsReportProducedHandledLag() async throws {
+        func runTestAppliedIndexProjectionDiagnosticsReportProducedHandledLag() async throws {
             let root = try makeTemporaryRoot(name: "AppliedIndexProjectionLag")
             try write("seed", to: root.appendingPathComponent("Seed.swift"))
             let store = WorkspaceFileContextStore()
@@ -4585,7 +4616,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
     #endif
 
     @MainActor
-    func testCancelledRootLoadDoesNotCommitUIOrStoreRoot() async throws {
+    func runTestCancelledRootLoadDoesNotCommitUIOrStoreRoot() async throws {
         #if DEBUG
             let root = try makeTemporaryRoot(name: "CancelledRootLoad")
             try write("struct A {}", to: root.appendingPathComponent("Sources/A.swift"))
@@ -4622,7 +4653,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testLoadedRootShellAlignsWithStoreRootAndLeavesCodemapIDsStoreBacked() async throws {
+    func runTestLoadedRootShellAlignsWithStoreRootAndLeavesCodemapIDsStoreBacked() async throws {
         let root = try makeTemporaryRoot(name: "IdentityAlignment")
         let fileURL = root.appendingPathComponent("Sources/Nested/A.swift")
         try write("struct A {}", to: fileURL)
@@ -4666,7 +4697,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertTrue(rootsAfterUnload.isEmpty)
     }
 
-    func testStoreReadContentReturnsCurrentDiskBytesAfterExternalChange() async throws {
+    func runTestStoreReadContentReturnsCurrentDiskBytesAfterExternalChange() async throws {
         let root = try makeTemporaryRoot(name: "StrictStoreReadFreshness")
         let fileURL = root.appendingPathComponent("A.swift")
         try write("old", to: fileURL)
@@ -4686,7 +4717,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
     }
 
     #if DEBUG
-        func testInteractiveReadCacheWarmRangeHitAvoidsDiskReadAndRepeatSplitting() async throws {
+        func runTestInteractiveReadCacheWarmRangeHitAvoidsDiskReadAndRepeatSplitting() async throws {
             let root = try makeTemporaryRoot(name: "InteractiveReadWarmHit")
             let content = (1 ... 200).map { "line-\($0)\r\n" }.joined()
             try write(content, to: root.appendingPathComponent("A.swift"))
@@ -4737,7 +4768,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             XCTAssertTrue(diagnostics[1].cacheHit)
         }
 
-        func testInteractiveReadCacheInvalidatesForEpochMemoryPressureAndRootLifetime() async throws {
+        func runTestInteractiveReadCacheInvalidatesForEpochMemoryPressureAndRootLifetime() async throws {
             let root = try makeTemporaryRoot(name: "InteractiveReadInvalidation")
             let fileURL = root.appendingPathComponent("A.swift")
             try write("old\n", to: fileURL)
@@ -4787,7 +4818,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             XCTAssertEqual(afterRootLifetimeChange.preparedContent.linesWithEndings, ["watcher-new\n"])
         }
 
-        func testInteractiveReadCacheEnforcesByteBoundAndIncludesRootLifetimeIdentity() async throws {
+        func runTestInteractiveReadCacheEnforcesByteBoundAndIncludesRootLifetimeIdentity() async throws {
             let cache = WorkspaceInteractiveReadCache(maxEntryCount: 4, maxEstimatedCost: 32)
             let rootID = UUID()
             let fileID = UUID()
@@ -4833,7 +4864,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             XCTAssertEqual(snapshot.hitCount, 0)
         }
 
-        func testSearchDecodedContentCacheEnforcesEntryAndCostBounds() async throws {
+        func runTestSearchDecodedContentCacheEnforcesEntryAndCostBounds() async throws {
             let entryBounded = WorkspaceSearchDecodedContentCache(maxEntryCount: 2, maxEstimatedCost: 1000)
             let fingerprint = FileContentFingerprint(
                 deviceID: 1,
@@ -4885,7 +4916,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             XCTAssertEqual(costSnapshot.loadCount, 2)
         }
 
-        func testOlderSearchContentInvalidationDoesNotRejectNewerFlight() async throws {
+        func runTestOlderSearchContentInvalidationDoesNotRejectNewerFlight() async throws {
             let cache = WorkspaceSearchDecodedContentCache(maxEntryCount: 2, maxEstimatedCost: 1000)
             let key = WorkspaceSearchContentCacheKey(
                 rootID: UUID(),
@@ -4926,7 +4957,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             XCTAssertEqual(snapshot.acceptedLoadCount, 1)
         }
 
-        func testBulkSearchContentInvalidationEvictsEveryDistinctKeyAtUnchangedFingerprint() async throws {
+        func runTestBulkSearchContentInvalidationEvictsEveryDistinctKeyAtUnchangedFingerprint() async throws {
             let cache = WorkspaceSearchDecodedContentCache(maxEntryCount: 8, maxEstimatedCost: 1000)
             let rootID = UUID()
             let fingerprint = FileContentFingerprint(
@@ -4985,7 +5016,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             XCTAssertEqual(snapshot.hitCount, 0)
         }
 
-        func testBulkSearchContentInvalidationRetainsMaximumEpochAndProtectsNewerFlight() async throws {
+        func runTestBulkSearchContentInvalidationRetainsMaximumEpochAndProtectsNewerFlight() async throws {
             let cache = WorkspaceSearchDecodedContentCache(maxEntryCount: 2, maxEstimatedCost: 1000)
             let key = WorkspaceSearchContentCacheKey(
                 rootID: UUID(),
@@ -5079,7 +5110,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             XCTAssertEqual(snapshot.hitCount, 1)
         }
 
-        func testSearchContentSnapshotWarmHitKeepsRevisionAndAvoidsSecondRead() async throws {
+        func runTestSearchContentSnapshotWarmHitKeepsRevisionAndAvoidsSecondRead() async throws {
             let root = try makeTemporaryRoot(name: "SearchContentWarmHit")
             try write("let warmToken = true\n", to: root.appendingPathComponent("A.swift"))
 
@@ -5110,7 +5141,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             XCTAssertEqual(cache.hitCount, 1)
         }
 
-        func testConcurrentSearchContentSnapshotMissesCoalesceToOneLoad() async throws {
+        func runTestConcurrentSearchContentSnapshotMissesCoalesceToOneLoad() async throws {
             let root = try makeTemporaryRoot(name: "SearchContentCoalescing")
             try write("let coalescedToken = true\n", to: root.appendingPathComponent("A.swift"))
 
@@ -5149,7 +5180,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             XCTAssertEqual(settled.acceptedLoadCount, 1)
         }
 
-        func testCancellingOneSearchContentSnapshotWaiterDoesNotPoisonSharedLoad() async throws {
+        func runTestCancellingOneSearchContentSnapshotWaiterDoesNotPoisonSharedLoad() async throws {
             let root = try makeTemporaryRoot(name: "SearchContentFollowerCancellation")
             try write("let cancellationToken = true\n", to: root.appendingPathComponent("A.swift"))
 
@@ -5190,7 +5221,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             XCTAssertEqual(settled.acceptedLoadCount, 1)
         }
 
-        func testCancellingAllSearchContentSnapshotWaitersPublishesNothing() async throws {
+        func runTestCancellingAllSearchContentSnapshotWaitersPublishesNothing() async throws {
             let root = try makeTemporaryRoot(name: "SearchContentAllCancellation")
             try write("let cancelledToken = true\n", to: root.appendingPathComponent("A.swift"))
 
@@ -5231,7 +5262,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             XCTAssertEqual(final.cancellationCount, 2)
         }
 
-        func testSearchContentSnapshotRejectsChangedDuringReadAndRetriesFreshBytes() async throws {
+        func runTestSearchContentSnapshotRejectsChangedDuringReadAndRetriesFreshBytes() async throws {
             let root = try makeTemporaryRoot(name: "SearchContentChangedDuringRead")
             let fileURL = root.appendingPathComponent("A.swift")
             try write("let oldReadToken = true\n", to: fileURL)
@@ -5261,7 +5292,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             XCTAssertEqual(cache.acceptedLoadCount, 1)
         }
 
-        func testSearchContentSnapshotSameMtimeRewriteAndMutationInvalidationAdvanceRevision() async throws {
+        func runTestSearchContentSnapshotSameMtimeRewriteAndMutationInvalidationAdvanceRevision() async throws {
             let root = try makeTemporaryRoot(name: "SearchContentInvalidation")
             let fileURL = root.appendingPathComponent("A.swift")
             let fixedDate = Date(timeIntervalSince1970: 1_700_000_000)
@@ -5299,7 +5330,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             XCTAssertEqual(revisions, revisions.sorted())
         }
 
-        func testSearchContentSnapshotMoveDeleteAndFolderRemovalEvictOldIdentities() async throws {
+        func runTestSearchContentSnapshotMoveDeleteAndFolderRemovalEvictOldIdentities() async throws {
             let root = try makeTemporaryRoot(name: "SearchContentRemovalInvalidation")
             try write("move", to: root.appendingPathComponent("A.swift"))
             try write("nested", to: root.appendingPathComponent("Folder/B.swift"))
@@ -5331,7 +5362,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             XCTAssertEqual(settled.entryCount, 0)
         }
 
-        func testSearchContentSnapshotCacheClearAndRootUnloadEvictEntries() async throws {
+        func runTestSearchContentSnapshotCacheClearAndRootUnloadEvictEntries() async throws {
             let root = try makeTemporaryRoot(name: "SearchContentCacheClear")
             try write("let clearToken = true\n", to: root.appendingPathComponent("A.swift"))
 
@@ -5350,7 +5381,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             XCTAssertEqual(afterUnload.activeFlightCount, 0)
         }
 
-        func testInitialRootCodemapScansByRootIDSkipSamePathReloadedRoot() async throws {
+        func runTestInitialRootCodemapScansByRootIDSkipSamePathReloadedRoot() async throws {
             let root = try makeTemporaryRoot(name: "InitialScanRootIDGate")
             try write("struct A { func oldRoot() {} }\n", to: root.appendingPathComponent("A.swift"))
 
@@ -5385,7 +5416,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             XCTAssertEqual(reloadedCounters.trackedFileIDCount, 1)
         }
 
-        func testInitialRootCodemapScansByPathTargetReloadedSamePathRoot() async throws {
+        func runTestInitialRootCodemapScansByPathTargetReloadedSamePathRoot() async throws {
             let root = try makeTemporaryRoot(name: "InitialScanSamePathReload")
             try write("struct A { func samePath() {} }\n", to: root.appendingPathComponent("A.swift"))
 
@@ -5419,7 +5450,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             XCTAssertEqual(reloadedCounters.trackedFileIDCount, 1)
         }
 
-        func testDeferredInitialRootLoadFlushUsesStoreRootsInsteadOfMainActorUIGather() throws {
+        func runTestDeferredInitialRootLoadFlushUsesStoreRootsInsteadOfMainActorUIGather() throws {
             let source = try readWorkspaceFilesViewModelSource()
             let flushBody = try XCTUnwrap(source.slice(from: "func flushDeferredInitialRootLoadScans()", to: "private func clearDeferredInitialRootLoadScanState"))
 
@@ -5430,7 +5461,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
     #endif
 
     @MainActor
-    func testContentSearchReloadsExternalModificationBeforeMatching() async throws {
+    func runTestContentSearchReloadsExternalModificationBeforeMatching() async throws {
         let root = try makeTemporaryRoot(name: "StrictSearchFreshness")
         let fileURL = root.appendingPathComponent("Sources/A.swift")
         let staleDate = Date(timeIntervalSince1970: 1_700_000_100)
@@ -5471,7 +5502,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testDiskValidatedSearchSnapshotReusesCacheWhenMetadataUnchanged() async throws {
+    func runTestDiskValidatedSearchSnapshotReusesCacheWhenMetadataUnchanged() async throws {
         let root = try makeTemporaryRoot(name: "StrictSearchNoUnneededRefresh")
         let fileURL = root.appendingPathComponent("A.swift")
         let fixedDate = Date(timeIntervalSince1970: 1_700_000_300)
@@ -5499,7 +5530,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         await manager.unloadAllRootFolders()
     }
 
-    func testApplyEditsPreviewReadsFreshDiskBaseAfterExternalModification() async throws {
+    func runTestApplyEditsPreviewReadsFreshDiskBaseAfterExternalModification() async throws {
         let root = try makeTemporaryRoot(name: "StrictApplyEditsFreshBase")
         let fileURL = root.appendingPathComponent("A.swift")
         let fixedDate = Date(timeIntervalSince1970: 1_700_000_400)
@@ -5535,7 +5566,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertFalse(preview.result.updatedText.contains("staleApplyToken"))
     }
 
-    func testApplyEditsRejectsDiskMissingStaleCatalogBase() async throws {
+    func runTestApplyEditsRejectsDiskMissingStaleCatalogBase() async throws {
         let root = try makeTemporaryRoot(name: "StrictApplyEditsMissingBase")
         let fileURL = root.appendingPathComponent("Deleted.swift")
         try write("struct Deleted {}\n", to: fileURL)
@@ -5577,7 +5608,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
     }
 
     #if DEBUG
-        func testConcurrentSamePathRootLoadsShareInFlightLoad() async throws {
+        func runTestConcurrentSamePathRootLoadsShareInFlightLoad() async throws {
             let root = try makeTemporaryRoot(name: "ConcurrentSamePathLoad")
             try write("struct A {}", to: root.appendingPathComponent("A.swift"))
 
@@ -5614,7 +5645,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         }
 
         @MainActor
-        func testCancelledRootLoadAfterUIRootAppendDoesNotLeaveUIOrStoreRoot() async throws {
+        func runTestCancelledRootLoadAfterUIRootAppendDoesNotLeaveUIOrStoreRoot() async throws {
             let root = try makeTemporaryRoot(name: "CancelAfterUIRootAppend")
             for index in 0 ..< 1500 {
                 try write("struct File\(index) {}\n", to: root.appendingPathComponent("Sources/File\(index).swift"))
@@ -5652,7 +5683,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         }
 
         @MainActor
-        func testCallerCancelledLoadFolderAfterUIRootAppendCleansUIAndStoreRoot() async throws {
+        func runTestCallerCancelledLoadFolderAfterUIRootAppendCleansUIAndStoreRoot() async throws {
             let root = try makeTemporaryRoot(name: "CallerCancelAfterUIRootAppend")
             for index in 0 ..< 1500 {
                 try write("struct File\(index) {}\n", to: root.appendingPathComponent("Sources/File\(index).swift"))
@@ -5690,7 +5721,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         }
 
         @MainActor
-        func testObsoleteSamePathLoadDoesNotUnloadNewerJoinedLoad() async throws {
+        func runTestObsoleteSamePathLoadDoesNotUnloadNewerJoinedLoad() async throws {
             let root = try makeTemporaryRoot(name: "SamePathObsoleteCleanup")
             try write("struct A {}", to: root.appendingPathComponent("A.swift"))
 
@@ -5741,7 +5772,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         }
 
         @MainActor
-        func testUncommittedPreloadedRootIsUnloadedByFullUnload() async throws {
+        func runTestUncommittedPreloadedRootIsUnloadedByFullUnload() async throws {
             let root = try makeTemporaryRoot(name: "UncommittedPreloadCleanup")
             try write("struct A {}", to: root.appendingPathComponent("A.swift"))
 
@@ -5757,7 +5788,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             XCTAssertTrue(unloadedRoots.isEmpty)
         }
 
-        func testCancelledSamePathLoadWaitingForUnloadDoesNotCreateRoot() async throws {
+        func runTestCancelledSamePathLoadWaitingForUnloadDoesNotCreateRoot() async throws {
             let root = try makeTemporaryRoot(name: "CancelWaitForUnload")
             try write("struct A {}", to: root.appendingPathComponent("A.swift"))
 
@@ -5794,7 +5825,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         }
 
         @MainActor
-        func testApplyStoredSelectionWithEmptySlicesClearsCurrentSliceProjection() async throws {
+        func runTestApplyStoredSelectionWithEmptySlicesClearsCurrentSliceProjection() async throws {
             let root = try makeTemporaryRoot(name: "ApplyStoredEmptySlices")
             let fileURL = root.appendingPathComponent("Sources/A.swift")
             try write("line 1\nline 2\nline 3\n", to: fileURL)
@@ -5834,7 +5865,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         }
 
         @MainActor
-        func testHydrateSlicesForActiveTabWithEmptyStoredSelectionDeletesPersistedSlices() async throws {
+        func runTestHydrateSlicesForActiveTabWithEmptyStoredSelectionDeletesPersistedSlices() async throws {
             #if DEBUG
                 let root = try makeTemporaryRoot(name: "HydrateEmptySlices")
                 let fileURL = root.appendingPathComponent("Sources/A.swift")
@@ -6161,7 +6192,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
     #endif
 
     #if DEBUG
-        func testAllCodemapFileAPIsCacheReusesOrderedAggregateAndRecordsRebuildOnlyRows() async throws {
+        func runTestAllCodemapFileAPIsCacheReusesOrderedAggregateAndRecordsRebuildOnlyRows() async throws {
             let root = try makeTemporaryRoot(name: "AllCodemapAPICacheReuse")
             let fileA = root.appendingPathComponent("A.swift")
             let fileB = root.appendingPathComponent("Nested/B.swift")
@@ -6195,7 +6226,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         }
     #endif
 
-    func testCodemapFileAPIAggregatePreservesForeignNestedPathFirstWinnerAndRetainedRecomputeResults() async throws {
+    func runTestCodemapFileAPIAggregatePreservesForeignNestedPathFirstWinnerAndRetainedRecomputeResults() async throws {
         let root = try makeTemporaryRoot(name: "CodemapAPIAggregateForeignNestedPath")
         let fileA = root.appendingPathComponent("A.swift")
         let fileB = root.appendingPathComponent("B.swift")
@@ -6232,7 +6263,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertEqual(foreignPathResult.autoCodemapPaths, [target.path])
     }
 
-    func testCodemapFileAPIAggregateFirstWinnerMatchesLegacyGroupingAcrossOverlappingRoots() async throws {
+    func runTestCodemapFileAPIAggregateFirstWinnerMatchesLegacyGroupingAcrossOverlappingRoots() async throws {
         let parentRoot = try makeTemporaryRoot(name: "CodemapAPIAggregateOverlap")
         let nestedRoot = parentRoot.appendingPathComponent("Nested", isDirectory: true)
         let sharedFile = nestedRoot.appendingPathComponent("Shared.swift")
@@ -6257,7 +6288,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertEqual(codemapAPIProjection([aggregateFirstWinner]), codemapAPIProjection([legacyFirstWinner]))
     }
 
-    func testAllCodemapFileAPIsCacheInvalidatesObservedReplacementModificationDeletionFolderClearAndStoreIsolation() async throws {
+    func runTestAllCodemapFileAPIsCacheInvalidatesObservedReplacementModificationDeletionFolderClearAndStoreIsolation() async throws {
         let root = try makeTemporaryRoot(name: "AllCodemapAPICacheMutation")
         let fileA = root.appendingPathComponent("A.swift")
         let fileB = root.appendingPathComponent("B.swift")
@@ -6321,7 +6352,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertEqual(isolatedAPIPaths, [isolatedFile.path])
     }
 
-    func testAllCodemapFileAPIsCacheInvalidatesAcrossManagedOnlyMoveTransition() async throws {
+    func runTestAllCodemapFileAPIsCacheInvalidatesAcrossManagedOnlyMoveTransition() async throws {
         let root = try makeTemporaryRoot(name: "AllCodemapAPICacheManagedOnly")
         let visible = root.appendingPathComponent("Visible.swift")
         let hidden = root.appendingPathComponent("Ignored/Hidden.swift")
@@ -6349,7 +6380,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertEqual(APIPaths, [visibleAgain.path])
     }
 
-    func testAllCodemapFileAPIsCacheInvalidatesScannerInsertionAndReplacement() async throws {
+    func runTestAllCodemapFileAPIsCacheInvalidatesScannerInsertionAndReplacement() async throws {
         let root = try makeTemporaryRoot(name: "AllCodemapAPICacheScanner")
         let file = root.appendingPathComponent("Scanned.swift")
         try write("func firstScannedSymbol() {}", to: file)
@@ -6368,7 +6399,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
     }
 
     #if DEBUG
-        func testAllCodemapFileAPIsCachePreservesRootUnloadReentrantVisibilityInterval() async throws {
+        func runTestAllCodemapFileAPIsCachePreservesRootUnloadReentrantVisibilityInterval() async throws {
             let retainedRoot = try makeTemporaryRoot(name: "AllCodemapAPICacheUnloadRetained")
             let detachedRoot = try makeTemporaryRoot(name: "AllCodemapAPICacheUnloadDetached")
             let retainedFile = retainedRoot.appendingPathComponent("Retained.swift")
@@ -6586,4 +6617,730 @@ private extension String {
         }
         return String(self[startRange.lowerBound ..< endRange.lowerBound])
     }
+}
+
+// MARK: - XCTest discovery shards
+
+// Keep the heavy WorkspaceFileContextStore test bodies on the shared base class.
+// XCTest/Xcode can stall before starting tests when one class advertises the full set.
+// These thin subclasses preserve the test names while bounding per-suite discovery work.
+
+final class WorkspaceFileContextStoreCoreTests: WorkspaceFileContextStoreTestCase {
+    func testRootLoadIndexesFilesFoldersReadsContentAndLooksUpPaths() async throws {
+        try await runTestRootLoadIndexesFilesFoldersReadsContentAndLooksUpPaths()
+    }
+
+    func testResolvedClipboardPackagingRendersStoreCodemaps() async throws {
+        try await runTestResolvedClipboardPackagingRendersStoreCodemaps()
+    }
+
+    func testWatcherReplayAppliesAddRemoveModifyAndFolderRemoveEvents() async throws {
+        try await runTestWatcherReplayAppliesAddRemoveModifyAndFolderRemoveEvents()
+    }
+
+    func testWatcherReplayDuplicateDeltasAreIdempotent() async throws {
+        try await runTestWatcherReplayDuplicateDeltasAreIdempotent()
+    }
+
+    func testWatcherReplayStaleRemovalDeltasKeepFilesAndFoldersPresentOnDisk() async throws {
+        try await runTestWatcherReplayStaleRemovalDeltasKeepFilesAndFoldersPresentOnDisk()
+    }
+
+    #if DEBUG
+        func testFlushWaitsForPublisherIngressAlreadyEmittedBeforeBarrier() async throws {
+            try await runTestFlushWaitsForPublisherIngressAlreadyEmittedBeforeBarrier()
+        }
+    #endif
+    #if DEBUG
+        func testFlushWaitsForSyntheticMutationPublisherIngress() async throws {
+            try await runTestFlushWaitsForSyntheticMutationPublisherIngress()
+        }
+    #endif
+    #if DEBUG
+        func testCancelledCreateSettlesBeforeUncancellableIOAndReconcilesCatalogAfterCompletion() async throws {
+            try await runTestCancelledCreateSettlesBeforeUncancellableIOAndReconcilesCatalogAfterCompletion()
+        }
+    #endif
+    #if DEBUG
+        func testCancelledOverwriteSettlesBeforeUncancellableIOAndReconcilesCatalogAfterCompletion() async throws {
+            try await runTestCancelledOverwriteSettlesBeforeUncancellableIOAndReconcilesCatalogAfterCompletion()
+        }
+    #endif
+    #if DEBUG
+        func testCancelledMoveDeleteAndTrashSettleBeforeIOAndReconcileAfterCompletion() async throws {
+            try await runTestCancelledMoveDeleteAndTrashSettleBeforeIOAndReconcileAfterCompletion()
+        }
+    #endif
+    #if DEBUG
+        func testStopWatchingRootDrainsTrackedPublisherIngress() async throws {
+            try await runTestStopWatchingRootDrainsTrackedPublisherIngress()
+        }
+    #endif
+    #if DEBUG
+        func testUnloadRootDrainsTrackedPublisherIngressWithoutPostDetachMutation() async throws {
+            try await runTestUnloadRootDrainsTrackedPublisherIngressWithoutPostDetachMutation()
+        }
+    #endif
+    #if DEBUG
+        func testUnloadRootForceDiscardsWedgedPublisherIngressAndReleasesWaiters() async throws {
+            try await runTestUnloadRootForceDiscardsWedgedPublisherIngressAndReleasesWaiters()
+        }
+    #endif
+    #if DEBUG
+        func testWatcherBoundedWaitPrefersCompletionThatRacesTimeout() async {
+            await runTestWatcherBoundedWaitPrefersCompletionThatRacesTimeout()
+        }
+    #endif
+    #if DEBUG
+        func testUnloadRootBoundsWatcherStopCallerSideWithoutInterruptClaim() async throws {
+            try await runTestUnloadRootBoundsWatcherStopCallerSideWithoutInterruptClaim()
+        }
+    #endif
+    #if DEBUG
+        func testUnloadRootReportsCompletedWatcherStopWhenStopFinishesWithinGrace() async throws {
+            try await runTestUnloadRootReportsCompletedWatcherStopWhenStopFinishesWithinGrace()
+        }
+    #endif
+    #if DEBUG
+        func testCancelledUnloadReportsWatcherStopCancelledWhileDetachedStopIsBlocked() async throws {
+            try await runTestCancelledUnloadReportsWatcherStopCancelledWhileDetachedStopIsBlocked()
+        }
+    #endif
+    #if DEBUG
+        func testStalePublisherLifetimeCannotMutateCurrentRootState() async throws {
+            try await runTestStalePublisherLifetimeCannotMutateCurrentRootState()
+        }
+    #endif
+    #if DEBUG
+        func testRecoveryFullResyncPublicationFlagsAppliedIndexEvent() async throws {
+            try await runTestRecoveryFullResyncPublicationFlagsAppliedIndexEvent()
+        }
+    #endif
+    #if DEBUG
+        func testWatcherActivationFailureThrowsAndRollsBackStoreLifecycle() async throws {
+            try await runTestWatcherActivationFailureThrowsAndRollsBackStoreLifecycle()
+        }
+    #endif
+    #if DEBUG
+        func testRedundantStartWatchingRootKeepsPublisherSinkAttached() async throws {
+            try await runTestRedundantStartWatchingRootKeepsPublisherSinkAttached()
+        }
+    #endif
+    #if DEBUG
+        func testWatcherRestartWinsRaceWithStaleStopReconciliation() async throws {
+            try await runTestWatcherRestartWinsRaceWithStaleStopReconciliation()
+        }
+    #endif
+    #if DEBUG
+        func testAcceptedCallbackBeforeActorEntryDelaysBarrierUntilCanonicalApply() async throws {
+            try await runTestAcceptedCallbackBeforeActorEntryDelaysBarrierUntilCanonicalApply()
+        }
+    #endif
+    #if DEBUG
+        func testBarrierCaptureCutExcludesCallbackAcceptedAfterCaptureUntilNextBarrier() async throws {
+            try await runTestBarrierCaptureCutExcludesCallbackAcceptedAfterCaptureUntilNextBarrier()
+        }
+    #endif
+    #if DEBUG
+        func testSyntheticPublicationAppliesWithoutAdvancingWatcherAcceptedWatermark() async throws {
+            try await runTestSyntheticPublicationAppliesWithoutAdvancingWatcherAcceptedWatermark()
+        }
+    #endif
+    #if DEBUG
+        func testBarrierAfterWatcherRestartDoesNotWaitForPublicationEmittedWhileSinkDetached() async throws {
+            try await runTestBarrierAfterWatcherRestartDoesNotWaitForPublicationEmittedWhileSinkDetached()
+        }
+    #endif
+    #if DEBUG
+        func testWorkspaceIngressCoordinatorDrainsPublicationsInAcceptedOrder() async {
+            await runTestWorkspaceIngressCoordinatorDrainsPublicationsInAcceptedOrder()
+        }
+    #endif
+    #if DEBUG
+        func testWorkspaceIngressCoordinatorCancelledWaiterDetachesWhileLiveWaiterCompletes() async {
+            await runTestWorkspaceIngressCoordinatorCancelledWaiterDetachesWhileLiveWaiterCompletes()
+        }
+    #endif
+    #if DEBUG
+        func testWorkspaceIngressCoordinatorDebugSnapshotReportsDepthGapAndOldestAge() async {
+            await runTestWorkspaceIngressCoordinatorDebugSnapshotReportsDepthGapAndOldestAge()
+        }
+    #endif
+    #if DEBUG
+        func testWorkspaceIngressCoordinatorForcedTerminationDropsQueuedWorkReleasesWaitersAndReportsSnapshot() async throws {
+            try await runTestWorkspaceIngressCoordinatorForcedTerminationDropsQueuedWorkReleasesWaitersAndReportsSnapshot()
+        }
+    #endif
+    #if DEBUG
+        func testWorkspaceIngressCoordinatorTerminationDoesNotForceReopenedIngressDuringGrace() async {
+            await runTestWorkspaceIngressCoordinatorTerminationDoesNotForceReopenedIngressDuringGrace()
+        }
+    #endif
+    #if DEBUG
+        func testWorkspaceIngressCoordinatorLateForcedDrainCannotCorruptReopenedSameRootState() async {
+            await runTestWorkspaceIngressCoordinatorLateForcedDrainCannotCorruptReopenedSameRootState()
+        }
+    #endif
+}
+
+final class WorkspaceFileContextStoreIngressTests: WorkspaceFileContextStoreTestCase {
+    #if DEBUG
+        func testWorkspaceIngressCoordinatorTerminationPreservesGracefulCompletionWithinBound() async throws {
+            try await runTestWorkspaceIngressCoordinatorTerminationPreservesGracefulCompletionWithinBound()
+        }
+    #endif
+    #if DEBUG
+        func testWorkspaceIngressCoordinatorFinishResolvesOutstandingWaiter() async {
+            await runTestWorkspaceIngressCoordinatorFinishResolvesOutstandingWaiter()
+        }
+    #endif
+    #if DEBUG
+        func testScopedAppliedIngressConcurrentSameRootRequestsJoinOneFlight() async throws {
+            try await runTestScopedAppliedIngressConcurrentSameRootRequestsJoinOneFlight()
+        }
+    #endif
+    #if DEBUG
+        func testScopedAppliedIngressCancelledFollowerDetachesWhileLeaderCompletes() async throws {
+            try await runTestScopedAppliedIngressCancelledFollowerDetachesWhileLeaderCompletes()
+        }
+    #endif
+    #if DEBUG
+        func testScopedAppliedIngressCancelledLauncherDoesNotCancelLiveJoiner() async throws {
+            try await runTestScopedAppliedIngressCancelledLauncherDoesNotCancelLiveJoiner()
+        }
+    #endif
+    #if DEBUG
+        func testScopedAppliedIngressCancelledPendingCallerDoesNotCancelLiveCoalescedJoiner() async throws {
+            try await runTestScopedAppliedIngressCancelledPendingCallerDoesNotCancelLiveCoalescedJoiner()
+        }
+    #endif
+    #if DEBUG
+        func testScopedAppliedIngressAllCancelledCallersStillReachIdleCleanup() async throws {
+            try await runTestScopedAppliedIngressAllCancelledCallersStillReachIdleCleanup()
+        }
+    #endif
+    #if DEBUG
+        func testCancelledReadFreshnessJoinThrowsBeforeCanonicalFlightCompletes() async throws {
+            try await runTestCancelledReadFreshnessJoinThrowsBeforeCanonicalFlightCompletes()
+        }
+    #endif
+    #if DEBUG
+        func testCancelledFileSearchJoinThrowsBeforeCanonicalFlightCompletes() async throws {
+            try await runTestCancelledFileSearchJoinThrowsBeforeCanonicalFlightCompletes()
+        }
+    #endif
+    #if DEBUG
+        func testScopedAppliedIngressCoalescesNewerSameRootTargetsIntoOnePendingSuccessor() async throws {
+            try await runTestScopedAppliedIngressCoalescesNewerSameRootTargetsIntoOnePendingSuccessor()
+        }
+    #endif
+    #if DEBUG
+        func testScopedAppliedIngressDifferentRootsFlushConcurrently() async throws {
+            try await runTestScopedAppliedIngressDifferentRootsFlushConcurrently()
+        }
+    #endif
+    #if DEBUG
+        func testAggressiveAppliedIngressLimitsConcurrentRootFlushFanOut() async throws {
+            try await runTestAggressiveAppliedIngressLimitsConcurrentRootFlushFanOut()
+        }
+    #endif
+    #if DEBUG
+        func testExplicitAbsoluteFreshnessBarrierTargetsOnlyContainingRoot() async throws {
+            try await runTestExplicitAbsoluteFreshnessBarrierTargetsOnlyContainingRoot()
+        }
+    #endif
+    #if DEBUG
+        func testCompletedCutNoopFastPathDoesNotHideImmediatelyAcceptedCallback() async throws {
+            try await runTestCompletedCutNoopFastPathDoesNotHideImmediatelyAcceptedCallback()
+        }
+    #endif
+    #if DEBUG
+        func testExplicitAggressiveFreshnessBarrierStillFlushesAllLoadedRoots() async throws {
+            try await runTestExplicitAggressiveFreshnessBarrierStillFlushesAllLoadedRoots()
+        }
+    #endif
+    #if DEBUG
+        func testScopedIngressBarrierDiagnosticsReportActiveTargetAndCompletedTiming() async throws {
+            try await runTestScopedIngressBarrierDiagnosticsReportActiveTargetAndCompletedTiming()
+        }
+    #endif
+    #if DEBUG
+        func testRootUnloadCancelsActiveAndPendingScopedIngressFlightsAndReleasesDetachedService() async throws {
+            try await runTestRootUnloadCancelsActiveAndPendingScopedIngressFlightsAndReleasesDetachedService()
+        }
+    #endif
+    #if DEBUG
+        func testLargePublicationUsesOneSelectiveInvalidationCycleAndPreservesFinalCatalog() async throws {
+            try await runTestLargePublicationUsesOneSelectiveInvalidationCycleAndPreservesFinalCatalog()
+        }
+    #endif
+    #if DEBUG
+        func testLargeModificationPublicationUsesOneDecodedCacheInvalidationAndPreservesFreshContent() async throws {
+            try await runTestLargeModificationPublicationUsesOneDecodedCacheInvalidationAndPreservesFreshContent()
+        }
+    #endif
+    #if DEBUG
+        func testPublicationInvalidationDiagnosticsRetainOnlyLatestThirtyTwoSamples() async throws {
+            try await runTestPublicationInvalidationDiagnosticsRetainOnlyLatestThirtyTwoSamples()
+        }
+    #endif
+    #if DEBUG
+        func testSearchCatalogSnapshotCacheReusesUnchangedScopeAndPreservesOrderingDiagnostics() async throws {
+            try await runTestSearchCatalogSnapshotCacheReusesUnchangedScopeAndPreservesOrderingDiagnostics()
+        }
+    #endif
+    func testSearchCatalogSnapshotCacheInvalidatesAcrossAddRemoveMoveAndRootLifecycle() async throws {
+        try await runTestSearchCatalogSnapshotCacheInvalidatesAcrossAddRemoveMoveAndRootLifecycle()
+    }
+
+    #if DEBUG
+        func testSearchCatalogSnapshotCacheClearsImmediatelyWhenRootUnloadDetachesBeforeAwaitedTeardown() async throws {
+            try await runTestSearchCatalogSnapshotCacheClearsImmediatelyWhenRootUnloadDetachesBeforeAwaitedTeardown()
+        }
+    #endif
+    func testEnsureIndexedFilesClearsWarmSearchSnapshotAcrossMultipleLateFiles() async throws {
+        try await runTestEnsureIndexedFilesClearsWarmSearchSnapshotAcrossMultipleLateFiles()
+    }
+
+    #if DEBUG
+        func testEnsureIndexedFilesSkipsEligibleFileWhenRootUnloadsDuringEligibilitySuspension() async throws {
+            try await runTestEnsureIndexedFilesSkipsEligibleFileWhenRootUnloadsDuringEligibilitySuspension()
+        }
+    #endif
+    #if DEBUG
+        func testEnsureIndexedFilesPreservesConcurrentRootLocalMutationDuringEligibilitySuspension() async throws {
+            try await runTestEnsureIndexedFilesPreservesConcurrentRootLocalMutationDuringEligibilitySuspension()
+        }
+    #endif
+    func testSearchCatalogSnapshotCacheKeepsManagedOnlyIgnoredFileHiddenAndReflectsPromotion() async throws {
+        try await runTestSearchCatalogSnapshotCacheKeepsManagedOnlyIgnoredFileHiddenAndReflectsPromotion()
+    }
+
+    func testDisplayRootRefsSnapshotMatchesExistingScopesPreservesLoadOrderAndRemainsStable() async throws {
+        try await runTestDisplayRootRefsSnapshotMatchesExistingScopesPreservesLoadOrderAndRemainsStable()
+    }
+
+    func testSearchCatalogSnapshotCacheSeparatesStaticScopes() async throws {
+        try await runTestSearchCatalogSnapshotCacheSeparatesStaticScopes()
+    }
+
+    func testSearchCatalogSnapshotCacheSeparatesSessionBoundScopesAndInvalidatesWorktreeChanges() async throws {
+        try await runTestSearchCatalogSnapshotCacheSeparatesSessionBoundScopesAndInvalidatesWorktreeChanges()
+    }
+
+    #if DEBUG
+        func testSearchCatalogSnapshotCacheSelectivelyRetainsUnaffectedScopes() async throws {
+            try await runTestSearchCatalogSnapshotCacheSelectivelyRetainsUnaffectedScopes()
+        }
+    #endif
+}
+
+final class WorkspaceFileContextStoreSearchTests: WorkspaceFileContextStoreTestCase {
+    #if DEBUG
+        func testGitDataPublicationRetainsWarmVisibleWorkspaceCatalog() async throws {
+            try await runTestGitDataPublicationRetainsWarmVisibleWorkspaceCatalog()
+        }
+    #endif
+    #if DEBUG
+        func testSessionCatalogDependencyTokenChangesAcrossUnloadAndReload() async throws {
+            try await runTestSessionCatalogDependencyTokenChangesAcrossUnloadAndReload()
+        }
+    #endif
+    #if DEBUG
+        func testSearchCatalogSnapshotCacheEvictsOnlyLeastRecentlyUsedEntryAtCapacity() async {
+            await runTestSearchCatalogSnapshotCacheEvictsOnlyLeastRecentlyUsedEntryAtCapacity()
+        }
+    #endif
+    #if DEBUG
+        func testEnsureIndexedFilesUsesOneSelectiveInvalidationCycle() async throws {
+            try await runTestEnsureIndexedFilesUsesOneSelectiveInvalidationCycle()
+        }
+    #endif
+    #if DEBUG
+        func testRootUnloadUsesOneSelectiveInvalidationCycle() async throws {
+            try await runTestRootUnloadUsesOneSelectiveInvalidationCycle()
+        }
+    #endif
+    func testFileTreeSnapshotSupportsFoldersOnlyMode() async throws {
+        try await runTestFileTreeSnapshotSupportsFoldersOnlyMode()
+    }
+
+    func testFileTreeSnapshotHonorsExplicitMaxDepth() async throws {
+        try await runTestFileTreeSnapshotHonorsExplicitMaxDepth()
+    }
+
+    func testFileTreeSnapshotCanStartAtResolvedSubtree() async throws {
+        try await runTestFileTreeSnapshotCanStartAtResolvedSubtree()
+    }
+
+    func testValuePathResolutionReportsAmbiguousRelativePathWithExistingRendererMessage() async throws {
+        try await runTestValuePathResolutionReportsAmbiguousRelativePathWithExistingRendererMessage()
+    }
+
+    func testFolderExpansionAndSelectionMutationServiceAreDeterministicByRelativePath() async throws {
+        try await runTestFolderExpansionAndSelectionMutationServiceAreDeterministicByRelativePath()
+    }
+
+    func testCodemapOnlyCandidateFilteringPreservesUnsupportedMessages() async throws {
+        try await runTestCodemapOnlyCandidateFilteringPreservesUnsupportedMessages()
+    }
+
+    func testSelectionMutationPromoteDemoteAndRemoveOperateOnStoredSelectionValues() async throws {
+        try await runTestSelectionMutationPromoteDemoteAndRemoveOperateOnStoredSelectionValues()
+    }
+
+    func testManageSelectionSliceSetPreservesFullFilesAndReplacesOnlySpecifiedSlices() async throws {
+        try await runTestManageSelectionSliceSetPreservesFullFilesAndReplacesOnlySpecifiedSlices()
+    }
+
+    func testManageSelectionSliceSetRejectsInvalidRequestsWithoutMutation() async throws {
+        try await runTestManageSelectionSliceSetRejectsInvalidRequestsWithoutMutation()
+    }
+
+    func testManageSelectionMixedAddPreservesExistingFullFilesAndAddsSlices() async throws {
+        try await runTestManageSelectionMixedAddPreservesExistingFullFilesAndAddsSlices()
+    }
+
+    func testManageSelectionCodemapOnlySetRejectsSlices() async throws {
+        try await runTestManageSelectionCodemapOnlySetRejectsSlices()
+    }
+
+    func testManageSelectionFullSetWithSlicesRemainsDestructive() async throws {
+        try await runTestManageSelectionFullSetWithSlicesRemainsDestructive()
+    }
+
+    func testCRUDAndRootUnloadPublishAppliedIndexEvents() async throws {
+        try await runTestCRUDAndRootUnloadPublishAppliedIndexEvents()
+    }
+
+    func testBatchRootUnloadDeduplicatesIDsPublishesEventsAndClearsLoadedRoots() async throws {
+        try await runTestBatchRootUnloadDeduplicatesIDsPublishesEventsAndClearsLoadedRoots()
+    }
+
+    func testWorkspaceFileMutationServiceCreatesReadsAndOverwritesThroughStore() async throws {
+        try await runTestWorkspaceFileMutationServiceCreatesReadsAndOverwritesThroughStore()
+    }
+
+    func testWorkspaceFileEditHostOverwriteCreatesMissingAndReplacesExisting() async throws {
+        try await runTestWorkspaceFileEditHostOverwriteCreatesMissingAndReplacesExisting()
+    }
+
+    func testApplyEditsRewriteCreateImmediatelyMaterializesForStoreLookupAndRead() async throws {
+        try await runTestApplyEditsRewriteCreateImmediatelyMaterializesForStoreLookupAndRead()
+    }
+
+    func testIgnoredCreateRemainsExactlyManageableWithoutDiscoveryExposure() async throws {
+        try await runTestIgnoredCreateRemainsExactlyManageableWithoutDiscoveryExposure()
+    }
+
+    func testVisibleSiblingPromotesManagedOnlyParentWithoutExposingIgnoredSibling() async throws {
+        try await runTestVisibleSiblingPromotesManagedOnlyParentWithoutExposingIgnoredSibling()
+    }
+
+    func testExistingIgnoredFileMaterializesOnlyForExactReadAndEdit() async throws {
+        try await runTestExistingIgnoredFileMaterializesOnlyForExactReadAndEdit()
+    }
+
+    func testIgnoredManagedFileDeleteRemovesCatalogWithoutRediscovery() async throws {
+        try await runTestIgnoredManagedFileDeleteRemovesCatalogWithoutRediscovery()
+    }
+
+    func testMoveTransitionsBetweenDiscoverableAndManagedOnlyIgnoredFiles() async throws {
+        try await runTestMoveTransitionsBetweenDiscoverableAndManagedOnlyIgnoredFiles()
+    }
+
+    func testExplicitCatalogLookupFastPathsSingleInterpretation() async throws {
+        try await runTestExplicitCatalogLookupFastPathsSingleInterpretation()
+    }
+
+    func testExplicitCatalogLookupDoesNotProbeIgnoredShadowForRelativeMultiRootPath() async throws {
+        try await runTestExplicitCatalogLookupDoesNotProbeIgnoredShadowForRelativeMultiRootPath()
+    }
+
+    func testAmbiguousRelativeIgnoredFileDoesNotMaterializeEitherRoot() async throws {
+        try await runTestAmbiguousRelativeIgnoredFileDoesNotMaterializeEitherRoot()
+    }
+
+    func testAmbiguousAliasIsTerminalForExplicitReadAndSelectionLookup() async throws {
+        try await runTestAmbiguousAliasIsTerminalForExplicitReadAndSelectionLookup()
+    }
+}
+
+final class WorkspaceFileContextStoreMutationTests: WorkspaceFileContextStoreTestCase {
+    func testMissingManagedIgnoredRecordIsPrunedByAbsoluteMutationRecovery() async throws {
+        try await runTestMissingManagedIgnoredRecordIsPrunedByAbsoluteMutationRecovery()
+    }
+
+    func testIgnoredFolderReplayStaysHiddenWhenHierarchicalIgnoresAreDisabled() async throws {
+        try await runTestIgnoredFolderReplayStaysHiddenWhenHierarchicalIgnoresAreDisabled()
+    }
+
+    func testEnsureIndexedFilesDoesNotExposeIgnoredDiskFile() async throws {
+        try await runTestEnsureIndexedFilesDoesNotExposeIgnoredDiskFile()
+    }
+
+    func testIgnoredCreateRejectsSymlinkedParentWithoutWritingOutsideRoot() async throws {
+        try await runTestIgnoredCreateRejectsSymlinkedParentWithoutWritingOutsideRoot()
+    }
+
+    func testIgnoredCreateRejectsDanglingLeafSymlinkWithoutWritingOutsideRoot() async throws {
+        try await runTestIgnoredCreateRejectsDanglingLeafSymlinkWithoutWritingOutsideRoot()
+    }
+
+    func testFileOnlyDeleteAndMoveRejectDirectoryReplacement() async throws {
+        try await runTestFileOnlyDeleteAndMoveRejectDirectoryReplacement()
+    }
+
+    func testTrashRejectsSymlinkedParentWithoutMovingOutsideRootFile() async throws {
+        try await runTestTrashRejectsSymlinkedParentWithoutMovingOutsideRootFile()
+    }
+
+    func testUnknownSymlinkedFolderReplayDoesNotIndexFolder() async throws {
+        try await runTestUnknownSymlinkedFolderReplayDoesNotIndexFolder()
+    }
+
+    func testPolicyIneligibleReplayDoesNotPublishRawDiscoveryDelta() async throws {
+        try await runTestPolicyIneligibleReplayDoesNotPublishRawDiscoveryDelta()
+    }
+
+    func testPolicyIneligibleReplayDoesNotMaterializeIgnoredFile() async throws {
+        try await runTestPolicyIneligibleReplayDoesNotMaterializeIgnoredFile()
+    }
+
+    func testStaleCatalogRecordIsPrunedForExactMutationLookup() async throws {
+        try await runTestStaleCatalogRecordIsPrunedForExactMutationLookup()
+    }
+
+    func testStaleAmbiguousExactMutationLookupPrunesMissingCandidate() async throws {
+        try await runTestStaleAmbiguousExactMutationLookupPrunesMissingCandidate()
+    }
+
+    func testMaterializationFailureReportsClearPostconditionError() async throws {
+        try await runTestMaterializationFailureReportsClearPostconditionError()
+    }
+
+    func testDeleteRemovesCatalogAndCodemapVisibility() async throws {
+        try await runTestDeleteRemovesCatalogAndCodemapVisibility()
+    }
+
+    func testWorkspaceFileMutationServiceRequiresExactExistingFileForOverwriteResolution() async throws {
+        try await runTestWorkspaceFileMutationServiceRequiresExactExistingFileForOverwriteResolution()
+    }
+
+    func testReadFileWorkDiagnosticsCaptureDiskBytesDecodeAndReturnedRange() async throws {
+        try await runTestReadFileWorkDiagnosticsCaptureDiskBytesDecodeAndReturnedRange()
+    }
+
+    func testWorkspaceReadableFileServiceResolvesAndReadsAlwaysReadableExternalFiles() async throws {
+        try await runTestWorkspaceReadableFileServiceResolvesAndReadsAlwaysReadableExternalFiles()
+    }
+
+    func testAttachRootShellFromPreloadedStoreRecordDoesNotMaterializeDescendants() async throws {
+        try await runTestAttachRootShellFromPreloadedStoreRecordDoesNotMaterializeDescendants()
+    }
+
+    func testLoadFolderWatcherFailureRetainsHydratedRootAndProjectedSlices() async throws {
+        try await runTestLoadFolderWatcherFailureRetainsHydratedRootAndProjectedSlices()
+    }
+
+    func testWatcherAddedUIViewModelsUseStoreRecordIDs() async throws {
+        try await runTestWatcherAddedUIViewModelsUseStoreRecordIDs()
+    }
+
+    #if DEBUG
+        func testAppliedIndexProjectionDiagnosticsReportProducedHandledLag() async throws {
+            try await runTestAppliedIndexProjectionDiagnosticsReportProducedHandledLag()
+        }
+    #endif
+    func testCancelledRootLoadDoesNotCommitUIOrStoreRoot() async throws {
+        try await runTestCancelledRootLoadDoesNotCommitUIOrStoreRoot()
+    }
+
+    func testLoadedRootShellAlignsWithStoreRootAndLeavesCodemapIDsStoreBacked() async throws {
+        try await runTestLoadedRootShellAlignsWithStoreRootAndLeavesCodemapIDsStoreBacked()
+    }
+
+    func testStoreReadContentReturnsCurrentDiskBytesAfterExternalChange() async throws {
+        try await runTestStoreReadContentReturnsCurrentDiskBytesAfterExternalChange()
+    }
+
+    #if DEBUG
+        func testInteractiveReadCacheWarmRangeHitAvoidsDiskReadAndRepeatSplitting() async throws {
+            try await runTestInteractiveReadCacheWarmRangeHitAvoidsDiskReadAndRepeatSplitting()
+        }
+    #endif
+    #if DEBUG
+        func testInteractiveReadCacheInvalidatesForEpochMemoryPressureAndRootLifetime() async throws {
+            try await runTestInteractiveReadCacheInvalidatesForEpochMemoryPressureAndRootLifetime()
+        }
+    #endif
+    #if DEBUG
+        func testInteractiveReadCacheEnforcesByteBoundAndIncludesRootLifetimeIdentity() async throws {
+            try await runTestInteractiveReadCacheEnforcesByteBoundAndIncludesRootLifetimeIdentity()
+        }
+    #endif
+    #if DEBUG
+        func testSearchDecodedContentCacheEnforcesEntryAndCostBounds() async throws {
+            try await runTestSearchDecodedContentCacheEnforcesEntryAndCostBounds()
+        }
+    #endif
+    #if DEBUG
+        func testOlderSearchContentInvalidationDoesNotRejectNewerFlight() async throws {
+            try await runTestOlderSearchContentInvalidationDoesNotRejectNewerFlight()
+        }
+    #endif
+    #if DEBUG
+        func testBulkSearchContentInvalidationEvictsEveryDistinctKeyAtUnchangedFingerprint() async throws {
+            try await runTestBulkSearchContentInvalidationEvictsEveryDistinctKeyAtUnchangedFingerprint()
+        }
+    #endif
+    #if DEBUG
+        func testBulkSearchContentInvalidationRetainsMaximumEpochAndProtectsNewerFlight() async throws {
+            try await runTestBulkSearchContentInvalidationRetainsMaximumEpochAndProtectsNewerFlight()
+        }
+    #endif
+}
+
+final class WorkspaceFileContextStoreCodemapTests: WorkspaceFileContextStoreTestCase {
+    #if DEBUG
+        func testSearchContentSnapshotWarmHitKeepsRevisionAndAvoidsSecondRead() async throws {
+            try await runTestSearchContentSnapshotWarmHitKeepsRevisionAndAvoidsSecondRead()
+        }
+    #endif
+    #if DEBUG
+        func testConcurrentSearchContentSnapshotMissesCoalesceToOneLoad() async throws {
+            try await runTestConcurrentSearchContentSnapshotMissesCoalesceToOneLoad()
+        }
+    #endif
+    #if DEBUG
+        func testCancellingOneSearchContentSnapshotWaiterDoesNotPoisonSharedLoad() async throws {
+            try await runTestCancellingOneSearchContentSnapshotWaiterDoesNotPoisonSharedLoad()
+        }
+    #endif
+    #if DEBUG
+        func testCancellingAllSearchContentSnapshotWaitersPublishesNothing() async throws {
+            try await runTestCancellingAllSearchContentSnapshotWaitersPublishesNothing()
+        }
+    #endif
+    #if DEBUG
+        func testSearchContentSnapshotRejectsChangedDuringReadAndRetriesFreshBytes() async throws {
+            try await runTestSearchContentSnapshotRejectsChangedDuringReadAndRetriesFreshBytes()
+        }
+    #endif
+    #if DEBUG
+        func testSearchContentSnapshotSameMtimeRewriteAndMutationInvalidationAdvanceRevision() async throws {
+            try await runTestSearchContentSnapshotSameMtimeRewriteAndMutationInvalidationAdvanceRevision()
+        }
+    #endif
+    #if DEBUG
+        func testSearchContentSnapshotMoveDeleteAndFolderRemovalEvictOldIdentities() async throws {
+            try await runTestSearchContentSnapshotMoveDeleteAndFolderRemovalEvictOldIdentities()
+        }
+    #endif
+    #if DEBUG
+        func testSearchContentSnapshotCacheClearAndRootUnloadEvictEntries() async throws {
+            try await runTestSearchContentSnapshotCacheClearAndRootUnloadEvictEntries()
+        }
+    #endif
+    #if DEBUG
+        func testInitialRootCodemapScansByRootIDSkipSamePathReloadedRoot() async throws {
+            try await runTestInitialRootCodemapScansByRootIDSkipSamePathReloadedRoot()
+        }
+    #endif
+    #if DEBUG
+        func testInitialRootCodemapScansByPathTargetReloadedSamePathRoot() async throws {
+            try await runTestInitialRootCodemapScansByPathTargetReloadedSamePathRoot()
+        }
+    #endif
+    #if DEBUG
+        func testDeferredInitialRootLoadFlushUsesStoreRootsInsteadOfMainActorUIGather() throws {
+            try runTestDeferredInitialRootLoadFlushUsesStoreRootsInsteadOfMainActorUIGather()
+        }
+    #endif
+    func testContentSearchReloadsExternalModificationBeforeMatching() async throws {
+        try await runTestContentSearchReloadsExternalModificationBeforeMatching()
+    }
+
+    func testDiskValidatedSearchSnapshotReusesCacheWhenMetadataUnchanged() async throws {
+        try await runTestDiskValidatedSearchSnapshotReusesCacheWhenMetadataUnchanged()
+    }
+
+    func testApplyEditsPreviewReadsFreshDiskBaseAfterExternalModification() async throws {
+        try await runTestApplyEditsPreviewReadsFreshDiskBaseAfterExternalModification()
+    }
+
+    func testApplyEditsRejectsDiskMissingStaleCatalogBase() async throws {
+        try await runTestApplyEditsRejectsDiskMissingStaleCatalogBase()
+    }
+
+    #if DEBUG
+        func testConcurrentSamePathRootLoadsShareInFlightLoad() async throws {
+            try await runTestConcurrentSamePathRootLoadsShareInFlightLoad()
+        }
+    #endif
+    #if DEBUG
+        func testCancelledRootLoadAfterUIRootAppendDoesNotLeaveUIOrStoreRoot() async throws {
+            try await runTestCancelledRootLoadAfterUIRootAppendDoesNotLeaveUIOrStoreRoot()
+        }
+    #endif
+    #if DEBUG
+        func testCallerCancelledLoadFolderAfterUIRootAppendCleansUIAndStoreRoot() async throws {
+            try await runTestCallerCancelledLoadFolderAfterUIRootAppendCleansUIAndStoreRoot()
+        }
+    #endif
+    #if DEBUG
+        func testObsoleteSamePathLoadDoesNotUnloadNewerJoinedLoad() async throws {
+            try await runTestObsoleteSamePathLoadDoesNotUnloadNewerJoinedLoad()
+        }
+    #endif
+    #if DEBUG
+        func testUncommittedPreloadedRootIsUnloadedByFullUnload() async throws {
+            try await runTestUncommittedPreloadedRootIsUnloadedByFullUnload()
+        }
+    #endif
+    #if DEBUG
+        func testCancelledSamePathLoadWaitingForUnloadDoesNotCreateRoot() async throws {
+            try await runTestCancelledSamePathLoadWaitingForUnloadDoesNotCreateRoot()
+        }
+    #endif
+    #if DEBUG
+        func testApplyStoredSelectionWithEmptySlicesClearsCurrentSliceProjection() async throws {
+            try await runTestApplyStoredSelectionWithEmptySlicesClearsCurrentSliceProjection()
+        }
+    #endif
+    #if DEBUG
+        func testHydrateSlicesForActiveTabWithEmptyStoredSelectionDeletesPersistedSlices() async throws {
+            try await runTestHydrateSlicesForActiveTabWithEmptyStoredSelectionDeletesPersistedSlices()
+        }
+    #endif
+    #if DEBUG
+        func testAllCodemapFileAPIsCacheReusesOrderedAggregateAndRecordsRebuildOnlyRows() async throws {
+            try await runTestAllCodemapFileAPIsCacheReusesOrderedAggregateAndRecordsRebuildOnlyRows()
+        }
+    #endif
+    func testCodemapFileAPIAggregatePreservesForeignNestedPathFirstWinnerAndRetainedRecomputeResults() async throws {
+        try await runTestCodemapFileAPIAggregatePreservesForeignNestedPathFirstWinnerAndRetainedRecomputeResults()
+    }
+
+    func testCodemapFileAPIAggregateFirstWinnerMatchesLegacyGroupingAcrossOverlappingRoots() async throws {
+        try await runTestCodemapFileAPIAggregateFirstWinnerMatchesLegacyGroupingAcrossOverlappingRoots()
+    }
+
+    func testAllCodemapFileAPIsCacheInvalidatesObservedReplacementModificationDeletionFolderClearAndStoreIsolation() async throws {
+        try await runTestAllCodemapFileAPIsCacheInvalidatesObservedReplacementModificationDeletionFolderClearAndStoreIsolation()
+    }
+
+    func testAllCodemapFileAPIsCacheInvalidatesAcrossManagedOnlyMoveTransition() async throws {
+        try await runTestAllCodemapFileAPIsCacheInvalidatesAcrossManagedOnlyMoveTransition()
+    }
+
+    func testAllCodemapFileAPIsCacheInvalidatesScannerInsertionAndReplacement() async throws {
+        try await runTestAllCodemapFileAPIsCacheInvalidatesScannerInsertionAndReplacement()
+    }
+
+    #if DEBUG
+        func testAllCodemapFileAPIsCachePreservesRootUnloadReentrantVisibilityInterval() async throws {
+            try await runTestAllCodemapFileAPIsCachePreservesRootUnloadReentrantVisibilityInterval()
+        }
+    #endif
 }

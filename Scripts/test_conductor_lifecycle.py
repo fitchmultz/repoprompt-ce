@@ -238,6 +238,24 @@ class LifecycleQueueTests(LifecycleTestCase):
         self.assertEqual(job.args["xctestStallSeconds"], 45.0)
         self.assertEqual(job.timeout, conductor.TEST_TIMEOUT_SECONDS)
 
+    def test_workspace_file_context_store_filter_uses_sharded_compatibility_runner(self) -> None:
+        tmp, state = self.make_state()
+        self.addCleanup(tmp.cleanup)
+        registry = conductor.OperationRegistry(state.paths.repo_root)
+
+        argv, lanes, _cwd, _env, timeout = registry.prepare(
+            {"operation": "test", "args": {"filter": "WorkspaceFileContextStoreTests"}}
+        )
+
+        self.assertEqual(lanes, ["build"])
+        self.assertEqual(timeout, conductor.TEST_TIMEOUT_SECONDS)
+        self.assertEqual(argv[0], sys.executable)
+        self.assertEqual(argv[1], "-u")
+        self.assertEqual(Path(argv[2]).name, "conductor.py")
+        self.assertEqual(argv[3], "__operation_runner")
+        payload = json.loads(argv[4])
+        self.assertEqual(payload["kind"], "workspace_file_context_store_tests")
+
     def test_release_artifact_delegates_release_script_with_release_lanes_and_timeout(self) -> None:
         tmp, state = self.make_state()
         self.addCleanup(tmp.cleanup)

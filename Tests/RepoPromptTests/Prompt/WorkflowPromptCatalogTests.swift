@@ -77,6 +77,26 @@ final class WorkflowPromptCatalogTests: XCTestCase {
         XCTAssertTrue(rendered.contains("If `agent_run` is unavailable, stop and report the blocker"))
     }
 
+    func testAgentReviewPromptUsesContextBuilderAndOracleInsideManagedAgentMode() {
+        let rendered = RepoPromptWorkflowPrompts.render(id: .review, variant: .agent)
+
+        XCTAssertTrue(rendered.contains("response_type: \"review\""), rendered)
+        XCTAssertTrue(rendered.contains("context_builder"), rendered)
+        XCTAssertTrue(rendered.contains("ask_oracle"), rendered)
+        XCTAssertFalse(rendered.contains("oracle_send"), rendered)
+    }
+
+    func testAgentDeepPlanPromptKeepsPlanningDelegationInsideManagedAgentMode() {
+        let rendered = RepoPromptWorkflowPrompts.render(id: .deepPlan, variant: .agent)
+
+        XCTAssertTrue(rendered.contains("agent_run"), rendered)
+        XCTAssertTrue(rendered.contains("\"model_id\":\"explore\""), rendered)
+        XCTAssertTrue(rendered.contains("\"model_id\":\"design\""), rendered)
+        XCTAssertTrue(rendered.contains("context_builder"), rendered)
+        XCTAssertTrue(rendered.contains("ask_oracle"), rendered)
+        XCTAssertFalse(rendered.contains("oracle_send"), rendered)
+    }
+
     func testTopLevelAgentModePromptForbidsExternalAgentCLIDelegation() {
         let prompt = SystemPromptService.agentModePrompt(agentKind: .pi)
 

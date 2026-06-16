@@ -150,6 +150,32 @@ final class PiHeadlessAgentProviderTests: XCTestCase {
         XCTAssertTrue(recordedCommands(at: recordURL).contains { $0.type == "set_thinking_level" && $0.level == "high" })
     }
 
+    func testManagedControllerOptionsPublishBridgeForHeadlessSubagentInheritance() throws {
+        let directory = try makeTemporaryDirectory()
+        let bridgeURL = directory.appendingPathComponent("repoprompt-bridge.ts")
+        let options = PiHeadlessAgentProvider.managedControllerOptions(
+            modelString: "zai/glm-5.2:high",
+            enableDebugLogging: true,
+            bridgeExtensionURL: bridgeURL,
+            permissionLevel: .fullAccess,
+            launchPolicy: .disableDiscoveredExtensions
+        )
+
+        XCTAssertEqual(options.modelRaw, "zai/glm-5.2:high")
+        XCTAssertTrue(options.enableDebugLogging)
+        XCTAssertEqual(
+            options.launchArguments,
+            ["--mode", "rpc", "--approve", "--no-extensions", "--extension", bridgeURL.path]
+        )
+        XCTAssertEqual(
+            options.environmentOverrides[PiIntegrationConfiguration.permissionLevelEnvironmentKey],
+            PiAgentToolPreferences.PermissionLevel.fullAccess.rawValue
+        )
+        let rawInheritedExtensions = try XCTUnwrap(options.environmentOverrides[PiIntegrationConfiguration.inheritedSubagentExtensionsEnvironmentKey])
+        let decoded = try JSONDecoder().decode([String].self, from: Data(rawInheritedExtensions.utf8))
+        XCTAssertEqual(decoded, [bridgeURL.path])
+    }
+
     func testHeadlessProviderWaitsForPiRPCShutdownBeforeNormalStreamFinishes() async throws {
         let directory = try makeTemporaryDirectory()
         let recordURL = directory.appendingPathComponent("commands.jsonl")

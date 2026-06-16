@@ -4,7 +4,7 @@ import Foundation
 /// Controls which tools are restricted and which special tools are granted.
 enum AgentModeMCPToolPolicy {
     /// Agent mode is tab-scoped, so workspace-level routing mutation and the live oracle helper surface stay blocked.
-    /// `bind_context` stays available so agent-mode MCP clients can inspect and repair their own tab/window binding.
+    /// `bind_context` stays available only for read-only list/status routing discovery; mutating bind ops stay blocked.
     static let restrictedCapabilities: Set<MCPToolCapability> = [
         .conversationHelper,
         .conversationSend

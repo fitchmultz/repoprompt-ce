@@ -27,8 +27,44 @@ struct WorkspaceCheckoutRefreshResult: Equatable {
 /// This intentionally lives in the workspace layer. Git status code mutates Git and refreshes branch
 /// summaries; Agent Mode only asks for this seam after a successful in-app checkout switch.
 struct WorkspaceCheckoutRefreshService {
+    private final class IngressDrainCompletionFlag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var completed = false
+
+        var isCompleted: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return completed
+        }
+
+        func markCompleted() {
+            lock.lock()
+            completed = true
+            lock.unlock()
+        }
+    }
+
+    private static let defaultPreReconcileIngressDrainTimeoutNanoseconds: UInt64 = 1_000_000_000
+
     let store: WorkspaceFileContextStore
     let searchService: WorkspaceSearchService
+    private let drainsPreReconcileIngress: Bool
+    private let preReconcileIngressDrainTimeoutNanoseconds: UInt64
+    private let scheduleCodemapRescans: @Sendable (WorkspaceFileContextStore, [UUID]) -> Void
+
+    init(
+        store: WorkspaceFileContextStore,
+        searchService: WorkspaceSearchService,
+        drainsPreReconcileIngress: Bool = true,
+        preReconcileIngressDrainTimeoutNanoseconds: UInt64 = WorkspaceCheckoutRefreshService.defaultPreReconcileIngressDrainTimeoutNanoseconds,
+        scheduleCodemapRescans: @escaping @Sendable (WorkspaceFileContextStore, [UUID]) -> Void = WorkspaceCheckoutRefreshService.defaultScheduleCodemapRescans
+    ) {
+        self.store = store
+        self.searchService = searchService
+        self.drainsPreReconcileIngress = drainsPreReconcileIngress
+        self.preReconcileIngressDrainTimeoutNanoseconds = preReconcileIngressDrainTimeoutNanoseconds
+        self.scheduleCodemapRescans = scheduleCodemapRescans
+    }
 
     func refreshAfterCheckoutMutation(rootPath rawRootPath: String) async -> WorkspaceCheckoutRefreshResult {
         let standardizedRootPath = StandardizedPath.absolute(rawRootPath)
@@ -51,7 +87,7 @@ struct WorkspaceCheckoutRefreshService {
 
         let rootScope = await narrowRootScope(for: loadedRoots)
         let loadedRootIDs = loadedRoots.map(\.id)
-        _ = await store.awaitAppliedIngress(rootScope: rootScope)
+        await awaitAppliedIngressBeforeReconcile(rootScope: rootScope)
         for rootID in loadedRootIDs {
             await store.reconcileLoadedRootCatalogWithDisk(rootID: rootID)
         }
@@ -60,7 +96,7 @@ struct WorkspaceCheckoutRefreshService {
 
         async let warmedGeneration = store.warmPathLookupIndexes(rootScope: rootScope)
         async let indexedResult = rebuildSharedVisibleSearchIndexIfNeeded(affectedRoots: loadedRoots)
-        requestCodemapRescansInBackground(rootIDs: loadedRootIDs)
+        scheduleCodemapRescans(store, loadedRootIDs)
 
         let searchIndexResult = await indexedResult
         let pathLookupGeneration = await warmedGeneration
@@ -75,6 +111,28 @@ struct WorkspaceCheckoutRefreshService {
         )
     }
 
+    private func awaitAppliedIngressBeforeReconcile(rootScope: WorkspaceLookupRootScope) async {
+        guard drainsPreReconcileIngress else { return }
+        guard preReconcileIngressDrainTimeoutNanoseconds > 0 else {
+            _ = await store.awaitAppliedIngress(rootScope: rootScope)
+            return
+        }
+
+        let completion = IngressDrainCompletionFlag()
+        let drainTask = Task { [store, completion] in
+            _ = await store.awaitAppliedIngress(rootScope: rootScope)
+            completion.markCompleted()
+        }
+        let deadline = DispatchTime.now().uptimeNanoseconds &+ preReconcileIngressDrainTimeoutNanoseconds
+        while !completion.isCompleted {
+            guard DispatchTime.now().uptimeNanoseconds < deadline else {
+                drainTask.cancel()
+                return
+            }
+            try? await Task.sleep(nanoseconds: min(10_000_000, preReconcileIngressDrainTimeoutNanoseconds))
+        }
+    }
+
     private func rebuildSharedVisibleSearchIndexIfNeeded(
         affectedRoots: [WorkspaceRootRecord]
     ) async -> (generation: UInt64?, behavior: WorkspaceCheckoutSearchIndexRefreshBehavior) {
@@ -86,8 +144,7 @@ struct WorkspaceCheckoutRefreshService {
         return (generation, .rebuiltSharedVisibleWorkspace)
     }
 
-    private func requestCodemapRescansInBackground(rootIDs: [UUID]) {
-        let store = store
+    private static let defaultScheduleCodemapRescans: @Sendable (WorkspaceFileContextStore, [UUID]) -> Void = { store, rootIDs in
         Task.detached(priority: .utility) {
             for rootID in rootIDs {
                 try? await store.requestCodemapScans(inRoot: rootID)

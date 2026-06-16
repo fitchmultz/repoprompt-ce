@@ -174,4 +174,6 @@ make dev-build
 make dev-test
 ```
 
+`WorkspaceFileContextStoreTests` is a conductor compatibility filter that runs the sharded `WorkspaceFileContextStore*Tests` suites; use `make dev-test FILTER=WorkspaceFileContextStoreTests`, not direct `swift test --filter WorkspaceFileContextStoreTests`.
+
 Use `make run` only when it is safe to stop any existing RepoPrompt instance and launch the debug app.

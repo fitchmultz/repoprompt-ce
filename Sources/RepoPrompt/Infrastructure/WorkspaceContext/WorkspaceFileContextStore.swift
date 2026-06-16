@@ -5687,6 +5687,7 @@ actor WorkspaceFileContextStore {
                     upsertedFolders.append(folder)
                 }
             case .fileRemoved:
+                guard !regularFileAppearsPresentOnDisk(root: root, relativePath: relativePath) else { continue }
                 if let oldFile = file(rootID: rootID, relativePath: relativePath) {
                     let oldFileWasDiscoverable = isDiscoverableFileID(oldFile.id)
                     removeFile(relativePath: relativePath, rootID: rootID)
@@ -5696,6 +5697,7 @@ actor WorkspaceFileContextStore {
                     }
                 }
             case .folderRemoved:
+                guard !directoryAppearsPresentOnDisk(root: root, relativePath: relativePath) else { continue }
                 if let oldFolder = folder(rootID: rootID, relativePath: relativePath) {
                     let oldFolderWasDiscoverable = isDiscoverableFolderID(oldFolder.id)
                     let removal = removeFolderTree(relativePath: relativePath, rootID: rootID)

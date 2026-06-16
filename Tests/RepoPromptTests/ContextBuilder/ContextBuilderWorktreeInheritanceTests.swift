@@ -147,10 +147,14 @@ import XCTest
                         XCTAssertTrue(run.userMessage.contains("BranchOnly.swift"), run.userMessage)
                         XCTAssertFalse(run.userMessage.contains(canonicalSentinel), run.userMessage)
                         XCTAssertFalse(run.userMessage.contains(worktreeRoot.path), run.userMessage)
-                        for output in [run.tree, run.read, run.search, run.codeStructure, run.selection, run.workspaceContext] {
+                        for output in [run.bindingStatus, run.windowStatus, run.tree, run.read, run.search, run.codeStructure, run.selection, run.workspaceContext] {
                             XCTAssertFalse(output.contains(canonicalSentinel), output)
                             XCTAssertFalse(output.contains(worktreeRoot.path), output)
+                            XCTAssertFalse(output.contains("Active-tab compatibility fallback is not allowed"), output)
                         }
+                        XCTAssertFalse(run.bindingStatus.contains("Tool 'bind_context' is disabled"), run.bindingStatus)
+                        XCTAssertFalse(run.windowStatus.contains("Tool 'bind_context' is disabled"), run.windowStatus)
+                        XCTAssertTrue(run.mutatingBindAttempt.contains("Mutating bind_context operations are disabled"), run.mutatingBindAttempt)
                         XCTAssertTrue(run.tree.contains("BranchOnly.swift"), run.tree)
                         XCTAssertTrue(run.read.contains(worktreeSentinel), run.read)
                         XCTAssertTrue(run.search.contains(worktreeSentinel), run.search)
@@ -236,6 +240,92 @@ import XCTest
                 } catch {
                     fixture.contextA.window.mcpServer.setContextBuilderFollowUpOverrideForTesting(nil)
                     fixture.contextA.window.mcpServer.setContextBuilderSelectionReplyObserverForTesting(nil)
+                    await fixture.cleanup()
+                    throw error
+                }
+            }
+        }
+
+        func testAgentModePiContextBuilderRoutesWindowToolsThroughManagedBridgeAlias() async throws {
+            try await MCPSharedServerTestLease.shared.withLease { lease in
+                let state = ContextBuilderWorktreeProbeState()
+                let factory = ContextBuilderWorktreeProbeFactory(
+                    state: state,
+                    endpointClientNameOverride: PiRepoPromptBridgeExtensionInstaller.managedBridgeExecutionClientName
+                )
+                let fixture = try await PersistentMCPTestFixture.make(
+                    lease: lease,
+                    contextBuilderProviderFactory: factory.makeProvider
+                )
+                do {
+                    try await activateWorkspace(fixture.contextA)
+                    let sentinel = "PiManagedBridgeContextBuilderSentinel"
+                    try write(
+                        "struct \(sentinel) { func routedThroughPiSchema() {} }\n",
+                        to: fixture.contextA.fileURL
+                    )
+
+                    let frozenContext = MCPServerViewModel.TabContextSnapshot(
+                        tabID: fixture.contextA.tabID,
+                        windowID: fixture.contextA.window.windowID,
+                        workspaceID: fixture.contextA.workspaceID,
+                        promptText: "Inspect the pi managed bridge routing path",
+                        selection: StoredSelection(
+                            selectedPaths: [fixture.contextA.fileURL.path],
+                            codemapAutoEnabled: false
+                        ),
+                        selectedMetaPromptIDs: [],
+                        tabName: "Pi Context Builder",
+                        runID: UUID(),
+                        activeAgentSessionID: UUID(),
+                        worktreeBindings: [],
+                        explicitlyBound: false
+                    )
+                    let outerEndpoint = try fixture.endpointA()
+                    try await configureAgentModeEndpoint(
+                        outerEndpoint,
+                        context: frozenContext,
+                        fixture: fixture
+                    )
+
+                    let viewModel = fixture.contextA.window.contextBuilderAgentViewModel
+                    let savedAgent = viewModel.selectedAgent
+                    let savedModelRaw = viewModel.selectedModelRaw
+                    viewModel.selectedAgent = .pi
+                    viewModel.selectModel(rawModel: "zai/glm-5.2")
+                    defer {
+                        viewModel.selectedAgent = savedAgent
+                        viewModel.selectModel(rawModel: savedModelRaw)
+                    }
+
+                    factory.configure(
+                        networkManager: fixture.networkManager,
+                        logicalFilePath: fixture.contextA.fileURL.path,
+                        searchPattern: sentinel
+                    )
+
+                    let response = try await outerEndpoint.callTool(
+                        name: MCPWindowToolName.contextBuilder,
+                        arguments: ["instructions": "Inspect the selected implementation through pi."],
+                        timeoutSeconds: 45
+                    )
+                    let text = try toolResultText(response)
+                    XCTAssertTrue(text.contains(fixture.contextA.fileURL.lastPathComponent), text)
+
+                    let run = try XCTUnwrap(state.runs.first)
+                    XCTAssertEqual(state.runs.count, 1)
+                    XCTAssertEqual(run.workspacePath, fixture.contextA.rootURL.standardizedFileURL.path)
+                    XCTAssertTrue(run.read.contains(sentinel), run.read)
+                    XCTAssertTrue(run.search.contains(sentinel), run.search)
+                    XCTAssertTrue(run.selection.contains(fixture.contextA.fileURL.lastPathComponent), run.selection)
+                    XCTAssertTrue(run.workspaceContext.contains(fixture.contextA.fileURL.lastPathComponent), run.workspaceContext)
+                    XCTAssertFalse(run.bindingStatus.contains("Tool 'bind_context' is disabled"), run.bindingStatus)
+                    XCTAssertFalse(run.windowStatus.contains("Tool 'bind_context' is disabled"), run.windowStatus)
+                    XCTAssertFalse(run.workspaceContext.contains("Active-tab compatibility fallback is not allowed"), run.workspaceContext)
+                    XCTAssertFalse(run.selection.contains("Active-tab compatibility fallback is not allowed"), run.selection)
+
+                    await fixture.cleanup()
+                } catch {
                     await fixture.cleanup()
                     throw error
                 }
@@ -458,10 +548,12 @@ import XCTest
         }
 
         private let state: ContextBuilderWorktreeProbeState
+        private let endpointClientNameOverride: String?
         private var configuration: Configuration?
 
-        init(state: ContextBuilderWorktreeProbeState) {
+        init(state: ContextBuilderWorktreeProbeState, endpointClientNameOverride: String? = nil) {
             self.state = state
+            self.endpointClientNameOverride = endpointClientNameOverride
         }
 
         func configure(
@@ -490,7 +582,7 @@ import XCTest
             guard let configuration else {
                 preconditionFailure("Context Builder probe provider used before configuration")
             }
-            guard let clientName = agent.mcpClientNameHint else {
+            guard let policyClientName = agent.mcpClientNameHint else {
                 preconditionFailure("Context Builder probe agent has no MCP client name")
             }
             return ContextBuilderWorktreeProbeProvider(
@@ -498,7 +590,8 @@ import XCTest
                 networkManager: configuration.networkManager,
                 logicalFilePath: configuration.logicalFilePath,
                 searchPattern: configuration.searchPattern,
-                clientName: clientName,
+                policyClientName: policyClientName,
+                endpointClientName: endpointClientNameOverride ?? policyClientName,
                 workspacePath: workspacePath
             )
         }
@@ -509,7 +602,8 @@ import XCTest
         private let networkManager: ServerNetworkManager
         private let logicalFilePath: String
         private let searchPattern: String
-        private let clientName: String
+        private let policyClientName: String
+        private let endpointClientName: String
         private let workspacePath: String?
         private var endpoint: PersistentMCPTestEndpoint?
         private var activeRunID: UUID?
@@ -519,14 +613,16 @@ import XCTest
             networkManager: ServerNetworkManager,
             logicalFilePath: String,
             searchPattern: String,
-            clientName: String,
+            policyClientName: String,
+            endpointClientName: String,
             workspacePath: String?
         ) {
             self.state = state
             self.networkManager = networkManager
             self.logicalFilePath = logicalFilePath
             self.searchPattern = searchPattern
-            self.clientName = clientName
+            self.policyClientName = policyClientName
+            self.endpointClientName = endpointClientName
             self.workspacePath = workspacePath
         }
 
@@ -538,13 +634,13 @@ import XCTest
             activeRunID = runID
             await networkManager.registerExpectedAgentPID(
                 getpid(),
-                for: clientName,
+                for: policyClientName,
                 runID: runID
             )
             let endpoint = try await PersistentMCPTestEndpoint.make(
                 label: "context-builder-worktree-probe",
                 networkManager: networkManager,
-                clientName: clientName,
+                clientName: endpointClientName,
                 requiredToolNames: [
                     MCPWindowToolName.getFileTree,
                     MCPWindowToolName.readFile,
@@ -556,6 +652,21 @@ import XCTest
             )
             self.endpoint = endpoint
 
+            let bindingStatus = try await toolResultText(endpoint.callTool(
+                name: "bind_context",
+                arguments: ["op": "status"],
+                timeoutSeconds: 20
+            ))
+            let windowStatus = try await toolResultText(endpoint.callTool(
+                name: "bind_context",
+                arguments: ["op": "list"],
+                timeoutSeconds: 20
+            ))
+            let mutatingBindAttempt = try await toolResultText(endpoint.callTool(
+                name: "bind_context",
+                arguments: ["op": "bind", "context_id": UUID().uuidString],
+                timeoutSeconds: 20
+            ))
             let selectionBeforeRead = try await selectionObservation(endpoint.callTool(
                 name: MCPWindowToolName.manageSelection,
                 arguments: [
@@ -621,6 +732,9 @@ import XCTest
             await state.recordRun(ContextBuilderWorktreeProbeState.Run(
                 workspacePath: workspacePath,
                 userMessage: message.userMessage,
+                bindingStatus: bindingStatus,
+                windowStatus: windowStatus,
+                mutatingBindAttempt: mutatingBindAttempt,
                 selectionBeforeRead: selectionBeforeRead,
                 tree: tree,
                 read: read,
@@ -648,7 +762,7 @@ import XCTest
             if let activeRunID {
                 await networkManager.clearExpectedAgentPID(
                     getpid(),
-                    for: clientName,
+                    for: policyClientName,
                     runID: activeRunID
                 )
             }
@@ -694,6 +808,9 @@ import XCTest
         struct Run {
             let workspacePath: String?
             let userMessage: String
+            let bindingStatus: String
+            let windowStatus: String
+            let mutatingBindAttempt: String
             let selectionBeforeRead: SelectionObservation
             let tree: String
             let read: String

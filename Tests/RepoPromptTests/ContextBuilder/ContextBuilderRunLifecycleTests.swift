@@ -225,6 +225,7 @@ final class ContextBuilderRunLifecycleTests: XCTestCase {
             )
 
             let activeWorkspace = try XCTUnwrap(window.workspaceManager.activeWorkspace)
+            window.promptManager.loadComposeTabsFromWorkspace(activeWorkspace, syncPromptText: true)
             let tabID = try XCTUnwrap(
                 activeWorkspace.activeComposeTabID ?? activeWorkspace.composeTabs.first?.id
             )
@@ -262,13 +263,15 @@ final class ContextBuilderRunLifecycleTests: XCTestCase {
             let commitGate = LifecycleTestGate()
             var commitCount = 0
             var cleanupCount = 0
+            var committedPromptAfterCommit: String?
+            let committedIdentity = WorkspaceSelectionIdentity(workspaceID: activeWorkspace.id, tabID: tabID)
             let finalization = Task { @MainActor in
                 await ContextBuilderChildConnectionFinalizer.finalize(
                     connectionIDs: [connectionID],
                     awaitResponseDeliveryDrain: { _ in true },
                     commitContext: { committedID in
                         commitCount += 1
-                        return await window.mcpServer.commitAndClearTabContext(
+                        let didCommit = await window.mcpServer.commitAndClearTabContext(
                             connectionID: committedID,
                             expectedRunID: runID,
                             progressReporter: { phase in
@@ -278,6 +281,8 @@ final class ContextBuilderRunLifecycleTests: XCTestCase {
                             },
                             deferRunMappingCleanupUntilCaller: true
                         )
+                        committedPromptAfterCommit = window.workspaceManager.composeTab(for: committedIdentity)?.promptText
+                        return didCommit
                     },
                     beforeTerminationRequest: {},
                     requestTermination: { requestedID in
@@ -315,7 +320,7 @@ final class ContextBuilderRunLifecycleTests: XCTestCase {
             await commitGate.release()
             let didFinalize = await finalization.value
             XCTAssertTrue(didFinalize)
-            XCTAssertEqual(window.workspaceManager.composeTab(with: tabID)?.promptText, expectedPrompt)
+            XCTAssertEqual(committedPromptAfterCommit, expectedPrompt)
             XCTAssertEqual(commitCount, 1)
             XCTAssertEqual(cleanupCount, 1)
             XCTAssertNil(window.mcpServer.tabContextByConnectionID[connectionID])

@@ -33,14 +33,12 @@ final class PiHeadlessAgentProvider: HeadlessAgentProvider {
         controllerFactory: @escaping ControllerFactory = { workspacePath, modelString, enableDebugLogging, bridgeExtensionURL, permissionLevel, launchPolicy in
             PiNativeSessionController(
                 workspacePath: workspacePath,
-                options: .init(
-                    modelRaw: modelString,
+                options: PiHeadlessAgentProvider.managedControllerOptions(
+                    modelString: modelString,
                     enableDebugLogging: enableDebugLogging,
-                    launchArguments: PiIntegrationConfiguration.managedRPCLaunchArguments(
-                        bridgeExtensionPath: bridgeExtensionURL.path,
-                        launchPolicy: launchPolicy
-                    ),
-                    environmentOverrides: PiIntegrationConfiguration.managedRunEnvironment(permissionLevel: permissionLevel)
+                    bridgeExtensionURL: bridgeExtensionURL,
+                    permissionLevel: permissionLevel,
+                    launchPolicy: launchPolicy
                 )
             )
         }
@@ -53,6 +51,27 @@ final class PiHeadlessAgentProvider: HeadlessAgentProvider {
         self.permissionLevel = permissionLevel
         self.bridgeInstaller = bridgeInstaller
         self.controllerFactory = controllerFactory
+    }
+
+    static func managedControllerOptions(
+        modelString: String?,
+        enableDebugLogging: Bool,
+        bridgeExtensionURL: URL,
+        permissionLevel: PiAgentToolPreferences.PermissionLevel,
+        launchPolicy: PiManagedRunLaunchPolicy
+    ) -> PiNativeSessionController.Options {
+        PiNativeSessionController.Options(
+            modelRaw: modelString,
+            enableDebugLogging: enableDebugLogging,
+            launchArguments: PiIntegrationConfiguration.managedRPCLaunchArguments(
+                bridgeExtensionPath: bridgeExtensionURL.path,
+                launchPolicy: launchPolicy
+            ),
+            environmentOverrides: PiIntegrationConfiguration.managedRunEnvironment(
+                permissionLevel: permissionLevel,
+                bridgeExtensionPath: bridgeExtensionURL.path
+            )
+        )
     }
 
     func streamAgentMessage(

@@ -770,14 +770,18 @@ final class TabContextRoutingTests: XCTestCase {
         XCTAssertTrue(AgentModeMCPToolPolicy.restrictedTools.contains("manage_workspaces"))
     }
 
-    func testAgentModeBindContextPolicyAllowsOnlyReadOnlyDiscoveryOperations() {
-        XCTAssertTrue(ServerNetworkManager.isAgentModeBindContextOperationAllowed(args: ["op": .string("list")]))
-        XCTAssertTrue(ServerNetworkManager.isAgentModeBindContextOperationAllowed(args: ["op": .string("status")]))
-        XCTAssertTrue(ServerNetworkManager.isAgentModeBindContextOperationAllowed(args: ["op": .string(" LIST ")]))
-        XCTAssertFalse(ServerNetworkManager.isAgentModeBindContextOperationAllowed(args: ["op": .string("bind")]))
-        XCTAssertFalse(ServerNetworkManager.isAgentModeBindContextOperationAllowed(args: ["op": .string("unknown")]))
-        XCTAssertFalse(ServerNetworkManager.isAgentModeBindContextOperationAllowed(args: [:]))
-        XCTAssertTrue(ServerNetworkManager.agentModeBindContextRestrictionMessage().contains("read-only"))
+    func testRunScopedBindContextPolicyAllowsOnlyReadOnlyDiscoveryOperations() {
+        XCTAssertTrue(ServerNetworkManager.isReadOnlyBindContextOperationAllowed(args: ["op": .string("list")]))
+        XCTAssertTrue(ServerNetworkManager.isReadOnlyBindContextOperationAllowed(args: ["op": .string("status")]))
+        XCTAssertTrue(ServerNetworkManager.isReadOnlyBindContextOperationAllowed(args: ["op": .string(" LIST ")]))
+        XCTAssertFalse(ServerNetworkManager.isReadOnlyBindContextOperationAllowed(args: ["op": .string("bind")]))
+        XCTAssertFalse(ServerNetworkManager.isReadOnlyBindContextOperationAllowed(args: ["op": .string("unknown")]))
+        XCTAssertFalse(ServerNetworkManager.isReadOnlyBindContextOperationAllowed(args: [:]))
+        XCTAssertTrue(ServerNetworkManager.allowsReadOnlyBindContextDuringRun(purpose: .agentModeRun))
+        XCTAssertTrue(ServerNetworkManager.allowsReadOnlyBindContextDuringRun(purpose: .discoverRun))
+        XCTAssertFalse(ServerNetworkManager.allowsReadOnlyBindContextDuringRun(purpose: .unknown))
+        XCTAssertTrue(ServerNetworkManager.runScopedBindContextRestrictionMessage(purpose: .agentModeRun).contains("read-only"))
+        XCTAssertTrue(ServerNetworkManager.runScopedBindContextRestrictionMessage(purpose: .discoverRun).contains("read-only"))
     }
 
     func testAgentModeAdvertisementHidesBindContextFromDynamicSchemaExport() {

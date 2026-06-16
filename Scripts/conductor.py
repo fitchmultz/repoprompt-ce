@@ -73,6 +73,14 @@ MEDIUM_TIMEOUT_SECONDS = 60 * 60
 RELEASE_TIMEOUT_SECONDS = 2 * 60 * 60
 DEFAULT_XCTEST_STALL_SECONDS = 120.0
 SMOKE_AGENT_WAIT_SECONDS = 120.0
+WORKSPACE_FILE_CONTEXT_STORE_TEST_SHARDS = [
+    "WorkspaceFileContextStoreCoreTests",
+    "WorkspaceFileContextStoreIngressTests",
+    "WorkspaceFileContextStoreSearchTests",
+    "WorkspaceFileContextStoreMutationTests",
+    "WorkspaceFileContextStoreCodemapTests",
+]
+CHECKOUT_REFRESH_TEST_FILTER = "WorkspaceCheckoutRefreshServiceTests"
 
 IMPLEMENTED_OPERATIONS = {
     "doctor",
@@ -1058,10 +1066,11 @@ class OperationRegistry:
             lanes = ["build", "debugArtifact"] + (["release"] if config == "release" else [])
             return [script("package_app.sh"), config], lanes, cwd, env, effective_timeout
         if operation == "test":
-            argv = ["swift", "test"]
+            if args.get("filter") == "WorkspaceFileContextStoreTests":
+                return self._internal_argv("workspace_file_context_store_tests", {}), ["build"], cwd, env, effective_timeout
             if args.get("filter"):
-                argv.extend(["--filter", str(args["filter"])])
-            return argv, ["build"], cwd, env, effective_timeout
+                return ["swift", "test", "--filter", str(args["filter"])], ["build"], cwd, env, effective_timeout
+            return self._internal_argv("root_tests", {}), ["build"], cwd, env, effective_timeout
         if operation == "provider-test":
             argv = ["swift", "test"]
             if args.get("filter"):
@@ -3222,6 +3231,39 @@ def run_operation_command(
     return int(completed.returncode), stdout, stderr
 
 
+def run_operation_command_streaming(
+    name: str,
+    argv: Sequence[str],
+    cwd: Path,
+    env: Optional[Dict[str, str]] = None,
+    allow_exit_codes: Optional[set[int]] = None,
+) -> Tuple[int, str, str]:
+    allowed = allow_exit_codes if allow_exit_codes is not None else {0}
+    print(f"\n==> {name}", flush=True)
+    print(f"$ {format_argv(argv)}", flush=True)
+    process = subprocess.Popen(
+        list(argv),
+        cwd=str(cwd),
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    captured: List[str] = []
+    assert process.stdout is not None
+    for line in process.stdout:
+        captured.append(line)
+        print(line, end="", flush=True)
+    return_code = int(process.wait())
+    stdout = "".join(captured)
+    print(f"status: {return_code}", flush=True)
+    if return_code not in allowed:
+        print(f"FAILED stage '{name}' with status {return_code}", flush=True)
+    return return_code, stdout, ""
+
+
 def _print_captured(stdout: str, stderr: str) -> None:
     print("--- stdout ---", flush=True)
     if stdout:
@@ -3417,6 +3459,35 @@ def operation_swift_build_all(repo_root: Path) -> int:
     return 0
 
 
+def operation_workspace_file_context_store_tests(repo_root: Path) -> int:
+    print("Running WorkspaceFileContextStoreTests compatibility shard set", flush=True)
+    for shard in WORKSPACE_FILE_CONTEXT_STORE_TEST_SHARDS:
+        code, _stdout, _stderr = run_operation_command_streaming(
+            f"swift test --filter {shard}",
+            ["swift", "test", "--filter", shard],
+            repo_root,
+        )
+        if code != 0:
+            return code
+    return 0
+
+
+def operation_root_tests(repo_root: Path) -> int:
+    print("Running root tests with checkout refresh suite isolated", flush=True)
+    code, _stdout, _stderr = run_operation_command_streaming(
+        f"swift test --skip {CHECKOUT_REFRESH_TEST_FILTER}",
+        ["swift", "test", "--skip", CHECKOUT_REFRESH_TEST_FILTER],
+        repo_root,
+    )
+    if code != 0:
+        return code
+    return run_operation_command_streaming(
+        f"swift test --filter {CHECKOUT_REFRESH_TEST_FILTER}",
+        ["swift", "test", "--filter", CHECKOUT_REFRESH_TEST_FILTER],
+        repo_root,
+    )[0]
+
+
 def operation_release_preflight_missing(_repo_root: Path) -> int:
     print("ERROR: Scripts/release.sh does not exist, so release preflight is not available yet.", flush=True)
     print("See docs/open-source-readiness.md for release-readiness notes.", flush=True)
@@ -3606,6 +3677,10 @@ def run_operation_runner(payload_json: str) -> int:
     repo_root = Path(payload.get("repoRoot") or resolve_repo_root()).resolve()
     if kind == "swift_build_all":
         return operation_swift_build_all(repo_root)
+    if kind == "workspace_file_context_store_tests":
+        return operation_workspace_file_context_store_tests(repo_root)
+    if kind == "root_tests":
+        return operation_root_tests(repo_root)
     if kind == "app_stop":
         return operation_app_stop(repo_root, args)
     if kind == "app_status":

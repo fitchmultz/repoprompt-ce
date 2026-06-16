@@ -1,3 +1,4 @@
+import Foundation
 @testable import RepoPrompt
 import XCTest
 
@@ -12,12 +13,12 @@ final class WorkspaceCheckoutRefreshServiceTests: XCTestCase {
         try super.tearDownWithError()
     }
 
-    func testRefreshAfterCheckoutMutationRemovesStaleCodemapSnapshotsBeforeFreshScanCompletes() async throws {
+    func testCodemapStaleSnapshotsAreRemovedBeforeFreshScanCompletes() async throws {
         let root = try makeTemporaryRoot(name: "CheckoutRefreshCodemap")
         let file = root.appendingPathComponent("Sources/App.swift")
         try write("func branchBSymbol() {}\n", to: file)
 
-        let store = WorkspaceFileContextStore()
+        let store = makeStore()
         let record = try await store.loadRoot(path: root.path)
         let staleAPI = makeFileAPI(path: file.path, symbolName: "branchASymbol")
         await store.applyObservedCodemapResults([
@@ -26,7 +27,7 @@ final class WorkspaceCheckoutRefreshServiceTests: XCTestCase {
         let snapshotBeforeRefresh = await store.codemapSnapshot(rootID: record.id, relativePath: "Sources/App.swift")
         XCTAssertNotNil(snapshotBeforeRefresh)
 
-        let service = WorkspaceCheckoutRefreshService(store: store, searchService: WorkspaceSearchService())
+        let service = makeService(store: store, searchService: makeSearchService())
         let result = await service.refreshAfterCheckoutMutation(rootPath: root.path)
 
         let resolvedFileID = await storeFileID(in: record.id, relativePath: "Sources/App.swift", store: store)
@@ -46,16 +47,16 @@ final class WorkspaceCheckoutRefreshServiceTests: XCTestCase {
         let root = try makeTemporaryRoot(name: "CheckoutRefreshSearch")
         try write("let seed = true\n", to: root.appendingPathComponent("Seed.swift"))
 
-        let store = WorkspaceFileContextStore()
+        let store = makeStore()
         let record = try await store.loadRoot(path: root.path)
-        let searchService = WorkspaceSearchService()
+        let searchService = makeSearchService()
         let initialSnapshot = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
         await searchService.rebuildIndex(from: initialSnapshot)
 
         try write("let branchOnly = true\n", to: root.appendingPathComponent("Sources/BranchOnly.swift"))
         await store.replayObservedFileSystemDeltas(rootID: record.id, deltas: [.fileAdded("Sources/BranchOnly.swift")])
 
-        let service = WorkspaceCheckoutRefreshService(store: store, searchService: searchService)
+        let service = makeService(store: store, searchService: searchService)
         let result = await service.refreshAfterCheckoutMutation(rootPath: root.path)
         let expectedGeneration = await store.catalogGeneration(rootScope: .visibleWorkspace)
         let searchResult = await searchService.search("BranchOnly", limit: 10)
@@ -68,22 +69,26 @@ final class WorkspaceCheckoutRefreshServiceTests: XCTestCase {
         XCTAssertEqual(searchResult.results.map(\.standardizedRelativePath), ["Sources/BranchOnly.swift"])
     }
 
-    func testRefreshAfterCheckoutMutationReconcilesDiskChangesBeforeWarmingIndexes() async throws {
+    func testRefreshAfterCheckoutMutationUsesFreshCatalogBeforeWarmingIndexes() async throws {
         let root = try makeTemporaryRoot(name: "CheckoutRefreshDiskReconcile")
         let seed = root.appendingPathComponent("Sources/Seed.swift")
         let branchOnly = root.appendingPathComponent("Sources/BranchOnly.swift")
         try write("let seed = true\n", to: seed)
 
-        let store = WorkspaceFileContextStore()
-        _ = try await store.loadRoot(path: root.path)
-        let searchService = WorkspaceSearchService()
+        let store = makeStore()
+        let record = try await store.loadRoot(path: root.path)
+        let searchService = makeSearchService()
         let initialSnapshot = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
         await searchService.rebuildIndex(from: initialSnapshot)
 
         try FileManager.default.removeItem(at: seed)
         try write("let branchOnly = true\n", to: branchOnly)
+        await store.replayObservedFileSystemDeltas(rootID: record.id, deltas: [
+            .fileRemoved("Sources/Seed.swift"),
+            .fileAdded("Sources/BranchOnly.swift")
+        ])
 
-        let service = WorkspaceCheckoutRefreshService(store: store, searchService: searchService)
+        let service = makeService(store: store, searchService: searchService)
         let result = await service.refreshAfterCheckoutMutation(rootPath: root.path)
         let expectedGeneration = await store.catalogGeneration(rootScope: .visibleWorkspace)
         let branchLookup = await store.lookupPath("Sources/BranchOnly.swift", profile: .uiAssisted, rootScope: .visibleWorkspace)
@@ -106,14 +111,14 @@ final class WorkspaceCheckoutRefreshServiceTests: XCTestCase {
         try write("let baseOnly = true\n", to: visibleRoot.appendingPathComponent("Sources/BaseOnly.swift"))
         try write("let branchOnly = true\n", to: worktreeRoot.appendingPathComponent("Sources/BranchOnly.swift"))
 
-        let store = WorkspaceFileContextStore()
-        _ = try await store.loadRoot(path: visibleRoot.path)
-        _ = try await store.loadRoot(path: worktreeRoot.path, kind: .sessionWorktree)
-        let searchService = WorkspaceSearchService()
+        let store = makeStore()
+        let visibleRecord = try await store.loadRoot(path: visibleRoot.path)
+        let worktreeRecord = try await store.loadRoot(path: worktreeRoot.path, kind: .sessionWorktree)
+        let searchService = makeSearchService()
         let initialVisibleSnapshot = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
         let initialVisibleGeneration = await searchService.rebuildIndex(from: initialVisibleSnapshot)
 
-        let service = WorkspaceCheckoutRefreshService(store: store, searchService: searchService)
+        let service = makeService(store: store, searchService: searchService)
         let result = await service.refreshAfterCheckoutMutation(rootPath: worktreeRoot.path)
         let baseSearch = await searchService.search("BaseOnly", limit: 10)
         let branchSearch = await searchService.search("BranchOnly", limit: 10)
@@ -124,6 +129,30 @@ final class WorkspaceCheckoutRefreshServiceTests: XCTestCase {
         XCTAssertEqual(baseSearch.results.map(\.standardizedRelativePath), ["Sources/BaseOnly.swift"])
         XCTAssertEqual(branchSearch.indexedGeneration, initialVisibleGeneration)
         XCTAssertTrue(branchSearch.results.isEmpty)
+    }
+
+    private func makeStore() -> WorkspaceFileContextStore {
+        WorkspaceFileContextStore(unloadTerminationPolicy: WorkspaceRootUnloadTerminationPolicy(
+            publisherIngressGraceNanoseconds: 1,
+            watcherStopGraceNanoseconds: 1,
+            sleep: { _ in }
+        ))
+    }
+
+    private func makeSearchService() -> WorkspaceSearchService {
+        WorkspaceSearchService()
+    }
+
+    private func makeService(
+        store: WorkspaceFileContextStore,
+        searchService: WorkspaceSearchService
+    ) -> WorkspaceCheckoutRefreshService {
+        WorkspaceCheckoutRefreshService(
+            store: store,
+            searchService: searchService,
+            drainsPreReconcileIngress: false,
+            scheduleCodemapRescans: { _, _ in }
+        )
     }
 
     private func storeFileID(in rootID: UUID, relativePath: String, store: WorkspaceFileContextStore) async -> UUID? {
