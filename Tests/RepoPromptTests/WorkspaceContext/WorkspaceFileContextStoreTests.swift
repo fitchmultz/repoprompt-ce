@@ -6831,26 +6831,6 @@ final class WorkspaceFileContextStoreCoreTests: WorkspaceFileContextStoreTestCas
         try await runTestRootLoadIndexesFilesFoldersReadsContentAndLooksUpPaths()
     }
 
-    func testRepeatedPathLookupReusesStaticSnapshotForUnchangedCatalogGeneration() async throws {
-        try await runTestRepeatedPathLookupReusesStaticSnapshotForUnchangedCatalogGeneration()
-    }
-
-    func testExplicitRootRefsUseDistinctStaticSnapshotsAndDoNotPoisonCanonicalScope() async throws {
-        try await runTestExplicitRootRefsUseDistinctStaticSnapshotsAndDoNotPoisonCanonicalScope()
-    }
-
-    func testSessionBoundStaticSnapshotCacheUsesBoundedLRUEviction() async throws {
-        try await runTestSessionBoundStaticSnapshotCacheUsesBoundedLRUEviction()
-    }
-
-    func testStaticSnapshotLRUEvictionPreservesRetainedSearchCatalogGeneration() async throws {
-        try await runTestStaticSnapshotLRUEvictionPreservesRetainedSearchCatalogGeneration()
-    }
-
-    func testSessionBoundStaticSnapshotInvalidatesForMutationAndRootUnload() async throws {
-        try await runTestSessionBoundStaticSnapshotInvalidatesForMutationAndRootUnload()
-    }
-
     func testResolvedClipboardPackagingRendersStoreCodemaps() async throws {
         try await runTestResolvedClipboardPackagingRendersStoreCodemaps()
     }
@@ -7002,6 +6982,28 @@ final class WorkspaceFileContextStoreCoreTests: WorkspaceFileContextStoreTestCas
             await runTestWorkspaceIngressCoordinatorLateForcedDrainCannotCorruptReopenedSameRootState()
         }
     #endif
+}
+
+final class WorkspaceFileContextStorePathLookupTests: WorkspaceFileContextStoreTestCase {
+    func testRepeatedPathLookupReusesStaticSnapshotForUnchangedCatalogGeneration() async throws {
+        try await runTestRepeatedPathLookupReusesStaticSnapshotForUnchangedCatalogGeneration()
+    }
+
+    func testExplicitRootRefsUseDistinctStaticSnapshotsAndDoNotPoisonCanonicalScope() async throws {
+        try await runTestExplicitRootRefsUseDistinctStaticSnapshotsAndDoNotPoisonCanonicalScope()
+    }
+
+    func testSessionBoundStaticSnapshotCacheUsesBoundedLRUEviction() async throws {
+        try await runTestSessionBoundStaticSnapshotCacheUsesBoundedLRUEviction()
+    }
+
+    func testStaticSnapshotLRUEvictionPreservesRetainedSearchCatalogGeneration() async throws {
+        try await runTestStaticSnapshotLRUEvictionPreservesRetainedSearchCatalogGeneration()
+    }
+
+    func testSessionBoundStaticSnapshotInvalidatesForMutationAndRootUnload() async throws {
+        try await runTestSessionBoundStaticSnapshotInvalidatesForMutationAndRootUnload()
+    }
 }
 
 final class WorkspaceFileContextStoreIngressTests: WorkspaceFileContextStoreTestCase {
