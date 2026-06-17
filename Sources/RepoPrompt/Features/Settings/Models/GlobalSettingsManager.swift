@@ -283,8 +283,11 @@ struct GlobalDefaults: Codable {
     var discoverModelsByAgent: [String: String]?
     var discoveryTokenBudget: Int?
     var discoveryEnhancementMode: String?
-    /// Legacy preferred context-builder agent (seeds new workspaces).
+    /// Global Context Builder agent selection. Older builds used `discoverAgentRaw`; keep this separate
+    /// so chat/discover defaults cannot masquerade as Context Builder defaults.
     var contextBuilderAgentRaw: String?
+    /// Global Context Builder model selection for `contextBuilderAgentRaw`.
+    var contextBuilderModelRaw: String?
     /// Schema version for recommendations (used to clear mutes on new best practices)
     var recommendationSchemaVersion: Int?
     /// Schema version for discovery token budget (used to reset to new defaults)
@@ -1376,12 +1379,12 @@ class GlobalSettingsStore: ObservableObject {
     /// Startup restoration needs to distinguish a real saved value from the catalog's historical
     /// Claude Code / Opus default so it can validate availability and use recommendations instead.
     func persistedGlobalContextBuilderAgentSelection() -> (agentRaw: String?, modelRaw: String?) {
-        guard let agentRaw = globalDefaults.discoverAgentRaw?.trimmingCharacters(in: .whitespacesAndNewlines),
+        guard let agentRaw = globalDefaults.contextBuilderAgentRaw?.trimmingCharacters(in: .whitespacesAndNewlines),
               !agentRaw.isEmpty
         else {
             return (nil, nil)
         }
-        let modelRaw = globalDefaults.discoverModelsByAgent?[agentRaw]?
+        let modelRaw = globalDefaults.contextBuilderModelRaw?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return (agentRaw, modelRaw?.isEmpty == false ? modelRaw : nil)
     }
@@ -1484,6 +1487,12 @@ class GlobalSettingsStore: ObservableObject {
     func globalContextBuilderRememberedModelRaw(for agentRaw: String) -> String? {
         let trimmedAgentRaw = agentRaw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard AgentProviderKind(rawValue: trimmedAgentRaw) != nil else { return nil }
+        if globalDefaults.contextBuilderAgentRaw?.caseInsensitiveCompare(trimmedAgentRaw) == .orderedSame,
+           let raw = globalDefaults.contextBuilderModelRaw?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !raw.isEmpty
+        {
+            return raw
+        }
         guard let raw = globalDefaults.discoverModelsByAgent?[trimmedAgentRaw]?.trimmingCharacters(in: .whitespacesAndNewlines),
               !raw.isEmpty
         else {
@@ -1511,6 +1520,8 @@ class GlobalSettingsStore: ObservableObject {
         let oldSelection = globalContextBuilderAgentSelection()
         let agent = contextBuilderAgentKind(from: agentRaw)
         let persistedModelRaw = contextBuilderModelRawForPersistence(modelRaw, agent: agent)
+        globalDefaults.contextBuilderAgentRaw = agent.rawValue
+        globalDefaults.contextBuilderModelRaw = persistedModelRaw
         globalDefaults.discoverAgentRaw = agent.rawValue
         if globalDefaults.discoverModelsByAgent == nil {
             globalDefaults.discoverModelsByAgent = [:]
@@ -1550,18 +1561,21 @@ class GlobalSettingsStore: ObservableObject {
     ) {
         let oldSelection = globalContextBuilderAgentSelection()
         let agent = contextBuilderAgentKind(from: agentRaw)
+        globalDefaults.contextBuilderAgentRaw = agent.rawValue
         globalDefaults.discoverAgentRaw = agent.rawValue
 
         let trimmedModelRaw = modelRaw?.trimmingCharacters(in: .whitespacesAndNewlines)
         let newModelRaw: String?
         if let trimmedModelRaw, !trimmedModelRaw.isEmpty {
             let persistedModelRaw = contextBuilderModelRawForPersistence(trimmedModelRaw, agent: agent)
+            globalDefaults.contextBuilderModelRaw = persistedModelRaw
             if globalDefaults.discoverModelsByAgent == nil {
                 globalDefaults.discoverModelsByAgent = [:]
             }
             globalDefaults.discoverModelsByAgent?[agent.rawValue] = persistedModelRaw
             newModelRaw = persistedModelRaw
         } else {
+            globalDefaults.contextBuilderModelRaw = nil
             globalDefaults.discoverModelsByAgent?[agent.rawValue] = nil
             newModelRaw = nil
         }
@@ -1585,24 +1599,12 @@ class GlobalSettingsStore: ObservableObject {
         save()
     }
 
-    /// Returns whether the user has explicitly set the global Context Builder agent defaults.
+    /// Returns whether a context-builder-specific global default exists.
     /// Used by recommendation engine to determine if auto-apply should be allowed.
-    /// NOTE: For existing installs, `didUserSetDiscoverAgentDefaults` will be nil but
-    /// they may already have a configured selection. We treat nil + existing selection
-    /// as "user-defined" to avoid overwriting their settings via auto-apply.
     var hasUserSetGlobalContextBuilderAgentDefaults: Bool {
-        // Explicit true = definitely user-set
-        if globalDefaults.didUserSetDiscoverAgentDefaults == true {
-            return true
-        }
-        // nil (legacy) + existing selection = treat as user-set to be safe
-        if globalDefaults.didUserSetDiscoverAgentDefaults == nil,
-           globalDefaults.discoverAgentRaw != nil
-        {
-            return true
-        }
-        // false (seeded/new) or nil + no selection = not user-set
-        return false
+        // Only the context-builder-specific slot counts here. Legacy discover/chat defaults
+        // can be Claude/Opus and must not block Context Builder recommendations for new workspaces.
+        normalizedNonEmptyRaw(globalDefaults.contextBuilderAgentRaw) != nil
     }
 
     // MARK: - Helper Methods
@@ -1614,6 +1616,8 @@ class GlobalSettingsStore: ObservableObject {
         if let agent = agentRaw, let model = modelRaw {
             setGlobalContextBuilderAgentSelection(agentRaw: agent, modelRaw: model, markUserDefined: true)
         } else if let agent = agentRaw {
+            globalDefaults.contextBuilderAgentRaw = agent
+            globalDefaults.contextBuilderModelRaw = nil
             globalDefaults.discoverAgentRaw = agent
             save()
         }

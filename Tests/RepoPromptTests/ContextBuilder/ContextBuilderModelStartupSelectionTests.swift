@@ -47,11 +47,15 @@ final class ContextBuilderModelStartupSelectionTests: XCTestCase {
         )))
 
         let fixture = try makeStoreFixture()
-        fixture.store.setGlobalContextBuilderAgentSelection(
-            agentRaw: AgentProviderKind.claudeCode.rawValue,
-            modelRaw: AgentModel.claudeOpus.rawValue,
-            markUserDefined: true
-        )
+        try fixture.fileStore.save(GlobalSettingsDocument(
+            chatSettings: [:],
+            globalDefaults: GlobalDefaults(
+                discoverAgentRaw: AgentProviderKind.claudeCode.rawValue,
+                discoverModelsByAgent: [AgentProviderKind.claudeCode.rawValue: AgentModel.claudeOpus.rawValue],
+                didUserSetDiscoverAgentDefaults: true
+            )
+        ))
+        fixture.store.reloadFromDisk()
         let workspaceID = UUID()
         var settings = fixture.store.chatSettings(for: workspaceID)
         settings.contextBuilderAgentRaw = AgentProviderKind.pi.rawValue
@@ -200,7 +204,9 @@ final class ContextBuilderModelStartupSelectionTests: XCTestCase {
             discoverModelsByAgent: [
                 AgentProviderKind.claudeCode.rawValue: AgentModel.claudeOpus.rawValue,
                 AgentProviderKind.pi.rawValue: selectedModelRaw
-            ]
+            ],
+            contextBuilderAgentRaw: AgentProviderKind.claudeCode.rawValue,
+            contextBuilderModelRaw: AgentModel.claudeOpus.rawValue
         )
         globalDefaults.didUserSetDiscoverAgentDefaults = true
         globalDefaults.contextBuilderLegacyWorkspacePromotionVersion = 2
@@ -246,6 +252,26 @@ final class ContextBuilderModelStartupSelectionTests: XCTestCase {
         XCTAssertEqual(seededSettings.contextBuilderAgentModelRaw, modelRaw)
         XCTAssertEqual(seededSettings.lastUsedDiscoverAgentRaw, AgentProviderKind.pi.rawValue)
         XCTAssertEqual(seededSettings.lastUsedDiscoverModelsByAgent?[AgentProviderKind.pi.rawValue], modelRaw)
+    }
+
+    func testLegacyDiscoverClaudeOpusDoesNotSeedContextBuilderForNewWorkspace() throws {
+        let fixture = try makeStoreFixture()
+        try fixture.fileStore.save(GlobalSettingsDocument(
+            chatSettings: [:],
+            globalDefaults: GlobalDefaults(
+                discoverAgentRaw: AgentProviderKind.claudeCode.rawValue,
+                discoverModelsByAgent: [AgentProviderKind.claudeCode.rawValue: AgentModel.claudeOpus.rawValue],
+                didUserSetDiscoverAgentDefaults: true
+            )
+        ))
+        fixture.store.reloadFromDisk()
+
+        let settings = fixture.store.chatSettings(for: UUID())
+
+        XCTAssertNil(settings.contextBuilderAgentRaw)
+        XCTAssertNil(settings.contextBuilderAgentModelRaw)
+        XCTAssertNil(fixture.store.persistedGlobalContextBuilderAgentSelection().agentRaw)
+        XCTAssertFalse(fixture.store.hasUserSetGlobalContextBuilderAgentDefaults)
     }
 
     func testContextBuilderStartupSelectsReadyPiAheadOfOpenCodeAndCursor() throws {
@@ -512,6 +538,68 @@ final class ContextBuilderModelStartupSelectionTests: XCTestCase {
                 && composition.promptManager.contextBuilderAgentModelRaw == piModelRaw
         }
         XCTAssertTrue(promptSynced)
+    }
+
+    func testAutoSeededLegacyWorkspaceContextBuilderMismatchDoesNotShowDrift() async throws {
+        AgentPiModelRegistry.shared.test_reset()
+        addTeardownBlock { AgentPiModelRegistry.shared.test_reset() }
+        let settingsFixture = try makeStoreFixture()
+
+        let workspaceRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PromptPiContextBuilderNoDrift-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: workspaceRoot, withIntermediateDirectories: true)
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: workspaceRoot)
+        }
+
+        let piModelRaw = "openai-codex/gpt-5.5:medium"
+        XCTAssertTrue(AgentPiModelRegistry.shared.updateDiscoveredModels(
+            PiDiscoveredModels(
+                options: [AgentModelOption(rawValue: piModelRaw, displayName: "GPT 5.5 Medium", description: nil, isDefault: true)],
+                currentModelRaw: piModelRaw
+            ),
+            workspacePath: workspaceRoot.path
+        ))
+        settingsFixture.store.setGlobalContextBuilderAgentSelection(
+            agentRaw: AgentProviderKind.pi.rawValue,
+            modelRaw: piModelRaw,
+            markUserDefined: true
+        )
+
+        let composition = WindowStateCompositionFactory.make(
+            windowID: -815,
+            deferredInitialAgentSystemWorkspaceRefresh: true,
+            sharedMCPService: MCPService(),
+            settingsStore: settingsFixture.store,
+            contextBuilderPiModelPollingService: RecordingPiModelPollingService()
+        )
+        await composition.workspaceManager.awaitInitialized()
+        let workspace = composition.workspaceManager.createWorkspace(
+            name: "Prompt pi Context Builder auto seeded legacy",
+            repoPaths: [workspaceRoot.path],
+            ephemeral: true
+        )
+        _ = await composition.workspaceManager.switchWorkspace(
+            to: workspace,
+            saveState: false,
+            reason: "PromptPiContextBuilderNoDriftTest"
+        )
+
+        var workspaceSettings = settingsFixture.store.chatSettings(for: workspace.id)
+        workspaceSettings.contextBuilderAgentRaw = AgentProviderKind.claudeCode.rawValue
+        workspaceSettings.contextBuilderAgentModelRaw = AgentModel.claudeOpus.rawValue
+        workspaceSettings.didUserSetContextBuilderDefaults = false
+        settingsFixture.store.updateChatSettings(workspaceSettings, commit: true)
+
+        let viewModel = AgentModelsSettingsViewModel(
+            promptVM: composition.promptManager,
+            contextBuilderVM: composition.contextBuilderAgentViewModel,
+            apiSettingsVM: composition.apiSettingsViewModel,
+            settingsStore: settingsFixture.store
+        )
+        viewModel.refresh()
+
+        XCTAssertNil(viewModel.contextBuilderDrift)
     }
 
     func testUnavailablePersistedSelectionFallsBackToRecommendedAvailableProvider() throws {

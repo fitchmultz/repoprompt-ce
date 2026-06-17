@@ -760,6 +760,19 @@ enum AgentModelCatalog {
         if let discoveredModels {
             return discoveredModels.supportedThinkingLevels(for: specifier.providerQualifiedModelRaw)
         }
+        return fallbackPiThinkingLevelOptions(for: specifier.providerQualifiedModelRaw)
+    }
+
+    private static func fallbackPiThinkingLevelOptions(for rawModel: String) -> [PiThinkingLevel] {
+        let normalized = rawModel
+            .replacingOccurrences(of: "_", with: "-")
+            .lowercased()
+        if normalized.contains("gpt-5.5-pro") || normalized.contains("gpt-5-5-pro") {
+            return [.medium, .high, .xhigh]
+        }
+        if normalized.contains("gpt-5.5") || normalized.contains("gpt-5-5") {
+            return [.off, .low, .medium, .high, .xhigh]
+        }
         return PiThinkingLevel.standardModelOrder
     }
 

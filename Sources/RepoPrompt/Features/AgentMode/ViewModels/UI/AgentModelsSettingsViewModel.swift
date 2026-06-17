@@ -25,12 +25,11 @@ import SwiftUI
 final class AgentModelsSettingsViewModel: ObservableObject {
     // MARK: - Types
 
-    /// Drift between the global Context Builder configuration and legacy
-    /// workspace-scoped fields left behind by older builds.
+    /// Drift between the global Context Builder configuration and explicitly
+    /// user-set legacy workspace-scoped fields left behind by older builds.
     ///
-    /// The Agent Models page surfaces this as a small resolver when the two
-    /// disagree so a user can explicitly keep the global value or promote the
-    /// legacy workspace value.
+    /// The Agent Models page surfaces this as a small resolver only when the
+    /// workspace value was user-defined; auto-seeded legacy fields are ignored.
     struct ContextBuilderDrift: Equatable {
         let globalAgentRaw: String?
         let globalModelRaw: String?
@@ -441,9 +440,10 @@ final class AgentModelsSettingsViewModel: ObservableObject {
         let workspaceAgentRaw = settings.contextBuilderAgentRaw
         let workspaceModelRaw = settings.contextBuilderAgentModelRaw
 
-        // Drift is only meaningful when both scopes hold a value — otherwise
-        // the workspace is simply delegating to the global default.
-        guard let workspaceAgentRaw,
+        // Drift is only meaningful for user-defined legacy workspace values.
+        // Auto-seeded fields from old builds should not nag or override the global default.
+        guard settings.didUserSetContextBuilderDefaults == true,
+              let workspaceAgentRaw,
               let globalAgentRaw
         else {
             return nil

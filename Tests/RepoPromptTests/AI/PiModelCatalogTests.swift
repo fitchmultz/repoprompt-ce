@@ -62,6 +62,19 @@ final class PiModelCatalogTests: XCTestCase {
         XCTAssertFalse(AgentModelCatalog.isValid(rawModel: "missing/gpt-5.5:low", for: .pi, availability: availability))
     }
 
+    func testPiThinkingLevelOptionsUseKnownGpt55FallbackWithoutWorkspaceCatalog() {
+        AgentPiModelRegistry.shared.test_reset()
+
+        XCTAssertEqual(
+            AgentModelCatalog.piThinkingLevelOptions(for: "openai-codex/gpt-5.5", workspacePath: "/tmp/new-ai-workspace"),
+            [.off, .low, .medium, .high, .xhigh]
+        )
+        XCTAssertEqual(
+            AgentModelCatalog.piThinkingLevelOptions(for: "openai-codex/gpt-5.5-pro", workspacePath: "/tmp/new-ai-workspace"),
+            [.medium, .high, .xhigh]
+        )
+    }
+
     func testProviderlessNoSlashPiModelsAreNotExposedAsSelectableOptions() throws {
         let snapshot = AgentPiModelRegistry.discoveredModels(
             from: [
