@@ -72,7 +72,12 @@ TEST_TIMEOUT_SECONDS = 15 * 60
 MEDIUM_TIMEOUT_SECONDS = 60 * 60
 RELEASE_TIMEOUT_SECONDS = 2 * 60 * 60
 DEFAULT_XCTEST_STALL_SECONDS = 120.0
-ROOT_TEST_SILENT_STARTUP_RETRY_SECONDS = 90.0
+# Root tests must finish under 900s. Silent --skip-build startups are usually
+# wedged; retry quickly so one late shard does not burn the whole budget. The
+# no-skip-build fallback may legitimately spend longer in SwiftPM planning.
+ROOT_TEST_SKIP_BUILD_SILENT_STARTUP_SECONDS = 15.0
+ROOT_TEST_BUILD_RETRY_SILENT_STARTUP_SECONDS = 90.0
+ROOT_TEST_BATCH_SIZE = 8
 SMOKE_AGENT_WAIT_SECONDS = 120.0
 WORKSPACE_FILE_CONTEXT_STORE_TEST_SHARDS = [
     "WorkspaceFileContextStoreCoreTests",
@@ -3576,8 +3581,23 @@ def operation_workspace_file_context_store_tests(repo_root: Path) -> int:
     return 0
 
 
+def root_test_xctest_started(output: str) -> bool:
+    return (
+        "Test Suite '" in output
+        or "Test Case '-[" in output
+        or "◇ Test run started." in output
+    )
+
+
+def root_test_filter_for_suites(suites: Sequence[str]) -> str:
+    names = [suite.removeprefix("RepoPromptTests.") for suite in suites]
+    if len(names) == 1:
+        return suites[0]
+    return r"RepoPromptTests\.(" + "|".join(re.escape(name) for name in names) + ")"
+
+
 def operation_root_tests(repo_root: Path) -> int:
-    print("Running root tests one XCTest class per process", flush=True)
+    print(f"Running root tests in XCTest batches of up to {ROOT_TEST_BATCH_SIZE} suites", flush=True)
     list_argv = ["swift", "test", "list"]
     print("\n==> swift test list", flush=True)
     print(f"$ {format_argv(list_argv)}", flush=True)
@@ -3606,26 +3626,45 @@ def operation_root_tests(repo_root: Path) -> int:
         return 1
 
     checkout_suite = f"RepoPromptTests.{CHECKOUT_REFRESH_TEST_FILTER}"
-    ordered_suites = [suite for suite in suites if suite != checkout_suite]
+    regular_suites = [suite for suite in suites if suite != checkout_suite]
+    isolated_suites = [
+        suite
+        for suite in regular_suites
+        if suite.startswith("RepoPromptTests.WorkspaceFileContextStore")
+        or suite == "RepoPromptTests.PiNativeSessionControllerTests"
+    ]
+    batchable_suites = [suite for suite in regular_suites if suite not in isolated_suites]
+    suite_batches = [
+        batchable_suites[index : index + ROOT_TEST_BATCH_SIZE]
+        for index in range(0, len(batchable_suites), ROOT_TEST_BATCH_SIZE)
+    ]
+    suite_batches.extend([suite] for suite in isolated_suites)
     if checkout_suite in suites:
-        ordered_suites.append(checkout_suite)
+        suite_batches.append([checkout_suite])
 
-    for suite in ordered_suites:
+    for suite_batch in suite_batches:
+        suite_filter = root_test_filter_for_suites(suite_batch)
+        suite_label_name = suite_filter if len(suite_batch) == 1 else f"{suite_batch[0]}..{suite_batch[-1]}"
         suite_attempts = [
-            (f"swift test --skip-build --filter {suite}", ["swift", "test", "--skip-build", "--filter", suite]),
-            (f"swift test --filter {suite}", ["swift", "test", "--filter", suite]),
+            (f"swift test --skip-build --filter {suite_label_name}", ["swift", "test", "--skip-build", "--filter", suite_filter]),
+            (f"swift test --filter {suite_label_name}", ["swift", "test", "--filter", suite_filter]),
         ]
         for attempt, (suite_label, suite_argv) in enumerate(suite_attempts, start=1):
-            code, _stdout, _stderr, output_seen = run_operation_command_streaming_with_silent_startup_guard(
+            silent_startup_seconds = (
+                ROOT_TEST_SKIP_BUILD_SILENT_STARTUP_SECONDS
+                if attempt == 1
+                else ROOT_TEST_BUILD_RETRY_SILENT_STARTUP_SECONDS
+            )
+            code, stdout, _stderr, _output_seen = run_operation_command_streaming_with_silent_startup_guard(
                 suite_label,
                 suite_argv,
                 repo_root,
-                silent_startup_seconds=ROOT_TEST_SILENT_STARTUP_RETRY_SECONDS,
+                silent_startup_seconds=silent_startup_seconds,
                 start_new_session=True,
             )
-            if code == 124 and attempt == 1 and not output_seen:
+            if code == 124 and attempt == 1 and not root_test_xctest_started(stdout):
                 print(
-                    f"WARNING: {suite} produced no output for {ROOT_TEST_SILENT_STARTUP_RETRY_SECONDS:.0f}s; retrying once without --skip-build",
+                    f"WARNING: {suite_label_name} produced no XCTest output for {ROOT_TEST_SKIP_BUILD_SILENT_STARTUP_SECONDS:.0f}s; retrying once without --skip-build",
                     flush=True,
                 )
                 continue
