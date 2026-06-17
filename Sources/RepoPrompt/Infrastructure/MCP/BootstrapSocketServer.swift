@@ -23,7 +23,7 @@ import RepoPromptShared
 #endif
 
 // Note: MCPBootstrapRequest and MCPBootstrapResponse are defined in
-// RepoPrompt/Shared/MCPBootstrapMessages.swift for sharing with the CLI.
+// RepoPromptShared/MCP/MCPBootstrapMessages.swift for sharing with the CLI.
 
 // MARK: - Bootstrap Socket Server
 

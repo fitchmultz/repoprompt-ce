@@ -1,6 +1,7 @@
 import Foundation
 import MCP
 @testable import RepoPromptMCP
+import RepoPromptShared
 import XCTest
 
 #if DEBUG

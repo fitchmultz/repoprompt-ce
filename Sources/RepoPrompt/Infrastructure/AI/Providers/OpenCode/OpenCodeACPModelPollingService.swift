@@ -1,8 +1,6 @@
 import Foundation
 
-protocol OpenCodeACPModelDiscoveryClient: Sendable {
-    func discoverModels(workspacePath: String?) async throws -> ACPDiscoveredSessionModels?
-}
+protocol OpenCodeACPModelDiscoveryClient: ACPModelDiscoveryClient {}
 
 struct OpenCodeACPControllerModelDiscoveryClient: OpenCodeACPModelDiscoveryClient {
     typealias ProviderFactory = @Sendable (_ agent: AgentProviderKind, _ modelString: String?) -> (any ACPAgentProvider)?
@@ -76,33 +74,23 @@ actor OpenCodeACPModelPollingService {
         client: OpenCodeACPControllerModelDiscoveryClient()
     )
 
-    struct Snapshot: Equatable {
-        let models: ACPDiscoveredSessionModels
-        let fetchedAt: Date
-        let isLiveDiscovery: Bool
-    }
+    typealias Snapshot = ACPModelPollingSnapshot
 
-    private let client: any OpenCodeACPModelDiscoveryClient
-    private let intervalNanos: UInt64
-
-    private var pollingTask: Task<Void, Never>?
-    private var inFlightRefresh: Task<Bool, Never>?
-    private var continuations: [UUID: AsyncStream<Snapshot>.Continuation] = [:]
-    private var latest: Snapshot?
-    private var preferredWorkspacePath: String?
-    private var isShutdown = false
+    private let core: ACPModelPollingServiceCore
 
     init(
         client: any OpenCodeACPModelDiscoveryClient,
         intervalNanos: UInt64 = 300_000_000_000
     ) {
-        self.client = client
-        self.intervalNanos = intervalNanos
+        core = ACPModelPollingServiceCore(
+            client: client,
+            configuration: .openCode,
+            intervalNanos: intervalNanos
+        )
     }
 
     func latestSnapshot() async -> Snapshot? {
-        if let latest { return latest }
-        return await registrySnapshotAfterWarmingStore()
+        await core.latestSnapshot()
     }
 
     /// Force a foreground OpenCode ACP model discovery and return the normalized snapshot.
@@ -111,151 +99,19 @@ actor OpenCodeACPModelPollingService {
     /// `AgentACPModelRegistry` before the first agent session starts. Unlike the
     /// background polling loop, errors are surfaced to the caller for user-facing state.
     func discoverOnce(workspacePath: String?) async throws -> Snapshot? {
-        guard !isShutdown else { return nil }
-        preferredWorkspacePath = normalizedWorkspacePath(workspacePath)
-        if let existing = inFlightRefresh {
-            await existing.value
-            return await latestSnapshot()
-        }
-        guard let discovered = try await client.discoverModels(workspacePath: preferredWorkspacePath) else {
-            return nil
-        }
-        applyRefreshResult(discovered)
-        return await latestSnapshot()
+        try await core.discoverOnce(workspacePath: workspacePath)
     }
 
     func subscribe(workspacePath: String?) async -> AsyncStream<Snapshot> {
-        guard !isShutdown else {
-            return AsyncStream { continuation in
-                continuation.finish()
-            }
-        }
-
-        preferredWorkspacePath = normalizedWorkspacePath(workspacePath)
-        let id = UUID()
-        let (stream, continuation) = AsyncStream<Snapshot>.makeStream(bufferingPolicy: .bufferingNewest(1))
-        continuations[id] = continuation
-        continuation.onTermination = { [weak self] _ in
-            Task { await self?.removeSubscriber(id) }
-        }
-
-        if latest == nil, let cached = await registrySnapshotAfterWarmingStore() {
-            guard !isShutdown else {
-                continuation.finish()
-                return stream
-            }
-            if latest == nil {
-                latest = cached
-            }
-        }
-        if let latest {
-            continuation.yield(latest)
-        }
-
-        guard !isShutdown else { return stream }
-        startPollingIfNeeded()
-        return stream
+        await core.subscribe(workspacePath: workspacePath)
     }
 
     @discardableResult
     func refreshNow(workspacePath: String?) async -> Bool {
-        guard !isShutdown else { return false }
-        preferredWorkspacePath = normalizedWorkspacePath(workspacePath)
-        if let existing = inFlightRefresh {
-            return await existing.value
-        }
-        return await performRefresh()
+        await core.refreshNow(workspacePath: workspacePath)
     }
 
     func shutdown(finishSubscribers: Bool = true) async {
-        isShutdown = true
-        pollingTask?.cancel()
-        pollingTask = nil
-        inFlightRefresh?.cancel()
-        inFlightRefresh = nil
-        if finishSubscribers {
-            let activeContinuations = continuations
-            continuations.removeAll()
-            for continuation in activeContinuations.values {
-                continuation.finish()
-            }
-        }
-    }
-
-    private func startPollingIfNeeded() {
-        guard !isShutdown else { return }
-        guard pollingTask == nil else { return }
-        pollingTask = Task { [weak self] in
-            guard let self else { return }
-            while !Task.isCancelled {
-                _ = await performRefresh()
-                do {
-                    try await Task.sleep(nanoseconds: intervalNanos)
-                } catch {
-                    break
-                }
-            }
-        }
-    }
-
-    private func stopPollingIfIdle() {
-        guard continuations.isEmpty else { return }
-        pollingTask?.cancel()
-        pollingTask = nil
-    }
-
-    private func removeSubscriber(_ id: UUID) {
-        continuations.removeValue(forKey: id)
-        stopPollingIfIdle()
-    }
-
-    private func performRefresh() async -> Bool {
-        guard !isShutdown else { return false }
-        if let existing = inFlightRefresh {
-            return await existing.value
-        }
-
-        let workspacePath = preferredWorkspacePath
-        let task = Task<Bool, Never> { [weak self, workspacePath] in
-            guard let self else { return false }
-            do {
-                guard let discovered = try await client.discoverModels(workspacePath: workspacePath) else { return false }
-                guard !Task.isCancelled else { return false }
-                await applyRefreshResult(discovered)
-                return true
-            } catch {
-                // Keep the last registry/cache snapshot when preflight or ACP discovery fails.
-                return false
-            }
-        }
-        inFlightRefresh = task
-        defer { inFlightRefresh = nil }
-        return await task.value
-    }
-
-    private func applyRefreshResult(_ discovered: ACPDiscoveredSessionModels) {
-        guard !isShutdown else { return }
-        _ = AgentACPModelRegistry.shared.updateDiscoveredModels(discovered, for: .openCode)
-        guard let normalized = AgentACPModelRegistry.shared.resolvedSnapshot(for: .openCode) else { return }
-        let snapshot = Snapshot(models: normalized, fetchedAt: Date(), isLiveDiscovery: true)
-        guard latest?.models != snapshot.models || latest?.isLiveDiscovery == false else { return }
-        latest = snapshot
-        for continuation in continuations.values {
-            continuation.yield(snapshot)
-        }
-    }
-
-    private func registrySnapshotAfterWarmingStore() async -> Snapshot? {
-        guard let models = await AgentACPModelRegistry.shared.resolvedSnapshotAfterWarmingStandardStore(for: .openCode) else {
-            return nil
-        }
-        return Snapshot(models: models, fetchedAt: Date(), isLiveDiscovery: false)
-    }
-
-    private func normalizedWorkspacePath(_ path: String?) -> String? {
-        guard let trimmed = path?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
-            return nil
-        }
-        return URL(fileURLWithPath: trimmed).standardizedFileURL.path
+        await core.shutdown(finishSubscribers: finishSubscribers)
     }
 }

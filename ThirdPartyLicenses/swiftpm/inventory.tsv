@@ -3,7 +3,6 @@ eventsource	1.4.1	https://github.com/mattt/eventsource.git	eventsource/
 jsonschema	1.3.0	https://github.com/loopwork-ai/JSONSchema.git	jsonschema/
 keyboardshortcuts	2.3.0	https://github.com/sindresorhus/KeyboardShortcuts.git	keyboardshortcuts/
 neon	0.6.0	https://github.com/ChimeHQ/Neon.git	neon/
-networkimage	6.0.1	https://github.com/gonzalezreal/NetworkImage	networkimage/
 ontology	0.6.0	https://github.com/loopwork-ai/ontology.git	ontology/
 rearrange	1.8.1	https://github.com/ChimeHQ/Rearrange	rearrange/
 swift-algorithms	1.2.1	https://github.com/apple/swift-algorithms.git	swift-algorithms/
@@ -19,7 +18,6 @@ swift-http-structured-headers	1.7.0	https://github.com/apple/swift-http-structur
 swift-http-types	1.5.1	https://github.com/apple/swift-http-types.git	swift-http-types/
 swift-log	1.6.3	https://github.com/apple/swift-log.git	swift-log/
 swift-markdown	0.6.0	https://github.com/swiftlang/swift-markdown	swift-markdown/
-swift-markdown-ui	2.4.1	https://github.com/gonzalezreal/swift-markdown-ui	swift-markdown-ui/
 swift-nio	2.99.0	https://github.com/apple/swift-nio.git	swift-nio/
 swift-nio-extras	1.34.0	https://github.com/apple/swift-nio-extras.git	swift-nio-extras/
 swift-nio-http2	1.43.0	https://github.com/apple/swift-nio-http2.git	swift-nio-http2/
@@ -33,7 +31,6 @@ swift-system	1.6.4	https://github.com/apple/swift-system.git	swift-system/
 swiftanthropic	b7d030cd7453f314c780f5492385f73d704cbd5d	https://github.com/jamesrochabrun/SwiftAnthropic	swiftanthropic/
 swiftopenai	1211782eb337e7968124448a20d9260df1952012	https://github.com/provencher/SwiftOpenAI	swiftopenai/
 swifttreesitter	0.8.0	https://github.com/ChimeHQ/SwiftTreeSitter.git	../tree-sitter/README.md
-swiftyjson	5.0.2	https://github.com/SwiftyJSON/SwiftyJSON	swiftyjson/
 tree-sitter-c	3efee11f784605d44623d7dadd6cd12a0f73ea92	https://github.com/tree-sitter/tree-sitter-c	../tree-sitter/README.md
 tree-sitter-c-sharp	b27b091bfdc5f16d0ef76421ea5609c82a57dff0	https://github.com/tree-sitter/tree-sitter-c-sharp.git	../tree-sitter/README.md
 tree-sitter-cpp	e5cea0ec884c5c3d2d1e41a741a66ce13da4d945	https://github.com/tree-sitter/tree-sitter-cpp	../tree-sitter/README.md

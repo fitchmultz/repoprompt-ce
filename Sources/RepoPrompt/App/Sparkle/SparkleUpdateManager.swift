@@ -87,7 +87,7 @@ final class SparkleUpdaterManager: ObservableObject {
     private var pendingUserInitiatedPassiveVersion: String?
     private var userCheckResetWorkItem: DispatchWorkItem?
     private var passivelySuppressedUpdateVersion: String?
-    private let httpClient: HTTPClient = DefaultHTTPClient.uiCriticalClient
+    private let httpClient = DefaultHTTPClient.uiCriticalClient
 
     /// How often to check for updates (12 hours in seconds)
     private static let updateCheckInterval: TimeInterval = 12 * 60 * 60
@@ -270,11 +270,11 @@ final class SparkleUpdaterManager: ObservableObject {
         return request
     }
 
-    static func testFetchAndParseAppcastVersion(feedURL: URL, httpClient: HTTPClient) async -> String? {
+    static func testFetchAndParseAppcastVersion(feedURL: URL, httpClient: DefaultHTTPClient) async -> String? {
         await fetchAndParseAppcast(feedURL: feedURL, httpClient: httpClient)?.latestVersion
     }
 
-    private static func fetchAndParseAppcast(feedURL: URL, httpClient: HTTPClient) async -> AppcastUpdateInfo? {
+    private static func fetchAndParseAppcast(feedURL: URL, httpClient: DefaultHTTPClient) async -> AppcastUpdateInfo? {
         let request = makePassiveAppcastRequest(feedURL: feedURL)
 
         do {

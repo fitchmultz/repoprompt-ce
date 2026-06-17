@@ -5,12 +5,7 @@ struct HTTPResponse {
     let http: HTTPURLResponse
 }
 
-protocol HTTPClient: Sendable {
-    func data(for request: URLRequest) async throws -> HTTPResponse
-    func bytes(for request: URLRequest) async throws -> (bytes: URLSession.AsyncBytes, http: HTTPURLResponse)
-}
-
-final class DefaultHTTPClient: HTTPClient, @unchecked Sendable {
+final class DefaultHTTPClient: @unchecked Sendable {
     static let uiCriticalClient = DefaultHTTPClient(configuration: DefaultHTTPClient.makeConfiguration(requestTimeout: 15, resourceTimeout: 30))
     static let discoveryClient = DefaultHTTPClient(configuration: DefaultHTTPClient.makeConfiguration(requestTimeout: 15, resourceTimeout: 30))
     static let aiClient = DefaultHTTPClient(configuration: DefaultHTTPClient.makeConfiguration(requestTimeout: 120, resourceTimeout: 120))

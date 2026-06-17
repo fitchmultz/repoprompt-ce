@@ -70,8 +70,8 @@ class CustomOpenAIProvider: AIProvider, AIModelGetter {
     private let configuredMaxTokens: Int? // Store configured max tokens
     private let includeContentTypeHeader: Bool // Flag to include Content-Type header
     private let apiVersion: String?
-    private let httpClient: HTTPClient
-    private let streamingHttpClient: HTTPClient
+    private let httpClient: DefaultHTTPClient
+    private let streamingHttpClient: DefaultHTTPClient
 
     /// Shared response structures
     struct ModelsResponse: Codable {
@@ -177,8 +177,8 @@ class CustomOpenAIProvider: AIProvider, AIModelGetter {
         configuredMaxTokens: Int? = nil,
         includeContentTypeHeader: Bool = false,
         apiVersion: String? = nil,
-        httpClient: HTTPClient = DefaultHTTPClient.aiClient,
-        streamingHttpClient: HTTPClient = DefaultHTTPClient.aiStreamingClient
+        httpClient: DefaultHTTPClient = DefaultHTTPClient.aiClient,
+        streamingHttpClient: DefaultHTTPClient = DefaultHTTPClient.aiStreamingClient
     ) {
         self.baseURL = baseURL.hasSuffix("/") ? String(baseURL.dropLast()) : baseURL
         self.apiKey = apiKey

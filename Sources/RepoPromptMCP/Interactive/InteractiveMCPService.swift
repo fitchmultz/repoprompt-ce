@@ -8,6 +8,7 @@
 
 import Foundation
 import Logging
+import RepoPromptShared
 import ServiceLifecycle
 
 /// ServiceLifecycle service that runs interactive MCP mode.
