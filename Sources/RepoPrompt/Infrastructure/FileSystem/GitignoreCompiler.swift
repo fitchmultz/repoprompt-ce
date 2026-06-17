@@ -272,6 +272,10 @@ public struct CompiledIgnoreRules: Sendable {
 
     /// Returns `true` if `path` matches this pattern, respecting directory-only or absolute logic.
     private func matchOnePattern(path: String, components: [Substring], isDirectory: Bool, pat: GitPattern) -> Bool {
+        if let simpleMatch = matchSimplePattern(path: path, components: components, isDirectory: isDirectory, pat: pat) {
+            return simpleMatch
+        }
+
         // Directory-only patterns ----------------------------------------------
         if pat.directoryOnly {
             // Directory-only patterns match the directory itself and anything below it.
@@ -298,6 +302,26 @@ public struct CompiledIgnoreRules: Sendable {
             return true
         }
         return matchesScopedPattern(path: path, components: components, pattern: pat.pattern, absolute: pat.absolute)
+    }
+
+    private func matchSimplePattern(path: String, components: [Substring], isDirectory: Bool, pat: GitPattern) -> Bool? {
+        switch pat.prefilter {
+        case .always:
+            return nil
+        case let .basenameLiteral(name):
+            return components.contains { $0 == name }
+        case let .directoryBasenameLiteral(name):
+            let count = directoryCandidateComponentCount(components: components, isDirectory: isDirectory)
+            guard count > 0 else { return false }
+            return components.prefix(count).contains { $0 == name }
+        case let .anchoredLiteralPath(literalPath):
+            return path == literalPath
+        case let .anchoredDirectoryPrefix(directoryPath):
+            guard !directoryPath.isEmpty else { return true }
+            return path == directoryPath || path.hasPrefix(directoryPath + "/")
+        case let .basenameSuffix(suffix):
+            return components.contains { $0.hasSuffix(suffix) }
+        }
     }
 
     private func prefilterMayMatch(
@@ -473,8 +497,8 @@ public enum GitignoreCompiler {
             if starCount == 1,
                !containsSlash,
                !directoryOnly,
-               pattern.hasPrefix("*."),
-               pattern.count > 2
+               pattern.hasPrefix("*"),
+               pattern.count > 1
             {
                 return .basenameSuffix(String(pattern.dropFirst()))
             }

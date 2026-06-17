@@ -246,6 +246,39 @@ final class WorkspaceSearchServiceTests: XCTestCase {
         XCTAssertEqual(result.results.map(\.standardizedRelativePath), ["MissedBeforeSubscribe.swift"])
     }
 
+    func testStartKeepingFreshDoesNotMutateWhenCallerIsCancelled() async throws {
+        let root = try makeTemporaryRoot(name: "CancelledFreshnessStart")
+        try write("alpha", to: root.appendingPathComponent("Alpha.swift"))
+
+        let store = WorkspaceFileContextStore()
+        let record = try await store.loadRoot(path: root.path)
+        let service = WorkspaceSearchService()
+
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            await service.startKeepingFresh(with: store, debounceNanoseconds: 0)
+        }
+        await task.value
+
+        var observedGeneration = await service.observedCatalogGeneration
+        var pendingGeneration = await service.pendingGeneration
+        var indexedGeneration = await service.indexedGeneration
+        XCTAssertNil(observedGeneration)
+        XCTAssertNil(pendingGeneration)
+        XCTAssertNil(indexedGeneration)
+
+        try write("beta", to: root.appendingPathComponent("BetaAdded.swift"))
+        await store.replayObservedFileSystemDeltas(rootID: record.id, deltas: [.fileAdded("BetaAdded.swift")])
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        observedGeneration = await service.observedCatalogGeneration
+        pendingGeneration = await service.pendingGeneration
+        indexedGeneration = await service.indexedGeneration
+        XCTAssertNil(observedGeneration)
+        XCTAssertNil(pendingGeneration)
+        XCTAssertNil(indexedGeneration)
+    }
+
     func testWorkspaceSearchServiceDoesNotCancelActiveRebuildForSameGenerationEvent() async throws {
         let root = try makeTemporaryRoot(name: "LiveSameGenerationEvent")
         try write("alpha", to: root.appendingPathComponent("Alpha.swift"))

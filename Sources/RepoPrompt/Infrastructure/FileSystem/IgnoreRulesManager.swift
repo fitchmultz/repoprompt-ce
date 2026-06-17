@@ -12,47 +12,76 @@ import Foundation
 enum IgnoreSettingsDefaults {
     static let globalIgnoreDefaultsKey = "globalIgnoreDefaults"
     static let globalIgnoreDefaultsVersionKey = "globalIgnoreDefaultsVersion"
-    /// Bump when we add new "required by default" patterns.
-    static let currentGlobalIgnoreDefaultsVersion = 2
+    /// Bump when we change the canonical built-in defaults.
+    static let currentGlobalIgnoreDefaultsVersion = 3
 
     /// Canonical default patterns (do NOT include `.git`; that is always ignored separately).
     /// These mirror our "big dirs" heuristic plus a few common temp files.
     static let canonicalGlobalIgnoreDefaults: String = """
     # RepoPrompt global ignore defaults (v\(currentGlobalIgnoreDefaultsVersion))
-    **/node_modules/
-    **/.npm/
-    **/.pnpm-store/
-    **/.yarn/
-    **/.cache/
-    **/bower_components/
+    node_modules/
+    .npm/
+    .pnpm-store/
+    .yarn/
+    .cache/
+    bower_components/
 
-    **/__pycache__/
-    **/.pytest_cache/
-    **/.mypy_cache/
+    __pycache__/
+    .pytest_cache/
+    .mypy_cache/
 
-    **/.gradle/
-    **/.m2/
-    **/.nuget/
-    **/.cargo/
-    **/.stack-work/
-    **/.ccache/
+    .gradle/
+    .m2/
+    .nuget/
+    .cargo/
+    .stack-work/
+    .ccache/
 
-    **/.idea/
-    **/.vscode/
-    **/.bundle/
-    **/.gem/
+    .idea/
+    .vscode/
+    .bundle/
+    .gem/
 
     # Virtual environments
-    **/.venv/
-    **/venv/
+    .venv/
+    venv/
 
     # Common temp/junk files
-    **/*.swp
-    **/*~
-    **/*.tmp
-    **/*.temp
-    **/*.bak
+    *.swp
+    *~
+    *.tmp
+    *.temp
+    *.bak
     """
+
+    private static let legacyGlobalIgnoreDefaultRewrites: [String: String] = [
+        "**/node_modules/": "node_modules/",
+        "**/.npm/": ".npm/",
+        "**/.pnpm-store/": ".pnpm-store/",
+        "**/.yarn/": ".yarn/",
+        "**/.cache/": ".cache/",
+        "**/bower_components/": "bower_components/",
+        "**/__pycache__/": "__pycache__/",
+        "**/.pytest_cache/": ".pytest_cache/",
+        "**/.mypy_cache/": ".mypy_cache/",
+        "**/.gradle/": ".gradle/",
+        "**/.m2/": ".m2/",
+        "**/.nuget/": ".nuget/",
+        "**/.cargo/": ".cargo/",
+        "**/.stack-work/": ".stack-work/",
+        "**/.ccache/": ".ccache/",
+        "**/.idea/": ".idea/",
+        "**/.vscode/": ".vscode/",
+        "**/.bundle/": ".bundle/",
+        "**/.gem/": ".gem/",
+        "**/.venv/": ".venv/",
+        "**/venv/": "venv/",
+        "**/*.swp": "*.swp",
+        "**/*~": "*~",
+        "**/*.tmp": "*.tmp",
+        "**/*.temp": "*.temp",
+        "**/*.bak": "*.bak"
+    ]
 
     static func resolvedGlobalIgnoreDefaults(defaults: UserDefaults = .standard) -> String {
         let storedObject = defaults.object(forKey: globalIgnoreDefaultsKey)
@@ -75,22 +104,45 @@ enum IgnoreSettingsDefaults {
             return canonicalGlobalIgnoreDefaults
         }
 
-        let have = normalizedPatterns(stored)
-        let required = normalizedPatterns(canonicalGlobalIgnoreDefaults)
-        let missing = required.subtracting(have)
-
-        guard !missing.isEmpty else {
-            defaults.set(currentGlobalIgnoreDefaultsVersion, forKey: globalIgnoreDefaultsVersionKey)
-            return stored
-        }
-
-        let upgraded = stored.trimmingCharacters(in: .whitespacesAndNewlines)
-            + "\n\n# (Auto-upgraded to v\(currentGlobalIgnoreDefaultsVersion))\n"
-            + missing.sorted().joined(separator: "\n")
-            + "\n"
+        let upgraded = migrateLegacyGlobalIgnoreDefaults(stored)
         defaults.set(upgraded, forKey: globalIgnoreDefaultsKey)
         defaults.set(currentGlobalIgnoreDefaultsVersion, forKey: globalIgnoreDefaultsVersionKey)
         return upgraded
+    }
+
+    private static func migrateLegacyGlobalIgnoreDefaults(_ text: String) -> String {
+        let canonicalPatterns = normalizedPatterns(canonicalGlobalIgnoreDefaults)
+        var seenCanonicalPatterns = Set<String>()
+        var output: [String] = []
+
+        for line in text.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed == "# RepoPrompt global ignore defaults (v2)" {
+                output.append("# RepoPrompt global ignore defaults (v\(currentGlobalIgnoreDefaultsVersion))")
+                continue
+            }
+            guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else {
+                output.append(line)
+                continue
+            }
+
+            let migratedPattern = legacyGlobalIgnoreDefaultRewrites[trimmed] ?? trimmed
+            if canonicalPatterns.contains(migratedPattern) {
+                guard seenCanonicalPatterns.insert(migratedPattern).inserted else { continue }
+            }
+
+            if migratedPattern == trimmed {
+                output.append(line)
+            } else {
+                output.append(leadingWhitespace(in: line) + migratedPattern)
+            }
+        }
+
+        return output.joined(separator: "\n")
+    }
+
+    private static func leadingWhitespace(in line: String) -> String {
+        String(line.prefix { $0 == " " || $0 == "\t" })
     }
 
     private static func normalizedPatterns(_ text: String) -> Set<String> {

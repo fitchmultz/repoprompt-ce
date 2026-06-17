@@ -146,9 +146,18 @@ actor WorkspaceSearchService {
         rootScope: WorkspaceLookupRootScope = .visibleWorkspace,
         debounceNanoseconds: UInt64 = 50_000_000
     ) async {
+        guard !Task.isCancelled else { return }
         appliedIndexListenerTask?.cancel()
+        appliedIndexListenerTask = nil
+
+        guard !Task.isCancelled else { return }
         let stream = await store.appliedIndexEvents()
-        appliedIndexListenerTask = Task { [weak self, store] in
+        guard !Task.isCancelled else { return }
+
+        let catalogGeneration = await store.catalogGeneration(rootScope: rootScope)
+        guard !Task.isCancelled else { return }
+
+        let listenerTask = Task { [weak self, store] in
             for await event in stream {
                 await self?.handleAppliedIndexEvent(
                     event,
@@ -158,8 +167,12 @@ actor WorkspaceSearchService {
                 )
             }
         }
+        guard !Task.isCancelled else {
+            listenerTask.cancel()
+            return
+        }
+        appliedIndexListenerTask = listenerTask
 
-        let catalogGeneration = await store.catalogGeneration(rootScope: rootScope)
         latestObservedCatalogGeneration = catalogGeneration
         if catalogGeneration != currentIndexedGeneration,
            catalogGeneration != pendingRebuildGeneration,

@@ -357,6 +357,73 @@ final class WorkspaceSwitchRecoveryTests: XCTestCase {
         XCTAssertFalse(manager.isSwitchingWorkspace)
     }
 
+    func testSwitchReturnsBeforeWorkspaceSearchIndexBuildCompletes() async throws {
+        let root = try makeTemporaryDirectory(named: "DeferredSearchReadiness")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try "let deferredSearch = true\n".write(
+            to: root.appendingPathComponent("Deferred.swift"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let store = WorkspaceFileContextStore()
+        let composition = makeComposition(store: store)
+        let manager = composition.workspaceManager
+        await manager.awaitInitialized()
+        let searchBuildGate = WorkspaceSwitchRecoveryGate()
+        var recoveryStarted = false
+        manager.setWorkspaceSearchIndexBuildWillStartHandlerForTesting { _, _ in
+            await searchBuildGate.arriveAndWait()
+        }
+        manager.setWorkspaceSwitchRecoveryWillBeginHandlerForTesting {
+            recoveryStarted = true
+        }
+
+        let target = manager.createWorkspace(
+            name: "Deferred Search Target \(UUID().uuidString.prefix(8))",
+            repoPaths: [root.path],
+            ephemeral: true
+        )
+        let result = await manager.switchWorkspace(
+            to: target,
+            saveState: false,
+            reason: "deferredSearchReadiness"
+        )
+
+        XCTAssertEqual(result, .switched)
+        XCTAssertEqual(manager.activeWorkspaceID, target.id)
+        XCTAssertFalse(manager.isSwitchingWorkspace)
+        XCTAssertNil(manager.activeWorkspaceSwitch)
+        guard case let .buildingIndexes(workspaceID, _, _, _) = manager.workspaceSearchReadinessState else {
+            return XCTFail("Expected search readiness to remain building while background index is gated")
+        }
+        XCTAssertEqual(workspaceID, target.id)
+        do {
+            _ = try await StoreBackedWorkspaceSearch.search(
+                pattern: "Deferred",
+                store: store,
+                workspaceManager: manager
+            )
+            XCTFail("Expected file_search to report loading while background indexing is gated")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("Workspace search is still loading"))
+        }
+        XCTAssertFalse(recoveryStarted)
+
+        await searchBuildGate.release()
+        try await waitUntil {
+            switch manager.workspaceSearchReadinessState {
+            case let .ready(workspaceID, _, _, _, _), let .degraded(workspaceID, _, _, _, _, _):
+                workspaceID == target.id
+            default:
+                false
+            }
+        }
+        XCTAssertFalse(recoveryStarted)
+        manager.setWorkspaceSearchIndexBuildWillStartHandlerForTesting(nil)
+        manager.setWorkspaceSwitchRecoveryWillBeginHandlerForTesting(nil)
+    }
+
     func testCancellationAfterUnloadRetainsOwnershipUntilFallbackRecoveryCompletes() async throws {
         let root = try makeTemporaryDirectory(named: "OwnedFallbackRecovery")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -892,6 +959,12 @@ final class WorkspaceSwitchRecoveryTests: XCTestCase {
 
         let result = await manager.switchWorkspace(to: target, saveState: false)
         XCTAssertTrue(result.didSwitch)
+        try await waitUntil {
+            if case let .degraded(workspaceID, _, _, _, failures, _) = manager.workspaceSearchReadinessState {
+                return workspaceID == target.id && failures.count == 1
+            }
+            return false
+        }
         guard case let .degraded(workspaceID, _, _, _, failures, _) = manager.workspaceSearchReadinessState else {
             return XCTFail("Expected watcher activation failure to degrade workspace readiness")
         }
@@ -1268,6 +1341,7 @@ private actor WorkspaceSwitchManualSleeper {
 
 private actor WorkspaceSwitchRecoveryGate {
     private var arrived = false
+    private var released = false
     private var completed = false
     private var releaseContinuation: CheckedContinuation<Void, Never>?
     private var arrivalContinuations: [CheckedContinuation<Void, Never>] = []
@@ -1278,6 +1352,13 @@ private actor WorkspaceSwitchRecoveryGate {
         let continuations = arrivalContinuations
         arrivalContinuations.removeAll()
         continuations.forEach { $0.resume() }
+        guard !released else {
+            completed = true
+            let completionWaiters = completionContinuations
+            completionContinuations.removeAll()
+            completionWaiters.forEach { $0.resume() }
+            return
+        }
         await withCheckedContinuation { continuation in
             releaseContinuation = continuation
         }
@@ -1302,6 +1383,7 @@ private actor WorkspaceSwitchRecoveryGate {
     }
 
     func release() {
+        released = true
         releaseContinuation?.resume()
         releaseContinuation = nil
     }

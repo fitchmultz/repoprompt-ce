@@ -34,6 +34,42 @@ final class FileSystemServiceIgnoreRecoveryTests: XCTestCase {
         XCTAssertFalse(paths.contains("cursor-blocked.txt"), ".cursorignore should hide its positive match.")
     }
 
+    func testLargeRootStyleDefaultIgnoresPruneHeavySubtreesWithFewPatternAttempts() async throws {
+        IgnoreDebugMetricsRecorder.setRecordingEnabledForTesting(true)
+        defer { IgnoreDebugMetricsRecorder.resetRecordingEnabledForTesting() }
+
+        let root = try temporaryRoots.makeRoot(suiteName: "FileSystemServiceIgnoreRecovery")
+        for index in 0 ..< 12 {
+            let project = root.appendingPathComponent("project-\(index)", isDirectory: true)
+            try FileSystemTestSupport.write("visible", to: project.appendingPathComponent("src/file-\(index).swift"))
+            try FileSystemTestSupport.write("ignored", to: project.appendingPathComponent("node_modules/dep/deep/file.js"))
+            try FileSystemTestSupport.write("ignored", to: project.appendingPathComponent(".venv/lib/site.py"))
+            try FileSystemTestSupport.write("ignored", to: project.appendingPathComponent(".cache/blob.bin"))
+            try FileSystemTestSupport.write("ignored", to: project.appendingPathComponent("scratch.tmp"))
+        }
+
+        let service = try await FileSystemService(
+            path: root.path,
+            respectGitignore: false,
+            respectRepoIgnore: false,
+            respectCursorignore: false,
+            skipSymlinks: true
+        )
+        IgnoreDebugMetricsRecorder.reset()
+
+        let paths = try await FileSystemTestSupport.collectRelativePaths(from: service, root: root)
+        let metrics = IgnoreDebugMetricsRecorder.snapshot()
+
+        XCTAssertTrue(paths.contains("project-0/src/file-0.swift"))
+        XCTAssertFalse(paths.contains { $0.contains("node_modules") })
+        XCTAssertFalse(paths.contains { $0.contains(".venv") })
+        XCTAssertFalse(paths.contains { $0.contains(".cache") })
+        XCTAssertFalse(paths.contains { $0.hasSuffix(".tmp") })
+        XCTAssertGreaterThan(metrics.outcomeEvaluationCount, 0)
+        XCTAssertLessThan(metrics.patternMatchAttemptCount, metrics.outcomeEvaluationCount)
+        XCTAssertLessThanOrEqual(metrics.maxPatternAttemptsPerOutcome, 1)
+    }
+
     func testLoadContentsSkipsDirectorySymlinksWhenConfigured() async throws {
         let root = try temporaryRoots.makeRoot(suiteName: "FileSystemServiceIgnoreRecovery")
         let real = root.appendingPathComponent("real", isDirectory: true)
