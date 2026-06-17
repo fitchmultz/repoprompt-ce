@@ -60,18 +60,35 @@ enum StoreBackedWorkspaceSearch {
         workspaceManager: WorkspaceManagerViewModel?
     ) async throws -> SearchResults {
         try Task.checkCancellation()
-        try await ensureRootScopeAvailable(rootScope, store: store)
-        try await ensureSearchReady(store: store, workspaceManager: workspaceManager)
-
         let effectiveMode = mode == .auto ? FileSearchActor.inferredAutoMode(pattern) : mode
+        if let indexedPathResults = await indexedPathSearchResultsIfAvailable(
+            pattern: pattern,
+            effectiveMode: effectiveMode,
+            isRegex: isRegex,
+            caseInsensitive: caseInsensitive,
+            maxPaths: maxPaths,
+            paths: paths,
+            includeExtensions: includeExtensions,
+            excludePatterns: excludePatterns,
+            contextLines: contextLines,
+            wholeWord: wholeWord,
+            countOnly: countOnly,
+            rootScope: rootScope,
+            store: store,
+            workspaceManager: workspaceManager
+        ) {
+            return indexedPathResults
+        }
+        try await ensureSearchReady(store: store, workspaceManager: workspaceManager)
+        try await ensureRootScopeAvailable(rootScope, store: store)
         let admissionClass = broadSearchAdmissionClass(pattern: pattern, mode: mode, paths: paths)
         return try await store.withStoreBackedSearchAccess(
             searchMode: effectiveMode,
             admissionClass: admissionClass
         ) { fileSearchActor in
             if admissionClass != nil {
-                try await ensureRootScopeAvailable(rootScope, store: store)
                 try await ensureSearchReady(store: store, workspaceManager: workspaceManager)
+                try await ensureRootScopeAvailable(rootScope, store: store)
             }
 
             var parsedSearchScope: SearchScopeParseResult? = if let rawPaths = paths, !rawPaths.isEmpty {
@@ -89,41 +106,47 @@ enum StoreBackedWorkspaceSearch {
             } else {
                 await store.rootRefs(scope: rootScope)
             }
-            #if DEBUG
-                let freshnessWaitTimeout = freshnessWaitTimeoutOverrideForTesting
-                    ?? MCPTimeoutPolicy.workspaceFreshnessWaitTimeout
-            #else
-                let freshnessWaitTimeout = MCPTimeoutPolicy.workspaceFreshnessWaitTimeout
-            #endif
-            let ingressFreshnessState = EditFlowPerf.begin(EditFlowPerf.Stage.Search.ingressFreshnessWait)
-            let appliedIngressSamples: [WorkspaceIngressBarrierSample]
-            do {
-                appliedIngressSamples = try await awaitAppliedIngress(
-                    rootRefs: freshnessRootRefs,
-                    store: store,
-                    timeout: freshnessWaitTimeout
-                )
-            } catch {
+            let requiresIngressFreshness = effectiveMode == .content || effectiveMode == .both
+            let contentFreshnessPolicy: FileContentFreshnessPolicy
+            if requiresIngressFreshness {
+                #if DEBUG
+                    let freshnessWaitTimeout = freshnessWaitTimeoutOverrideForTesting
+                        ?? MCPTimeoutPolicy.workspaceFreshnessWaitTimeout
+                #else
+                    let freshnessWaitTimeout = MCPTimeoutPolicy.workspaceFreshnessWaitTimeout
+                #endif
+                let ingressFreshnessState = EditFlowPerf.begin(EditFlowPerf.Stage.Search.ingressFreshnessWait)
+                let appliedIngressSamples: [WorkspaceIngressBarrierSample]
+                do {
+                    appliedIngressSamples = try await awaitAppliedIngress(
+                        rootRefs: freshnessRootRefs,
+                        store: store,
+                        timeout: freshnessWaitTimeout
+                    )
+                } catch {
+                    EditFlowPerf.end(EditFlowPerf.Stage.Search.ingressFreshnessWait, ingressFreshnessState)
+                    throw error
+                }
                 EditFlowPerf.end(EditFlowPerf.Stage.Search.ingressFreshnessWait, ingressFreshnessState)
-                throw error
-            }
-            EditFlowPerf.end(EditFlowPerf.Stage.Search.ingressFreshnessWait, ingressFreshnessState)
-            try Task.checkCancellation()
-            let contentFreshnessPolicy = await store.contentSearchFreshnessPolicy(
-                rootRefs: freshnessRootRefs,
-                appliedIngressSamples: appliedIngressSamples
-            )
-            try Task.checkCancellation()
-            if let parsed = parsedSearchScope {
-                // Exact paths can change kind or disappear while the freshness barrier applies
-                // pending ingress. Refresh only their root-local catalog records; wildcard,
-                // unresolved, and ambiguous clauses retain their initial conservative semantics.
-                parsedSearchScope = await refreshExactSearchScopeClauses(
-                    parsed,
-                    store: store
+                try Task.checkCancellation()
+                contentFreshnessPolicy = await store.contentSearchFreshnessPolicy(
+                    rootRefs: freshnessRootRefs,
+                    appliedIngressSamples: appliedIngressSamples
                 )
+                try Task.checkCancellation()
+                if let parsed = parsedSearchScope {
+                    // Exact paths can change kind or disappear while the freshness barrier applies
+                    // pending ingress. Refresh only their root-local catalog records; wildcard,
+                    // unresolved, and ambiguous clauses retain their initial conservative semantics.
+                    parsedSearchScope = await refreshExactSearchScopeClauses(
+                        parsed,
+                        store: store
+                    )
+                }
+                try Task.checkCancellation()
+            } else {
+                contentFreshnessPolicy = .cachedMetadata
             }
-            try Task.checkCancellation()
 
             return try await performSearch(
                 pattern: pattern,
@@ -150,6 +173,101 @@ enum StoreBackedWorkspaceSearch {
             )
         }
     }
+
+    private static func indexedPathSearchResultsIfAvailable(
+        pattern: String,
+        effectiveMode: SearchMode,
+        isRegex: Bool,
+        caseInsensitive: Bool,
+        maxPaths: Int,
+        paths: [String]?,
+        includeExtensions: [String],
+        excludePatterns: [String],
+        contextLines: Int,
+        wholeWord: Bool,
+        countOnly: Bool,
+        rootScope: WorkspaceLookupRootScope,
+        store: WorkspaceFileContextStore,
+        workspaceManager: WorkspaceManagerViewModel?
+    ) async -> SearchResults? {
+        guard effectiveMode == .path,
+              !isRegex,
+              caseInsensitive,
+              maxPaths > 0,
+              paths?.isEmpty != false,
+              includeExtensions.isEmpty,
+              excludePatterns.isEmpty,
+              contextLines == 0,
+              !wholeWord,
+              !countOnly,
+              rootScope == .visibleWorkspace,
+              let workspaceManager
+        else { return nil }
+
+        let readinessState = await MainActor.run { workspaceManager.workspaceSearchReadinessState }
+        switch readinessState {
+        case .ready, .degraded:
+            break
+        case .idle, .activating, .loadingCatalog, .buildingIndexes:
+            return nil
+        }
+        guard !containsPathPatternWildcard(pattern) else { return nil }
+        let searchService = await MainActor.run { workspaceManager.workspaceSearchService }
+        let queryResult = await searchService.search(pattern, limit: maxPaths)
+        guard await indexedPathQueryResultIsCurrent(queryResult, store: store) else { return nil }
+        let visibleResults = queryResult.results.filter {
+            visibleMCPPathCandidateMatches($0, pattern: pattern, caseInsensitive: caseInsensitive)
+        }
+        guard visibleResults.count == queryResult.results.count else { return nil }
+        let diagnostics = await searchService.diagnostics
+        return SearchResults(
+            paths: visibleResults.map(\.standardizedFullPath),
+            searchedFileCount: diagnostics?.fileCount,
+            scopedFileCount: diagnostics?.fileCount
+        )
+    }
+
+    private static func containsPathPatternWildcard(_ pattern: String) -> Bool {
+        pattern.contains("*") || pattern.contains("?") || pattern.contains("[")
+    }
+
+    private static func indexedPathQueryResultIsCurrent(
+        _ queryResult: WorkspaceSearchQueryResult,
+        store: WorkspaceFileContextStore
+    ) async -> Bool {
+        guard queryResult.isIndexReady, !queryResult.isStale else { return false }
+        let currentGeneration = await store.catalogGeneration(rootScope: .visibleWorkspace)
+        return queryResult.indexedGeneration == currentGeneration
+            && queryResult.snapshotGeneration == currentGeneration
+    }
+
+    private static func visibleMCPPathCandidateMatches(
+        _ entry: WorkspaceSearchCatalogEntry,
+        pattern: String,
+        caseInsensitive: Bool
+    ) -> Bool {
+        let trimmed = pattern.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return true }
+        let options: String.CompareOptions = caseInsensitive ? [.caseInsensitive] : []
+        return entry.standardizedRelativePath.range(of: trimmed, options: options) != nil
+    }
+
+    #if DEBUG
+        static func visibleMCPPathCandidateMatchesForTesting(
+            _ entry: WorkspaceSearchCatalogEntry,
+            pattern: String,
+            caseInsensitive: Bool
+        ) -> Bool {
+            visibleMCPPathCandidateMatches(entry, pattern: pattern, caseInsensitive: caseInsensitive)
+        }
+
+        static func indexedPathQueryResultIsCurrentForTesting(
+            _ queryResult: WorkspaceSearchQueryResult,
+            store: WorkspaceFileContextStore
+        ) async -> Bool {
+            await indexedPathQueryResultIsCurrent(queryResult, store: store)
+        }
+    #endif
 
     static func requiresBroadSearchAdmission(
         pattern: String,
@@ -395,24 +513,23 @@ enum StoreBackedWorkspaceSearch {
         store: WorkspaceFileContextStore,
         workspaceManager: WorkspaceManagerViewModel?
     ) async throws {
+        if let workspaceManager {
+            // This state covers the activated workspace catalog. Check it before touching the
+            // store actor so searches fail fast while the background readiness build is busy.
+            let state = await MainActor.run { workspaceManager.workspaceSearchReadinessState }
+            switch state {
+            case .ready, .degraded, .idle:
+                break
+            case .activating, .loadingCatalog, .buildingIndexes:
+                throw FileManagerError.fileSystemServiceNotFoundWithContext(
+                    "Workspace search is still loading. Wait for workspace search readiness before using file_search to avoid partial or false-empty results."
+                )
+            }
+        }
         let roots = await store.rootRefs(scope: .visibleWorkspace)
         guard !roots.isEmpty else {
             let msg = "No workspace is currently loaded in this window. Use the 'manage_workspaces' tool with action: 'list' to see available workspaces, then action: 'switch' to load one."
             throw FileManagerError.fileSystemServiceNotFoundWithContext(msg)
-        }
-        guard let workspaceManager else { return }
-        // This state covers the activated workspace catalog. Session-bound worktrees can be
-        // loaded afterward, so their applied-ingress barrier below remains authoritative.
-        let state = await MainActor.run { workspaceManager.workspaceSearchReadinessState }
-        switch state {
-        case .ready, .degraded:
-            return
-        case .idle:
-            return
-        case .activating, .loadingCatalog, .buildingIndexes:
-            throw FileManagerError.fileSystemServiceNotFoundWithContext(
-                "Workspace search is still loading. Wait for workspace search readiness before using file_search to avoid partial or false-empty results."
-            )
         }
     }
 

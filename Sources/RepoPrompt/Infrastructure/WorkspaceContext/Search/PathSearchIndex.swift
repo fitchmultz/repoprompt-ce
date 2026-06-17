@@ -125,7 +125,8 @@ final class WorkspaceSearchRootPathIndex: @unchecked Sendable {
     let identity: WorkspaceSearchRootPathIndexIdentity
     let rootPath: String
     let entries: [WorkspaceSearchCatalogEntry]
-    let index: PathSearchIndex
+    private let indexLock = NSLock()
+    private var cachedIndex: PathSearchIndex?
 
     init(
         identity: WorkspaceSearchRootPathIndexIdentity,
@@ -135,15 +136,30 @@ final class WorkspaceSearchRootPathIndex: @unchecked Sendable {
         self.identity = identity
         self.rootPath = rootPath
         self.entries = entries
-        index = PathSearchIndex(paths: entries.map(\.pathSearchIndexKey))
     }
 
     var count: Int {
         entries.count
     }
 
+    func prepareForSearch() {
+        _ = index()
+    }
+
+    private func index() -> PathSearchIndex {
+        indexLock.lock()
+        if let cachedIndex {
+            indexLock.unlock()
+            return cachedIndex
+        }
+        let built = PathSearchIndex(paths: entries.map(\.pathSearchIndexKey))
+        cachedIndex = built
+        indexLock.unlock()
+        return built
+    }
+
     func search(_ query: String, limit: Int) -> [Candidate] {
-        index.searchSynchronously(query, limit: limit).compactMap { candidate in
+        index().searchSynchronously(query, limit: limit).compactMap { candidate in
             guard entries.indices.contains(candidate.index) else { return nil }
             return Candidate(
                 entry: entries[candidate.index],

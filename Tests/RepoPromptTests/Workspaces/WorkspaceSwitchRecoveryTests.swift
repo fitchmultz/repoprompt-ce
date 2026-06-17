@@ -419,8 +419,62 @@ final class WorkspaceSwitchRecoveryTests: XCTestCase {
                 false
             }
         }
+        let pathMatchCacheCount = await store.staticPathMatchSnapshotCacheCountForTesting()
+        XCTAssertEqual(pathMatchCacheCount, 0)
         XCTAssertFalse(recoveryStarted)
         manager.setWorkspaceSearchIndexBuildWillStartHandlerForTesting(nil)
+        manager.setWorkspaceSwitchRecoveryWillBeginHandlerForTesting(nil)
+    }
+
+    func testSwitchReturnsBeforePostCatalogRootWorkCompletes() async throws {
+        let root = try makeTemporaryDirectory(named: "DeferredPostCatalog")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try "let deferredPostCatalog = true\n".write(
+            to: root.appendingPathComponent("Deferred.swift"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let composition = makeComposition()
+        let manager = composition.workspaceManager
+        await manager.awaitInitialized()
+        let postCatalogGate = WorkspaceSwitchRecoveryGate()
+        var postCatalogStarted = false
+        var recoveryStarted = false
+        var switchResult: WorkspaceSwitchResult?
+        composition.workspaceFilesViewModel.setPostCatalogRootWorkWillStartHandlerForTesting { _, _ in
+            postCatalogStarted = true
+            await postCatalogGate.arriveAndWait()
+        }
+        manager.setWorkspaceSwitchRecoveryWillBeginHandlerForTesting {
+            recoveryStarted = true
+        }
+
+        let target = manager.createWorkspace(
+            name: "Deferred Post-Catalog Target \(UUID().uuidString.prefix(8))",
+            repoPaths: [root.path],
+            ephemeral: true
+        )
+        let switchTask = Task { @MainActor in
+            let result = await manager.switchWorkspace(
+                to: target,
+                saveState: false,
+                reason: "deferredPostCatalogRootWork"
+            )
+            switchResult = result
+            return result
+        }
+
+        try await waitUntil { postCatalogStarted }
+        try await waitUntil(timeout: 1) { switchResult != nil }
+        XCTAssertEqual(switchResult, .switched)
+        XCTAssertEqual(manager.activeWorkspaceID, target.id)
+        XCTAssertFalse(manager.isSwitchingWorkspace)
+        XCTAssertFalse(recoveryStarted)
+
+        await postCatalogGate.release()
+        _ = await switchTask.value
+        composition.workspaceFilesViewModel.setPostCatalogRootWorkWillStartHandlerForTesting(nil)
         manager.setWorkspaceSwitchRecoveryWillBeginHandlerForTesting(nil)
     }
 

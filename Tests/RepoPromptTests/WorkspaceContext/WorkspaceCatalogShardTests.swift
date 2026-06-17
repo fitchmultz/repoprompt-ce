@@ -198,12 +198,43 @@ import XCTest
 
             let diagnostics = await store.storeWorkDiagnosticsSnapshot().rootCatalogShards
             let rootDiagnostics = try diagnosticsForRoot(rootID: root.id, in: diagnostics)
-            XCTAssertEqual(diagnostics.maxPatchLogicalMutationCount, 1)
+            XCTAssertEqual(diagnostics.maxPatchLogicalMutationCount, 1024)
             XCTAssertEqual(rootDiagnostics.patchCount, 6)
             XCTAssertEqual(rootDiagnostics.authoritativeRebuildCount, 1)
             XCTAssertEqual(rootDiagnostics.buildCount, 7)
             XCTAssertEqual(rootDiagnostics.lastAppliedIndexGeneration, 6)
             XCTAssertFalse(rootDiagnostics.deltaStateDirty)
+            XCTAssertTrue(rootDiagnostics.fallbackReasonCounts.isEmpty)
+            XCTAssertEqual(diagnostics.shadowMismatchCount, 0)
+        }
+
+        func testSmallMultiFileCanonicalBatchPatchesWithoutAuthoritativeRebuild() async throws {
+            let rootURL = try makeTemporaryRoot(name: "ShardMultiDeltaPatch")
+            try write("seed", to: rootURL.appendingPathComponent("Seed.swift"))
+
+            let store = makeStore()
+            let root = try await loadStoppedRoot(in: store, path: rootURL.path)
+            _ = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
+
+            let additions = (0 ..< 12).map { index in
+                String(format: "Added-%02d.swift", index)
+            }
+            for path in additions {
+                try write("added", to: rootURL.appendingPathComponent(path))
+            }
+            await store.replayObservedFileSystemDeltas(rootID: root.id, deltas: additions.map { .fileAdded($0) })
+
+            let snapshot = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
+            XCTAssertTrue(additions.allSatisfy { path in
+                snapshot.files.contains { $0.standardizedRelativePath == path }
+            })
+            XCTAssertEqual(snapshot.files.map(\.standardizedRelativePath), snapshot.files.map(\.standardizedRelativePath).sorted())
+
+            let diagnostics = await store.storeWorkDiagnosticsSnapshot().rootCatalogShards
+            let rootDiagnostics = try diagnosticsForRoot(rootID: root.id, in: diagnostics)
+            XCTAssertEqual(rootDiagnostics.patchCount, 1)
+            XCTAssertEqual(rootDiagnostics.authoritativeRebuildCount, 1)
+            XCTAssertEqual(rootDiagnostics.buildCount, 2)
             XCTAssertTrue(rootDiagnostics.fallbackReasonCounts.isEmpty)
             XCTAssertEqual(diagnostics.shadowMismatchCount, 0)
         }
@@ -268,19 +299,22 @@ import XCTest
             let rootB = try await loadStoppedRoot(in: store, path: rootBURL.path)
             _ = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
 
-            try write("one", to: rootAURL.appendingPathComponent("One.swift"))
-            try write("two", to: rootAURL.appendingPathComponent("Two.swift"))
+            let additions = (0 ... 1024).map { String(format: "Bulk-%04d.swift", $0) }
+            for path in additions {
+                try write("bulk", to: rootAURL.appendingPathComponent(path))
+            }
             await store.replayObservedFileSystemDeltas(
                 rootID: rootA.id,
-                deltas: [.fileAdded("One.swift"), .fileAdded("Two.swift")]
+                deltas: additions.map { .fileAdded($0) }
             )
             let snapshot = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
-            XCTAssertTrue(snapshot.files.contains { $0.standardizedRelativePath == "One.swift" })
-            XCTAssertTrue(snapshot.files.contains { $0.standardizedRelativePath == "Two.swift" })
+            XCTAssertTrue(snapshot.files.contains { $0.standardizedRelativePath == "Bulk-0000.swift" })
+            XCTAssertTrue(snapshot.files.contains { $0.standardizedRelativePath == "Bulk-1024.swift" })
 
             let diagnostics = await store.storeWorkDiagnosticsSnapshot().rootCatalogShards
             let rootADiagnostics = try diagnosticsForRoot(rootID: rootA.id, in: diagnostics)
             let rootBDiagnostics = try diagnosticsForRoot(rootID: rootB.id, in: diagnostics)
+            XCTAssertEqual(diagnostics.maxPatchLogicalMutationCount, 1024)
             XCTAssertEqual(rootADiagnostics.patchCount, 0)
             XCTAssertEqual(rootADiagnostics.authoritativeRebuildCount, 2)
             XCTAssertEqual(rootADiagnostics.fallbackReasonCounts["threshold_exceeded"], 1)
@@ -374,8 +408,53 @@ import XCTest
             XCTAssertEqual(diagnostics.shadowMismatchCount, 0)
         }
 
-        private func makeStore() -> WorkspaceFileContextStore {
-            let store = WorkspaceFileContextStore()
+        func testLargeShardShadowValidationSkipsAuthoritativeCompareAndKeepsSnapshotContents() async throws {
+            let rootURL = try makeTemporaryRoot(name: "ShardShadowSkip")
+            try write("a", to: rootURL.appendingPathComponent("A.swift"))
+            try write("b", to: rootURL.appendingPathComponent("B.swift"))
+
+            let store = makeStore(rootCatalogShardShadowValidationFileLimit: 1)
+            _ = try await loadStoppedRoot(in: store, path: rootURL.path)
+            let snapshot = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
+
+            XCTAssertEqual(snapshot.files.map(\.standardizedRelativePath), ["A.swift", "B.swift"])
+            XCTAssertEqual(snapshot.entries.map(\.standardizedRelativePath), ["A.swift", "B.swift"])
+            let diagnostics = await store.storeWorkDiagnosticsSnapshot().rootCatalogShards
+            XCTAssertEqual(diagnostics.shadowValidationFileLimit, 1)
+            XCTAssertEqual(diagnostics.shadowSkipCount, 1)
+            XCTAssertEqual(diagnostics.lastShadowSkippedFileCount, 2)
+            XCTAssertEqual(diagnostics.shadowComparisonCount, 0)
+            XCTAssertEqual(diagnostics.shadowMismatchCount, 0)
+            XCTAssertEqual(diagnostics.lastShadowByteCount, 0)
+        }
+
+        func testSingleRootShardSnapshotUsesFastPathDiagnostic() async throws {
+            let rootURL = try makeTemporaryRoot(name: "ShardSingleRootFastPath")
+            try write("seed", to: rootURL.appendingPathComponent("Seed.swift"))
+
+            let store = makeStore()
+            _ = try await loadStoppedRoot(in: store, path: rootURL.path)
+            let snapshot = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
+
+            XCTAssertEqual(snapshot.files.map(\.standardizedRelativePath), ["Seed.swift"])
+            let diagnostics = await store.storeWorkDiagnosticsSnapshot().rootCatalogShards
+            XCTAssertEqual(diagnostics.singleRootFastPathCount, 1)
+            XCTAssertEqual(diagnostics.lastSingleRootFastPathFileCount, 1)
+            XCTAssertEqual(diagnostics.shadowComparisonCount, 1)
+            XCTAssertEqual(diagnostics.shadowSkipCount, 0)
+            XCTAssertEqual(diagnostics.shadowMismatchCount, 0)
+        }
+
+        private func makeStore(
+            rootCatalogShardShadowValidationFileLimit: Int? = nil
+        ) -> WorkspaceFileContextStore {
+            let store = if let rootCatalogShardShadowValidationFileLimit {
+                WorkspaceFileContextStore(
+                    rootCatalogShardShadowValidationFileLimit: rootCatalogShardShadowValidationFileLimit
+                )
+            } else {
+                WorkspaceFileContextStore()
+            }
             stores.append(store)
             return store
         }

@@ -46,6 +46,30 @@ final class PromptContextPreAssemblyServiceTests: XCTestCase {
         XCTAssertEqual(result.gitDiff, PromptContextGitDiffPolicy.deferredCompleteWorktreeGitDiffMessage)
     }
 
+    func testResolveSkipsAutoFileTreeWithoutFileInputs() async throws {
+        let root = try makeTemporaryRoot(name: "PromptPreAssemblyEmptyAutoTree")
+        try FileSystemTestSupport.write("let unused = true\n", to: root.appendingPathComponent("Sources/Unused.swift"))
+        let store = WorkspaceFileContextStore()
+        _ = try await store.loadRoot(path: root.path)
+        let request = PromptContextPreAssemblyRequest(
+            cfg: makeConfig(gitInclusion: .none),
+            selection: StoredSelection(codemapAutoEnabled: false),
+            store: store,
+            lookupContext: WorkspaceLookupContext(rootScope: .visibleWorkspace, bindingProjection: nil),
+            filePathDisplay: .relative,
+            onlyIncludeRootsWithSelectedFiles: false,
+            showCodeMapMarkers: true,
+            selectedGitDiffFolderPolicy: .filesOnly,
+            selectedGitDiffProvider: { _ in "unexpected selected diff" },
+            completeGitDiffProvider: { "unexpected complete diff" }
+        )
+
+        let result = await PromptContextPreAssemblyService.resolve(request)
+
+        XCTAssertTrue(result.entries.isEmpty)
+        XCTAssertNil(result.fileTreeContent)
+    }
+
     func testResolveSelectedDiffUsesPhysicalizedSelectionAndPolicy() async throws {
         let fixture = try await makeBoundFixture()
         let captured = CapturedPaths()

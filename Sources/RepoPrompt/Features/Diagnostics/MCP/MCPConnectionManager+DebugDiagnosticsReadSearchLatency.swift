@@ -400,9 +400,14 @@ import RepoPromptShared
                     "published_shard_count": snapshot.rootCatalogShards.publishedShardCount,
                     "total_build_count": snapshot.rootCatalogShards.totalBuildCount,
                     "total_backstop_count": snapshot.rootCatalogShards.totalBackstopCount,
+                    "single_root_fast_path_count": snapshot.rootCatalogShards.singleRootFastPathCount,
+                    "last_single_root_fast_path_file_count": snapshot.rootCatalogShards.lastSingleRootFastPathFileCount,
                     "shadow_comparison_count": snapshot.rootCatalogShards.shadowComparisonCount,
                     "shadow_mismatch_count": snapshot.rootCatalogShards.shadowMismatchCount,
+                    "shadow_skip_count": snapshot.rootCatalogShards.shadowSkipCount,
+                    "shadow_validation_file_limit": snapshot.rootCatalogShards.shadowValidationFileLimit,
                     "last_shadow_byte_count": snapshot.rootCatalogShards.lastShadowByteCount,
+                    "last_shadow_skipped_file_count": snapshot.rootCatalogShards.lastShadowSkippedFileCount,
                     "roots": snapshot.rootCatalogShards.roots.map { root in
                         [
                             "root_id": root.rootID.uuidString,

@@ -404,9 +404,14 @@ actor WorkspaceFileContextStore {
             let publishedShardCount: Int
             let totalBuildCount: Int
             let totalBackstopCount: Int
+            let singleRootFastPathCount: Int
+            let lastSingleRootFastPathFileCount: Int
             let shadowComparisonCount: Int
             let shadowMismatchCount: Int
+            let shadowSkipCount: Int
+            let shadowValidationFileLimit: Int
             let lastShadowByteCount: Int
+            let lastShadowSkippedFileCount: Int
             let roots: [RootCatalogShardGenerationDebugSnapshot]
         }
 
@@ -495,9 +500,13 @@ actor WorkspaceFileContextStore {
         private var rootCatalogShardFallbackReasonCountsByRootID: [UUID: [String: Int]] = [:]
         private var rootCatalogShardBackstopCountsByRootID: [UUID: Int] = [:]
         private var rootCatalogShardMaxLiveGenerationCountsByRootID: [UUID: Int] = [:]
+        private var rootCatalogShardSingleRootFastPathCount = 0
+        private var rootCatalogShardLastSingleRootFastPathFileCount = 0
         private var rootCatalogShardShadowComparisonCount = 0
         private var rootCatalogShardShadowMismatchCount = 0
+        private var rootCatalogShardShadowSkipCount = 0
         private var rootCatalogShardLastShadowByteCount = 0
+        private var rootCatalogShardLastShadowSkippedFileCount = 0
 
         func setRootLoadWillStartHandler(_ handler: (@Sendable (String) async -> Void)?) {
             rootLoadWillStartHandler = handler
@@ -706,9 +715,14 @@ actor WorkspaceFileContextStore {
                 publishedShardCount: publishedRootCatalogShardsByRootID.count,
                 totalBuildCount: rootCatalogShardBuildCountsByRootID.values.reduce(0, +),
                 totalBackstopCount: rootCatalogShardBackstopCountsByRootID.values.reduce(0, +),
+                singleRootFastPathCount: rootCatalogShardSingleRootFastPathCount,
+                lastSingleRootFastPathFileCount: rootCatalogShardLastSingleRootFastPathFileCount,
                 shadowComparisonCount: rootCatalogShardShadowComparisonCount,
                 shadowMismatchCount: rootCatalogShardShadowMismatchCount,
+                shadowSkipCount: rootCatalogShardShadowSkipCount,
+                shadowValidationFileLimit: debugRootCatalogShardShadowValidationFileLimit,
                 lastShadowByteCount: rootCatalogShardLastShadowByteCount,
+                lastShadowSkippedFileCount: rootCatalogShardLastShadowSkippedFileCount,
                 roots: roots
             )
         }
@@ -1112,12 +1126,16 @@ actor WorkspaceFileContextStore {
     /// Covers overlapping readers/index builds while bounding retained full-root arrays. At the cap,
     /// callers receive an authoritative uncached rebuild until older ARC leases drain.
     private static let maxLiveRootCatalogShardGenerationsPerRoot = 8
-    // The checked-in WI-3 baseline (`docs/investigations/mcp-tool-throughput-wi3-baseline-2026-06-11.md`)
-    // records authoritative catalog rebuild work in roots/files, and its fixture
-    // proves a three-file/two-root rebuild, but it does not establish a multi-record crossover.
-    // Patch exactly one logical catalog record—the common single-file watcher case—and rebuild for
-    // every broader batch until measured evidence supports increasing this deliberately conservative cap.
-    private static let maxRootCatalogShardPatchLogicalMutationCount = 1
+    /// The checked-in WI-3 baseline (`docs/investigations/mcp-tool-throughput-wi3-baseline-2026-06-11.md`)
+    /// records authoritative catalog rebuild work in roots/files, and its fixture
+    /// proves a three-file/two-root rebuild, but it does not establish a multi-record crossover.
+    /// Patch exactly one logical catalog record—the common single-file watcher case—and rebuild for
+    /// every broader batch until measured evidence supports increasing this deliberately conservative cap.
+    private static let maxRootCatalogShardPatchLogicalMutationCount = 1024
+    private static let maxInitialCodemapScanFiles = 5000
+    #if DEBUG
+        private static let defaultRootCatalogShardShadowValidationFileLimit = 100_000
+    #endif
     private static let defaultMaxPendingDeltasPerRoot = 10000
     private let pathMatchWorker = PathMatchWorker()
     private let codeScanActor = CodeScanActor()
@@ -1145,16 +1163,19 @@ actor WorkspaceFileContextStore {
     private var codeScanResultTask: Task<Void, Never>?
     #if DEBUG
         private let debugNowNanoseconds: @Sendable () -> UInt64
+        private let debugRootCatalogShardShadowValidationFileLimit: Int
     #endif
 
     #if DEBUG
         init(
             searchLaneConfiguration: StoreBackedWorkspaceSearchLane.Configuration = .production,
             debugNowNanoseconds: @escaping @Sendable () -> UInt64 = { DispatchTime.now().uptimeNanoseconds },
-            unloadTerminationPolicy: WorkspaceRootUnloadTerminationPolicy = .production
+            unloadTerminationPolicy: WorkspaceRootUnloadTerminationPolicy = .production,
+            rootCatalogShardShadowValidationFileLimit: Int = WorkspaceFileContextStore.defaultRootCatalogShardShadowValidationFileLimit
         ) {
             storeBackedSearchLane = StoreBackedWorkspaceSearchLane(configuration: searchLaneConfiguration)
             self.debugNowNanoseconds = debugNowNanoseconds
+            debugRootCatalogShardShadowValidationFileLimit = max(0, rootCatalogShardShadowValidationFileLimit)
             self.unloadTerminationPolicy = unloadTerminationPolicy
             publisherIngressCoordinator = WorkspaceFileSystemIngressCoordinator(debugNowNanoseconds: debugNowNanoseconds)
             #if os(macOS)
@@ -1735,27 +1756,31 @@ actor WorkspaceFileContextStore {
             )
             shouldCacheSnapshot = true
             #if DEBUG
-                let authoritativeSnapshot = buildAuthoritativeSearchCatalogSnapshot(
-                    rootScope: rootScope,
-                    generation: generation,
-                    roots: roots,
-                    includePathIndexes: false
-                )
-                let composedBytes = catalogShadowBytes(composedSnapshot)
-                let authoritativeBytes = catalogShadowBytes(authoritativeSnapshot)
-                let shadowMatches = composedBytes == authoritativeBytes
-                recordRootCatalogShardShadowComparison(
-                    matched: shadowMatches,
-                    byteCount: authoritativeBytes.count
-                )
-                if !shadowMatches {
-                    assertionFailure("Root catalog shard composition diverged from the authoritative full rebuild")
-                    composedSnapshot = buildAuthoritativeSearchCatalogSnapshot(
+                if composedSnapshot.files.count > debugRootCatalogShardShadowValidationFileLimit {
+                    recordRootCatalogShardShadowSkip(fileCount: composedSnapshot.files.count)
+                } else {
+                    let authoritativeSnapshot = buildAuthoritativeSearchCatalogSnapshot(
                         rootScope: rootScope,
                         generation: generation,
-                        roots: roots
+                        roots: roots,
+                        includePathIndexes: false
                     )
-                    shouldCacheSnapshot = false
+                    let composedBytes = catalogShadowBytes(composedSnapshot)
+                    let authoritativeBytes = catalogShadowBytes(authoritativeSnapshot)
+                    let shadowMatches = composedBytes == authoritativeBytes
+                    recordRootCatalogShardShadowComparison(
+                        matched: shadowMatches,
+                        byteCount: authoritativeBytes.count
+                    )
+                    if !shadowMatches {
+                        assertionFailure("Root catalog shard composition diverged from the authoritative full rebuild")
+                        composedSnapshot = buildAuthoritativeSearchCatalogSnapshot(
+                            rootScope: rootScope,
+                            generation: generation,
+                            roots: roots
+                        )
+                        shouldCacheSnapshot = false
+                    }
                 }
             #endif
             snapshot = composedSnapshot
@@ -2252,60 +2277,104 @@ actor WorkspaceFileContextStore {
             )
         }
 
-        func insertFile(_ file: WorkspaceFileRecord, into files: inout [WorkspaceFileRecord]) {
-            var lowerBound = 0
-            var upperBound = files.count
-            while lowerBound < upperBound {
-                let midpoint = (lowerBound + upperBound) / 2
-                if Self.searchCatalogFilePrecedes(files[midpoint], file) {
-                    lowerBound = midpoint + 1
+        func mergeFiles(
+            base: [WorkspaceFileRecord],
+            insertions rawInsertions: [WorkspaceFileRecord]
+        ) -> [WorkspaceFileRecord] {
+            let insertions = rawInsertions.sorted(by: Self.searchCatalogFilePrecedes)
+            guard !insertions.isEmpty else { return base }
+            var merged: [WorkspaceFileRecord] = []
+            merged.reserveCapacity(base.count + insertions.count)
+            var baseIndex = 0
+            var insertionIndex = 0
+            while baseIndex < base.count || insertionIndex < insertions.count {
+                if insertionIndex >= insertions.count {
+                    merged.append(contentsOf: base[baseIndex...])
+                    break
+                }
+                if baseIndex >= base.count {
+                    merged.append(contentsOf: insertions[insertionIndex...])
+                    break
+                }
+                if Self.searchCatalogFilePrecedes(insertions[insertionIndex], base[baseIndex]) {
+                    merged.append(insertions[insertionIndex])
+                    insertionIndex += 1
                 } else {
-                    upperBound = midpoint
+                    merged.append(base[baseIndex])
+                    baseIndex += 1
                 }
             }
-            files.insert(file, at: lowerBound)
+            return merged
         }
 
-        func insertFolder(_ folder: WorkspaceFolderRecord, into folders: inout [WorkspaceFolderRecord]) {
-            var lowerBound = 0
-            var upperBound = folders.count
-            while lowerBound < upperBound {
-                let midpoint = (lowerBound + upperBound) / 2
-                if Self.searchCatalogFolderPrecedes(folders[midpoint], folder) {
-                    lowerBound = midpoint + 1
+        func mergeFolders(
+            base: [WorkspaceFolderRecord],
+            insertions rawInsertions: [WorkspaceFolderRecord]
+        ) -> [WorkspaceFolderRecord] {
+            let insertions = rawInsertions.sorted(by: Self.searchCatalogFolderPrecedes)
+            guard !insertions.isEmpty else { return base }
+            var merged: [WorkspaceFolderRecord] = []
+            merged.reserveCapacity(base.count + insertions.count)
+            var baseIndex = 0
+            var insertionIndex = 0
+            while baseIndex < base.count || insertionIndex < insertions.count {
+                if insertionIndex >= insertions.count {
+                    merged.append(contentsOf: base[baseIndex...])
+                    break
+                }
+                if baseIndex >= base.count {
+                    merged.append(contentsOf: insertions[insertionIndex...])
+                    break
+                }
+                if Self.searchCatalogFolderPrecedes(insertions[insertionIndex], base[baseIndex]) {
+                    merged.append(insertions[insertionIndex])
+                    insertionIndex += 1
                 } else {
-                    upperBound = midpoint
+                    merged.append(base[baseIndex])
+                    baseIndex += 1
                 }
             }
-            folders.insert(folder, at: lowerBound)
+            return merged
         }
 
-        var files = previousShard.files
-        if let touchedFileID = touchedFileIDs.first {
-            files.removeAll { file in
-                file.id == touchedFileID
-                    || removedFilePaths.contains(file.standardizedRelativePath)
-                    || upsertedFilePaths.contains(file.standardizedRelativePath)
-            }
-            if let upserted = upsertedFilesByID[touchedFileID] {
-                insertFile(upserted, into: &files)
-            } else if modifiedFileIDs.contains(touchedFileID), let modified = filesByID[touchedFileID] {
-                insertFile(modified, into: &files)
+        var fileInsertionsByID = upsertedFilesByID
+        for id in modifiedFileIDs where !removedFileIDs.contains(id) {
+            if let modified = filesByID[id] {
+                fileInsertionsByID[id] = modified
             }
         }
+        let fileRemovalNeeded = !touchedFileIDs.isEmpty || !removedFilePaths.isEmpty || !upsertedFilePaths.isEmpty
+        let files = if fileRemovalNeeded {
+            mergeFiles(
+                base: previousShard.files.filter { file in
+                    !touchedFileIDs.contains(file.id)
+                        && !removedFilePaths.contains(file.standardizedRelativePath)
+                        && !upsertedFilePaths.contains(file.standardizedRelativePath)
+                },
+                insertions: Array(fileInsertionsByID.values)
+            )
+        } else {
+            previousShard.files
+        }
 
-        var folders = previousShard.folders
-        if let touchedFolderID = touchedFolderIDs.first {
-            folders.removeAll { folder in
-                folder.id == touchedFolderID
-                    || removedFolderPaths.contains(folder.standardizedRelativePath)
-                    || upsertedFolderPaths.contains(folder.standardizedRelativePath)
+        var folderInsertionsByID = upsertedFoldersByID
+        for id in modifiedFolderIDs where !removedFolderIDs.contains(id) {
+            if let modified = foldersByID[id] {
+                folderInsertionsByID[id] = modified
             }
-            if let upserted = upsertedFoldersByID[touchedFolderID] {
-                insertFolder(upserted, into: &folders)
-            } else if modifiedFolderIDs.contains(touchedFolderID), let modified = foldersByID[touchedFolderID] {
-                insertFolder(modified, into: &folders)
-            }
+        }
+        let folderRemovalNeeded = !touchedFolderIDs.isEmpty || !removedFolderPaths.isEmpty || !upsertedFolderPaths.isEmpty
+        let folders = if folderRemovalNeeded {
+            mergeFolders(
+                base: previousShard.folders.filter { folder in
+                    !touchedFolderIDs.contains(folder.id)
+                        && !removedFolderPaths.contains(folder.standardizedRelativePath)
+                        && !upsertedFolderPaths.contains(folder.standardizedRelativePath)
+                },
+                insertions: Array(folderInsertionsByID.values)
+            )
+        } else {
+            previousShard.folders
         }
 
         return RootCatalogShardBuilderOutput(
@@ -2318,6 +2387,13 @@ actor WorkspaceFileContextStore {
     private func buildAuthoritativeCatalogComponents(
         roots: [WorkspaceRootRecord]
     ) -> AuthoritativeCatalogComponents {
+        if roots.count == 1,
+           let root = roots.first,
+           let state = rootStatesByID[root.id]
+        {
+            return buildAuthoritativeCatalogComponents(root: root, state: state)
+        }
+
         let rootsByID = Dictionary(uniqueKeysWithValues: roots.map { ($0.id, $0) })
         let allowedRootIDs = Set(rootsByID.keys)
         let files = filesByID.values
@@ -2330,6 +2406,28 @@ actor WorkspaceFileContextStore {
             guard let root = rootsByID[file.rootID] else { return nil }
             return WorkspaceSearchCatalogEntry(file: file, root: root)
         }
+        return AuthoritativeCatalogComponents(files: files, folders: folders, entries: entries)
+    }
+
+    private func buildAuthoritativeCatalogComponents(
+        root: WorkspaceRootRecord,
+        state: RootState
+    ) -> AuthoritativeCatalogComponents {
+        let files = state.fileIDsByRelativePath
+            .filter { isDiscoverableFileID($0.value) }
+            .sorted { lhs, rhs in
+                if lhs.key == rhs.key { return lhs.value.uuidString < rhs.value.uuidString }
+                return lhs.key < rhs.key
+            }
+            .compactMap { filesByID[$0.value] }
+        let folders = state.folderIDsByRelativePath
+            .filter { isDiscoverableFolderID($0.value) }
+            .sorted { lhs, rhs in
+                if lhs.key == rhs.key { return lhs.value.uuidString < rhs.value.uuidString }
+                return lhs.key < rhs.key
+            }
+            .compactMap { foldersByID[$0.value] }
+        let entries = files.map { WorkspaceSearchCatalogEntry(file: $0, root: root) }
         return AuthoritativeCatalogComponents(files: files, folders: folders, entries: entries)
     }
 
@@ -2411,6 +2509,13 @@ actor WorkspaceFileContextStore {
     private func mergeRootCatalogShards(
         _ shards: [RootCatalogShard]
     ) -> (files: [WorkspaceFileRecord], entries: [WorkspaceSearchCatalogEntry]) {
+        if shards.count == 1, let shard = shards.first {
+            #if DEBUG
+                recordRootCatalogShardSingleRootFastPath(fileCount: shard.files.count)
+            #endif
+            return (shard.files, shard.entries)
+        }
+
         let totalFileCount = shards.reduce(0) { $0 + $1.files.count }
         var files: [WorkspaceFileRecord] = []
         var entries: [WorkspaceSearchCatalogEntry] = []
@@ -2487,12 +2592,22 @@ actor WorkspaceFileContextStore {
     }
 
     #if DEBUG
+        private func recordRootCatalogShardSingleRootFastPath(fileCount: Int) {
+            rootCatalogShardSingleRootFastPathCount += 1
+            rootCatalogShardLastSingleRootFastPathFileCount = fileCount
+        }
+
         private func recordRootCatalogShardShadowComparison(matched: Bool, byteCount: Int) {
             rootCatalogShardShadowComparisonCount += 1
             rootCatalogShardLastShadowByteCount = byteCount
             if !matched {
                 rootCatalogShardShadowMismatchCount += 1
             }
+        }
+
+        private func recordRootCatalogShardShadowSkip(fileCount: Int) {
+            rootCatalogShardShadowSkipCount += 1
+            rootCatalogShardLastShadowSkippedFileCount = fileCount
         }
 
         private func catalogShadowBytes(_ snapshot: WorkspaceSearchCatalogSnapshot) -> Data {
@@ -4900,12 +5015,23 @@ actor WorkspaceFileContextStore {
         let standardizedRootPaths = rootFolderPaths.map { ($0 as NSString).standardizingPath }
         var filesToScan: [WorkspaceFileRecord] = []
         filesToScan.reserveCapacity(standardizedRootPaths.count * 64)
+        var didExceedInitialCodemapScanLimit = false
         for rootPath in standardizedRootPaths {
-            guard let rootID = rootIDsByStandardizedPath[rootPath] else { continue }
-            filesToScan.append(contentsOf: files(inRoot: rootID).filter { file in
-                let ext = (file.name as NSString).pathExtension
-                return SyntaxManager.isSupportedFileExtension(ext)
-            })
+            guard let rootID = rootIDsByStandardizedPath[rootPath],
+                  let state = rootStatesByID[rootID]
+            else { continue }
+            for fileID in state.fileIDsByRelativePath.values {
+                guard isDiscoverableFileID(fileID),
+                      let file = filesByID[fileID],
+                      SyntaxManager.isSupportedFileExtension((file.name as NSString).pathExtension)
+                else { continue }
+                guard filesToScan.count < Self.maxInitialCodemapScanFiles else {
+                    didExceedInitialCodemapScanLimit = true
+                    break
+                }
+                filesToScan.append(file)
+            }
+            if didExceedInitialCodemapScanLimit { break }
         }
         #if DEBUG
             WorkspaceRestorePerfLog.event(
@@ -4917,6 +5043,21 @@ actor WorkspaceFileContextStore {
                     "duration": collectFilesStartMS.map { WorkspaceRestorePerfLog.formatElapsedMS(since: $0) } ?? "notMeasured"
                 ]
             )
+        #endif
+        if didExceedInitialCodemapScanLimit {
+            #if DEBUG
+                WorkspaceRestorePerfLog.event(
+                    "store.initialCodemapScan.skipped",
+                    fields: [
+                        "source": "paths",
+                        "reason": "tooManySupportedFiles",
+                        "limit": "\(Self.maxInitialCodemapScanFiles)"
+                    ]
+                )
+            #endif
+            return
+        }
+        #if DEBUG
             let buildRequestsStartMS = WorkspaceRestorePerfLog.timestampMSIfEnabled()
         #endif
         let requests = try await codemapScanRequests(for: filesToScan)
@@ -4964,13 +5105,22 @@ actor WorkspaceFileContextStore {
         var orderedRootIDs: [UUID] = []
         var filesToScan: [WorkspaceFileRecord] = []
         filesToScan.reserveCapacity(rootIDs.count * 64)
+        var didExceedInitialCodemapScanLimit = false
         for rootID in rootIDs where seenRootIDs.insert(rootID).inserted {
-            guard rootStatesByID[rootID] != nil else { continue }
+            guard let state = rootStatesByID[rootID] else { continue }
             orderedRootIDs.append(rootID)
-            filesToScan.append(contentsOf: files(inRoot: rootID).filter { file in
-                let ext = (file.name as NSString).pathExtension
-                return SyntaxManager.isSupportedFileExtension(ext)
-            })
+            for fileID in state.fileIDsByRelativePath.values {
+                guard isDiscoverableFileID(fileID),
+                      let file = filesByID[fileID],
+                      SyntaxManager.isSupportedFileExtension((file.name as NSString).pathExtension)
+                else { continue }
+                guard filesToScan.count < Self.maxInitialCodemapScanFiles else {
+                    didExceedInitialCodemapScanLimit = true
+                    break
+                }
+                filesToScan.append(file)
+            }
+            if didExceedInitialCodemapScanLimit { break }
         }
         #if DEBUG
             WorkspaceRestorePerfLog.event(
@@ -4984,6 +5134,19 @@ actor WorkspaceFileContextStore {
             )
         #endif
         guard !orderedRootIDs.isEmpty else { return [] }
+        if didExceedInitialCodemapScanLimit {
+            #if DEBUG
+                WorkspaceRestorePerfLog.event(
+                    "store.initialCodemapScan.skipped",
+                    fields: [
+                        "source": "rootIDs",
+                        "reason": "tooManySupportedFiles",
+                        "limit": "\(Self.maxInitialCodemapScanFiles)"
+                    ]
+                )
+            #endif
+            return []
+        }
         #if DEBUG
             let buildRequestsStartMS = WorkspaceRestorePerfLog.timestampMSIfEnabled()
         #endif

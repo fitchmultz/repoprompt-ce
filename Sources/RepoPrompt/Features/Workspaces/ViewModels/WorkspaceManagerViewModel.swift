@@ -783,6 +783,7 @@ class WorkspaceManagerViewModel: ObservableObject {
     private var workspaceSearchReadinessTask: Task<Void, Never>?
     private var workspaceSearchReadinessTaskToken: UUID?
     private var postCatalogRootWorkTasks: [UInt64: [Task<WorkspaceRootLoadFailure?, Never>]] = [:]
+    private var postCatalogRootWorkFailuresByGeneration: [UInt64: [WorkspaceRootLoadFailure]] = [:]
     private var returnToSystemAfterSwitchCancellationOperationID: UUID?
     private var committedWorkspaceSwitchOperationID: UUID?
     private var recoveringWorkspaceSwitchOperationID: UUID?
@@ -1148,27 +1149,6 @@ class WorkspaceManagerViewModel: ObservableObject {
                 ], uniquingKeysWith: { _, new in new })
             )
             return (indexedGeneration, durationMS)
-        }
-
-        private func debugWarmPathLookupIndexes(
-            workspace: WorkspaceModel,
-            hydrationGeneration: UInt64,
-            catalogGeneration: UInt64
-        ) async -> (generation: UInt64, durationMS: Double?) {
-            let startMS = WorkspaceRestorePerfLog.timestampMSIfEnabled()
-            let warmedGeneration = await fileManager.workspaceFileContextStore.warmPathLookupIndexes(rootScope: .visibleWorkspace)
-            let durationMS = startMS.map { WorkspaceRestorePerfLog.elapsedMS(since: $0) }
-            WorkspaceRestorePerfLog.event(
-                "workspaceSwitch.pathLookupWarm.end",
-                fields: debugWorkspaceOpenTraceFields().merging([
-                    "workspaceID": WorkspaceRestorePerfLog.shortID(workspace.id),
-                    "generation": "\(hydrationGeneration)",
-                    "catalogGeneration": "\(catalogGeneration)",
-                    "warmedGeneration": "\(warmedGeneration)",
-                    "duration": durationMS.map(WorkspaceRestorePerfLog.formatMS) ?? "notMeasured"
-                ], uniquingKeysWith: { _, new in new })
-            )
-            return (warmedGeneration, durationMS)
         }
 
         func debugWorkspaceOpenTraceSnapshot() -> [String: Any] {
@@ -5650,6 +5630,7 @@ class WorkspaceManagerViewModel: ObservableObject {
             for task in tasks {
                 task.cancel()
             }
+            postCatalogRootWorkFailuresByGeneration.removeValue(forKey: key)
         }
     }
 
@@ -5676,26 +5657,76 @@ class WorkspaceManagerViewModel: ObservableObject {
                 return nil
             } catch {
                 guard isHydrationGenerationCurrent(generation, workspaceID: workspace.id) else { return nil }
-                return WorkspaceRootLoadFailure(
+                let failure = WorkspaceRootLoadFailure(
                     rootPath: rootRecord.standardizedFullPath,
                     kind: rootRecord.kind,
                     errorDescription: error.localizedDescription
                 )
+                recordPostCatalogRootWorkFailure(failure, workspace: workspace, generation: generation)
+                return failure
             }
         }
         postCatalogRootWorkTasks[generation, default: []].append(task)
     }
 
-    private func awaitPostCatalogRootWorkFailures(generation: UInt64) async -> [WorkspaceRootLoadFailure] {
-        let tasks = postCatalogRootWorkTasks.removeValue(forKey: generation) ?? []
-        var failures: [WorkspaceRootLoadFailure] = []
-        failures.reserveCapacity(tasks.count)
-        for task in tasks {
-            if let failure = await task.value {
-                failures.append(failure)
-            }
+    private func mergedRootLoadFailures(
+        _ failures: [WorkspaceRootLoadFailure],
+        generation: UInt64
+    ) -> [WorkspaceRootLoadFailure] {
+        guard let postCatalogFailures = postCatalogRootWorkFailuresByGeneration[generation],
+              !postCatalogFailures.isEmpty
+        else { return failures }
+        return failures + postCatalogFailures
+    }
+
+    private func recordPostCatalogRootWorkFailure(
+        _ failure: WorkspaceRootLoadFailure,
+        workspace: WorkspaceModel,
+        generation: UInt64
+    ) {
+        guard isHydrationGenerationCurrent(generation, workspaceID: workspace.id) else { return }
+        postCatalogRootWorkFailuresByGeneration[generation, default: []].append(failure)
+        switch workspaceSearchReadinessState {
+        case let .loadingCatalog(workspaceID, stateGeneration, loadedRootCount, expectedRootCount, failures):
+            guard workspaceID == workspace.id, stateGeneration == generation else { return }
+            workspaceSearchReadinessState = .loadingCatalog(
+                workspaceID: workspaceID,
+                generation: stateGeneration,
+                loadedRootCount: loadedRootCount,
+                expectedRootCount: expectedRootCount,
+                failures: failures + [failure]
+            )
+        case let .buildingIndexes(workspaceID, stateGeneration, catalogGeneration, failures):
+            guard workspaceID == workspace.id, stateGeneration == generation else { return }
+            workspaceSearchReadinessState = .buildingIndexes(
+                workspaceID: workspaceID,
+                generation: stateGeneration,
+                catalogGeneration: catalogGeneration,
+                failures: failures + [failure]
+            )
+        case let .ready(workspaceID, stateGeneration, catalogGeneration, indexedGeneration, diagnostics):
+            guard workspaceID == workspace.id, stateGeneration == generation else { return }
+            workspaceSearchReadinessState = .degraded(
+                workspaceID: workspaceID,
+                generation: stateGeneration,
+                catalogGeneration: catalogGeneration,
+                indexedGeneration: indexedGeneration,
+                failures: [failure],
+                diagnostics: diagnostics
+            )
+        case let .degraded(workspaceID, stateGeneration, catalogGeneration, indexedGeneration, failures, diagnostics):
+            guard workspaceID == workspace.id, stateGeneration == generation else { return }
+            workspaceSearchReadinessState = .degraded(
+                workspaceID: workspaceID,
+                generation: stateGeneration,
+                catalogGeneration: catalogGeneration,
+                indexedGeneration: indexedGeneration,
+                failures: failures + [failure],
+                diagnostics: diagnostics
+            )
+        case .idle, .activating:
+            break
         }
-        return failures
     }
 
     private func loadWorkspaceFolders(
@@ -5897,14 +5928,13 @@ class WorkspaceManagerViewModel: ObservableObject {
         if allPrimaryRootsVisibleSuccessfully, !Task.isCancelled {
             onAllPrimaryRootsVisible?()
         }
-        await failures.append(contentsOf: awaitPostCatalogRootWorkFailures(generation: hydrationGeneration))
-        guard isHydrationGenerationCurrent(hydrationGeneration, workspaceID: workspace.id) else { return }
         let catalogGeneration = await fileManager.workspaceFileContextStore.catalogGeneration(rootScope: .visibleWorkspace)
+        let readinessFailures = mergedRootLoadFailures(failures, generation: hydrationGeneration)
         workspaceSearchReadinessState = .buildingIndexes(
             workspaceID: workspace.id,
             generation: hydrationGeneration,
             catalogGeneration: catalogGeneration,
-            failures: failures
+            failures: readinessFailures
         )
         scheduleWorkspaceSearchReadinessBuild(
             for: workspace,
@@ -6038,7 +6068,7 @@ class WorkspaceManagerViewModel: ObservableObject {
             workspaceID: workspace.id,
             generation: hydrationGeneration,
             catalogGeneration: snapshot.generation,
-            failures: failures
+            failures: mergedRootLoadFailures(failures, generation: hydrationGeneration)
         )
         let initialSearchSnapshot = snapshot
         #if DEBUG
@@ -6046,29 +6076,17 @@ class WorkspaceManagerViewModel: ObservableObject {
             var searchIndexRebuildCount = 1
             var totalSearchCatalogSnapshotDurationMS = initialSearchCatalogSnapshotDurationMS ?? 0
             var totalSearchIndexRebuildDurationMS: Double = 0
-            var totalPathLookupWarmDurationMS: Double = 0
         #endif
         #if DEBUG
-            async let indexedResult = debugRebuildSearchIndex(
+            let initialIndexedResult = await debugRebuildSearchIndex(
                 from: initialSearchSnapshot,
                 workspace: workspace,
                 hydrationGeneration: hydrationGeneration
             )
-            async let warmedResult = debugWarmPathLookupIndexes(
-                workspace: workspace,
-                hydrationGeneration: hydrationGeneration,
-                catalogGeneration: initialSearchSnapshot.generation
-            )
-            let initialIndexedResult = await indexedResult
-            let initialWarmedResult = await warmedResult
             var indexGeneration = initialIndexedResult.generation
             if let duration = initialIndexedResult.durationMS { totalSearchIndexRebuildDurationMS += duration }
-            if let duration = initialWarmedResult.durationMS { totalPathLookupWarmDurationMS += duration }
         #else
-            async let indexedGeneration = workspaceSearchService.rebuildIndex(from: initialSearchSnapshot)
-            async let warmedGeneration = fileManager.workspaceFileContextStore.warmPathLookupIndexes(rootScope: .visibleWorkspace)
-            var indexGeneration = await indexedGeneration
-            _ = await warmedGeneration
+            var indexGeneration = await workspaceSearchService.rebuildIndex(from: initialSearchSnapshot)
         #endif
         guard !Task.isCancelled,
               isHydrationGenerationCurrent(hydrationGeneration, workspaceID: workspace.id)
@@ -6105,7 +6123,7 @@ class WorkspaceManagerViewModel: ObservableObject {
                 workspaceID: workspace.id,
                 generation: hydrationGeneration,
                 catalogGeneration: snapshot.generation,
-                failures: failures
+                failures: mergedRootLoadFailures(failures, generation: hydrationGeneration)
             )
             #if DEBUG
                 let rebuildResult = await debugRebuildSearchIndex(
@@ -6134,10 +6152,9 @@ class WorkspaceManagerViewModel: ObservableObject {
                     "catalogFolders": "\(snapshot.diagnostics.folderCount)",
                     "catalogFiles": "\(snapshot.diagnostics.fileCount)",
                     "rebuildCount": "\(searchIndexRebuildCount)",
-                    "failureCount": "\(failures.count)",
+                    "failureCount": "\(mergedRootLoadFailures(failures, generation: hydrationGeneration).count)",
                     "catalogSnapshotDuration": WorkspaceRestorePerfLog.formatMS(totalSearchCatalogSnapshotDurationMS),
                     "searchRebuildDuration": WorkspaceRestorePerfLog.formatMS(totalSearchIndexRebuildDurationMS),
-                    "pathLookupWarmDuration": WorkspaceRestorePerfLog.formatMS(totalPathLookupWarmDurationMS),
                     "barrierDuration": searchIndexBuildStartMS.map { WorkspaceRestorePerfLog.formatElapsedMS(since: $0) } ?? "notMeasured",
                     "duration": searchIndexBuildStartMS.map { WorkspaceRestorePerfLog.formatElapsedMS(since: $0) } ?? "notMeasured"
                 ].merging(debugWorkspaceOpenTraceFields(), uniquingKeysWith: { current, _ in current })
@@ -6146,7 +6163,8 @@ class WorkspaceManagerViewModel: ObservableObject {
         guard !Task.isCancelled,
               isHydrationGenerationCurrent(hydrationGeneration, workspaceID: workspace.id)
         else { return }
-        if failures.isEmpty {
+        let finalFailures = mergedRootLoadFailures(failures, generation: hydrationGeneration)
+        if finalFailures.isEmpty {
             workspaceSearchReadinessState = .ready(
                 workspaceID: workspace.id,
                 generation: hydrationGeneration,
@@ -6160,7 +6178,7 @@ class WorkspaceManagerViewModel: ObservableObject {
                 generation: hydrationGeneration,
                 catalogGeneration: snapshot.generation,
                 indexedGeneration: indexGeneration,
-                failures: failures,
+                failures: finalFailures,
                 diagnostics: snapshot.diagnostics
             )
         }

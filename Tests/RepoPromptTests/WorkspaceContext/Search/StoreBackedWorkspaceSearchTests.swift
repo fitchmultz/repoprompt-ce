@@ -173,6 +173,53 @@ final class StoreBackedWorkspaceSearchTests: XCTestCase {
         XCTAssertEqual(wildcard.paths, [wildcardFile.path])
     }
 
+    #if DEBUG
+        func testIndexedFastPathRejectsUnobservedStoreGenerationChanges() async throws {
+            let root = try makeTemporaryRoot(name: "UnobservedIndexedPathChange")
+            try write("alpha", to: root.appendingPathComponent("Alpha.swift"))
+
+            let store = WorkspaceFileContextStore()
+            let record = try await store.loadRoot(path: root.path)
+            let service = WorkspaceSearchService()
+            let initialSnapshot = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
+            await service.rebuildIndex(from: initialSnapshot)
+
+            try write("beta", to: root.appendingPathComponent("BetaAdded.swift"))
+            await store.replayObservedFileSystemDeltas(rootID: record.id, deltas: [.fileAdded("BetaAdded.swift")])
+
+            let staleButUnobserved = await service.search("BetaAdded", limit: 10)
+            XCTAssertTrue(staleButUnobserved.isIndexReady)
+            XCTAssertFalse(staleButUnobserved.isStale)
+            XCTAssertTrue(staleButUnobserved.results.isEmpty)
+            let isCurrent = await StoreBackedWorkspaceSearch.indexedPathQueryResultIsCurrentForTesting(
+                staleButUnobserved,
+                store: store
+            )
+            XCTAssertFalse(isCurrent)
+        }
+
+        func testIndexedFastPathCandidateFilterIgnoresHiddenAbsoluteRootPathComponents() async throws {
+            let root = try makeTemporaryRoot(name: "HiddenRootNeedle")
+            try write("visible", to: root.appendingPathComponent("Sources/VisibleNeedle.swift"))
+
+            let store = WorkspaceFileContextStore()
+            _ = try await store.loadRoot(path: root.path)
+            let snapshot = await store.searchCatalogSnapshot(rootScope: .visibleWorkspace)
+            let entry = try XCTUnwrap(snapshot.entries.first)
+
+            XCTAssertFalse(StoreBackedWorkspaceSearch.visibleMCPPathCandidateMatchesForTesting(
+                entry,
+                pattern: "HiddenRootNeedle",
+                caseInsensitive: true
+            ))
+            XCTAssertTrue(StoreBackedWorkspaceSearch.visibleMCPPathCandidateMatchesForTesting(
+                entry,
+                pattern: "VisibleNeedle",
+                caseInsensitive: true
+            ))
+        }
+    #endif
+
     func testBroadSearchAdmissionClassifierGatesOnlyUnscopedContentCapableModes() {
         XCTAssertEqual(StoreBackedWorkspaceSearch.broadSearchAdmissionClass(pattern: "needle", mode: .content, paths: nil), .unscopedContent)
         XCTAssertEqual(StoreBackedWorkspaceSearch.broadSearchAdmissionClass(pattern: "needle", mode: .both, paths: []), .unscopedBoth)
@@ -1628,6 +1675,28 @@ final class StoreBackedWorkspaceSearchTests: XCTestCase {
             XCTAssertTrue(completedAfterRelease)
         }
 
+        func testPathSearchBypassesBlockedFreshnessWait() async throws {
+            let root = try makeTemporaryRoot(name: "PathSearchBypassesFreshness")
+            let fileURL = root.appendingPathComponent("Sources/PathOnly.swift")
+            try write("let pathOnly = true\n", to: fileURL)
+            let store = WorkspaceFileContextStore()
+            _ = try await store.loadRoot(path: root.path)
+            let freshnessGate = AsyncGate()
+
+            let result = try await StoreBackedWorkspaceSearch.$freshnessWaitOperationOverrideForTesting.withValue({ _, _ in
+                await freshnessGate.markStartedAndWaitForRelease()
+                return []
+            }) {
+                try await StoreBackedWorkspaceSearch.$freshnessWaitTimeoutOverrideForTesting.withValue(.milliseconds(50)) {
+                    try await searchPaths(pattern: "*.swift", store: store)
+                }
+            }
+            XCTAssertEqual(result.paths, [fileURL.path])
+            let freshnessStarted = await freshnessGate.waitUntilStartedWithinTimeout(timeoutNanoseconds: 20_000_000)
+            XCTAssertFalse(freshnessStarted)
+            await freshnessGate.release()
+        }
+
         func testBlockedFreshnessWaitReturnsDedicatedTimeout() async throws {
             let root = try makeTemporaryRoot(name: "FreshnessTimeout")
             let store = WorkspaceFileContextStore()
@@ -1876,16 +1945,28 @@ final class StoreBackedWorkspaceSearchTests: XCTestCase {
             encoding: .utf8
         )
         try assertOrdered([
-            "try await ensureRootScopeAvailable(rootScope, store: store)",
-            "try await ensureSearchReady(store: store, workspaceManager: workspaceManager)",
             "let effectiveMode = mode == .auto ? FileSearchActor.inferredAutoMode(pattern) : mode",
-            "return try await store.withStoreBackedSearchAccess(",
-            "try await ensureRootScopeAvailable(rootScope, store: store)",
             "try await ensureSearchReady(store: store, workspaceManager: workspaceManager)",
-            "try Task.checkCancellation()",
-            "let contentFreshnessPolicy = await store.contentSearchFreshnessPolicy(",
+            "try await ensureRootScopeAvailable(rootScope, store: store)",
+            "return try await store.withStoreBackedSearchAccess(",
+            "try await ensureSearchReady(store: store, workspaceManager: workspaceManager)",
+            "try await ensureRootScopeAvailable(rootScope, store: store)",
+            "let requiresIngressFreshness = effectiveMode == .content || effectiveMode == .both",
+            "contentFreshnessPolicy = await store.contentSearchFreshnessPolicy(",
             "try Task.checkCancellation()",
             "try await performSearch("
+        ], in: source)
+    }
+
+    func testIndexedPathFastPathRequiresFreshIndexResults() throws {
+        let source = try String(
+            contentsOf: RepoRoot.url().appendingPathComponent("Sources/RepoPrompt/Features/Search/StoreBackedWorkspaceSearch.swift"),
+            encoding: .utf8
+        )
+        try assertOrdered([
+            "let queryResult = await searchService.search(pattern, limit: maxPaths)",
+            "guard await indexedPathQueryResultIsCurrent(queryResult, store: store) else { return nil }",
+            "let visibleResults = queryResult.results.filter"
         ], in: source)
     }
 

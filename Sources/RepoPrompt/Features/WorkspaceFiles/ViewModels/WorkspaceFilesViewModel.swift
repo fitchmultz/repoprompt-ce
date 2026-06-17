@@ -1024,6 +1024,7 @@ class WorkspaceFilesViewModel: ObservableObject {
         private var appliedIndexProjectionIndexRebuildVisitedFileCount = 0
         private var appliedIndexProjectionWillHandleHandler: (@Sendable (UUID, UInt64) async -> Void)?
         private var appliedIndexProjectionStateObserver: ((AppliedIndexProjectionDiagnosticsSnapshot) -> Void)?
+        private var postCatalogRootWorkWillStartHandlerForTesting: (@MainActor (UUID, String) async -> Void)?
 
         func setAppliedIndexProjectionWillHandleHandlerForTesting(
             _ handler: (@Sendable (UUID, UInt64) async -> Void)?
@@ -1036,6 +1037,12 @@ class WorkspaceFilesViewModel: ObservableObject {
         ) {
             appliedIndexProjectionStateObserver = observer
             observer?(appliedIndexProjectionDiagnosticsSnapshot())
+        }
+
+        func setPostCatalogRootWorkWillStartHandlerForTesting(
+            _ handler: (@MainActor (UUID, String) async -> Void)?
+        ) {
+            postCatalogRootWorkWillStartHandlerForTesting = handler
         }
 
         func appliedIndexProjectionDiagnosticsSnapshot() -> AppliedIndexProjectionDiagnosticsSnapshot {
@@ -2602,6 +2609,11 @@ class WorkspaceFilesViewModel: ObservableObject {
     ) async throws {
         let rootKey = rootKey(forPath: rootRecord.standardizedFullPath)
         guard workspaceFileContextRootsByRootKey[rootKey]?.id == rootRecord.id else { return }
+        #if DEBUG
+            if let postCatalogRootWorkWillStartHandlerForTesting {
+                await postCatalogRootWorkWillStartHandlerForTesting(rootRecord.id, rootRecord.standardizedFullPath)
+            }
+        #endif
         currentWorkspaceID = workspace.id
 
         let rootReplayIngressGeneration = advanceRootReplayIngressGeneration(forRootKey: rootKey)
@@ -2618,17 +2630,20 @@ class WorkspaceFilesViewModel: ObservableObject {
         }
         guard workspaceFileContextRootsByRootKey[rootKey]?.id == rootRecord.id else { return }
 
+        let sliceTabID = workspace.activeComposeTabID ?? workspace.composeTabs.first?.id
         let partitionData = await selectionSliceCoordinator.loadSlices(
             forRootPath: rootRecord.standardizedFullPath,
-            scope: PartitionScope(workspaceID: workspace.id, tabID: currentTabID)
+            scope: PartitionScope(workspaceID: workspace.id, tabID: sliceTabID)
         )
         guard workspaceFileContextRootsByRootKey[rootKey]?.id == rootRecord.id else { return }
-        if partitionData.isEmpty {
-            currentSlicesByRoot.removeValue(forKey: rootRecord.standardizedFullPath)
-        } else {
-            currentSlicesByRoot[rootRecord.standardizedFullPath] = partitionData
+        if currentWorkspaceID == workspace.id, currentTabID == sliceTabID {
+            if partitionData.isEmpty {
+                currentSlicesByRoot.removeValue(forKey: rootRecord.standardizedFullPath)
+            } else {
+                currentSlicesByRoot[rootRecord.standardizedFullPath] = partitionData
+            }
+            requestSelectionSliceSnapshotRebuild(reason: "selection.slicesSnapshot")
         }
-        requestSelectionSliceSnapshotRebuild(reason: "selection.slicesSnapshot")
 
         if codeScanEnabled, rootKind == .user {
             if isInitialRootLoadScanDeferralActive {

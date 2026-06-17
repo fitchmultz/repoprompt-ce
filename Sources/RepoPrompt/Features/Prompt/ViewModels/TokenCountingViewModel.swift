@@ -489,15 +489,6 @@ class TokenCountingViewModel: ObservableObject {
         return fileManager?.snapshotSelection() ?? StoredSelection()
     }
 
-    private func allStoreFileRecords(from store: WorkspaceFileContextStore) async -> [WorkspaceFileRecord] {
-        let roots = await store.roots()
-        var records: [WorkspaceFileRecord] = []
-        for root in roots {
-            await records.append(contentsOf: store.files(inRoot: root.id))
-        }
-        return records
-    }
-
     private func predominantLanguage(
         from entries: [ResolvedPromptFileEntry],
         includeFiles: Bool,
@@ -568,6 +559,9 @@ class TokenCountingViewModel: ObservableObject {
         let includeUserPrompt = copySnapshot.includeUserPrompt
         let includeMetaPrompts = copySnapshot.includeMetaPrompts
         let includeFileTree = copySnapshot.includeFileTree
+        let hasFileSelectionInputs = !selectionAtStart.selectedPaths.isEmpty
+            || !selectionAtStart.slices.isEmpty
+            || (selectionAtStart.codemapAutoEnabled && !selectionAtStart.autoCodemapPaths.isEmpty)
 
         let promptText = includeUserPrompt ? promptSource : ""
         // For MCP system prompts, always include them even if includeMetaPrompts is false
@@ -576,36 +570,22 @@ class TokenCountingViewModel: ObservableObject {
         let duplicatePromptAtTop = includeUserPrompt ? copySnapshot.duplicateUserInstructionsAtTop : false
 
         let store = fileManager.workspaceFileContextStore
-        #if DEBUG
-            let allFilesStartMS = PromptTokenRecountDiagnostics.start()
-            PromptTokenRecountDiagnostics.event("tokenRecount.calculate.allFiles.begin")
-        #endif
-        let allFileRecords = await allStoreFileRecords(from: store)
-        #if DEBUG
-            PromptTokenRecountDiagnostics.event(
-                "tokenRecount.calculate.allFiles.end",
-                fields: [
-                    "files": "\(allFileRecords.count)",
-                    "duration": allFilesStartMS.map { PromptTokenRecountDiagnostics.formatElapsedMS(since: $0) } ?? "notMeasured"
-                ]
-            )
-        #endif
-        guard !Task.isCancelled else {
-            #if DEBUG
-                PromptTokenRecountDiagnostics.event("tokenRecount.calculate.cancelled", fields: ["phase": "allFiles", "duration": calculateStartMS.map { PromptTokenRecountDiagnostics.formatElapsedMS(since: $0) } ?? "notMeasured"])
-            #endif
-            return
-        }
+        let effectiveCodeMapUsage = copySnapshot.codeMapUsage
+        let shouldLoadCodemapAPIs = includeFiles && hasFileSelectionInputs && effectiveCodeMapUsage != .none
         #if DEBUG
             let codemapAPIsStartMS = PromptTokenRecountDiagnostics.start()
-            PromptTokenRecountDiagnostics.event("tokenRecount.calculate.codemapAPIs.begin")
+            PromptTokenRecountDiagnostics.event(
+                "tokenRecount.calculate.codemapAPIs.begin",
+                fields: ["mode": shouldLoadCodemapAPIs ? "load" : "skipped"]
+            )
         #endif
-        let storeFileAPIs = await store.allCodemapFileAPIs()
+        let storeFileAPIs = shouldLoadCodemapAPIs ? await store.allCodemapFileAPIs() : []
         #if DEBUG
             PromptTokenRecountDiagnostics.event(
                 "tokenRecount.calculate.codemapAPIs.end",
                 fields: [
                     "fileAPIs": "\(storeFileAPIs.count)",
+                    "mode": shouldLoadCodemapAPIs ? "load" : "skipped",
                     "duration": codemapAPIsStartMS.map { PromptTokenRecountDiagnostics.formatElapsedMS(since: $0) } ?? "notMeasured"
                 ]
             )
@@ -617,19 +597,17 @@ class TokenCountingViewModel: ObservableObject {
             return
         }
 
-        // Cache the store-owned file APIs for reuse by legacy UI surfaces.
+        // Cache store-owned file APIs only when selected inputs need codemap accounting.
         cachedFileAPIs = storeFileAPIs
 
-        // Derive and publish the set of detected languages from store-owned file records.
-        let detectedExts = allFileRecords.map { (($0.name as NSString).pathExtension).lowercased() }
-        let detectedLangs = detectedExts.compactMap { SyntaxManager.shared.extensionToLanguage[$0] }
-        scannedLanguages = Set(detectedLangs)
-
-        let effectiveCodeMapUsage = copySnapshot.codeMapUsage
         let accountingCodeMapUsage: CodeMapUsage = includeFiles ? effectiveCodeMapUsage : .none
         let accountingSelection = includeFiles ? selectionAtStart : StoredSelection()
 
-        let effectiveFileTreeOption: FileTreeOption = includeFileTree ? copySnapshot.fileTreeMode : .none
+        let effectiveFileTreeOption: FileTreeOption = if includeFileTree {
+            copySnapshot.fileTreeMode == .auto && !hasFileSelectionInputs ? .none : copySnapshot.fileTreeMode
+        } else {
+            .none
+        }
         #if DEBUG
             PromptTokenRecountDiagnostics.event(
                 "tokenRecount.calculate.context",
@@ -717,6 +695,10 @@ class TokenCountingViewModel: ObservableObject {
             #endif
             return
         }
+
+        let detectedExts = accountingResult.resolvedEntries.map { (($0.file.name as NSString).pathExtension).lowercased() }
+        let detectedLangs = detectedExts.compactMap { SyntaxManager.shared.extensionToLanguage[$0] }
+        scannedLanguages = Set(detectedLangs)
 
         let predominantLanguage = predominantLanguage(
             from: accountingResult.resolvedEntries,

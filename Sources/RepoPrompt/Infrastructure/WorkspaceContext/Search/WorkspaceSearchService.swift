@@ -442,6 +442,9 @@ actor WorkspaceSearchService {
             let materializationStart = totalStart
         #endif
         let rootPathIndexes = snapshot.rootPathIndexes
+        for rootPathIndex in rootPathIndexes {
+            rootPathIndex.prepareForSearch()
+        }
         let entryCount = rootPathIndexes.reduce(0) { $0 + $1.count }
         #if DEBUG
             let end = DispatchTime.now().uptimeNanoseconds

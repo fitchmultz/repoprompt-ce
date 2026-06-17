@@ -120,6 +120,11 @@ enum PromptContextPreAssemblyService {
         codemapSnapshots: [UUID: WorkspaceCodemapSnapshot]
     ) async -> String? {
         guard request.cfg.rendersFileTree else { return nil }
+        let hasFileTreeInputs = !physicalSelection.selectedPaths.isEmpty
+            || !physicalSelection.slices.isEmpty
+            || (physicalSelection.codemapAutoEnabled && !physicalSelection.autoCodemapPaths.isEmpty)
+            || !entries.isEmpty
+        guard request.cfg.effectiveFileTreeMode != .auto || hasFileTreeInputs else { return nil }
 
         let rawFileTreeSnapshot = await request.store.makeFileTreeSelectionSnapshot(
             selection: physicalSelection,
