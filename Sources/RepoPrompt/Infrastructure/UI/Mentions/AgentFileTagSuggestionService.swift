@@ -184,9 +184,8 @@ final class AgentFileTagSuggestionService {
                 displayName: entry.name,
                 disambiguationLabel: disambiguationLabel,
                 commitDisplayText: Self.commitDisplayText(
-                    fileName: entry.name,
                     tokenRelativePath: tokenRelativePath,
-                    isDuplicateName: isDuplicateName
+                    fallbackFileName: entry.name
                 ),
                 matchName: entry.name,
                 tokenRelativePath: tokenRelativePath,
@@ -331,7 +330,10 @@ final class AgentFileTagSuggestionService {
                     relativePath: tokenRelativePath,
                     kind: .file,
                     subtitle: expandedSubtitleLabel(for: tokenRelativePath, fallbackRootLabel: rootLabel),
-                    commitDisplayText: file.name
+                    commitDisplayText: Self.commitDisplayText(
+                        tokenRelativePath: tokenRelativePath,
+                        fallbackFileName: file.name
+                    )
                 ))
             }
             if suggestions.count >= maxResults { break }
@@ -365,15 +367,14 @@ final class AgentFileTagSuggestionService {
     }
 
     nonisolated static func commitDisplayText(
-        fileName: String,
         tokenRelativePath: String,
-        isDuplicateName: Bool
+        fallbackFileName: String
     ) -> String {
-        let trimmedFileName = fileName.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !isDuplicateName, !trimmedFileName.isEmpty {
-            return trimmedFileName
+        let trimmedPath = tokenRelativePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedPath.isEmpty {
+            return trimmedPath
         }
-        return tokenRelativePath
+        return fallbackFileName.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private nonisolated static func shouldExcludeFromSuggestions(relativePath: String) -> Bool {
