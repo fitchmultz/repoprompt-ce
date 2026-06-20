@@ -5282,7 +5282,9 @@ final class AgentModeViewModel: ObservableObject {
             await materializer.release(sessionID: sessionID)
             return state
         }
-        guard await materializer.materialize(sessionID: sessionID, bindings: bindings) != nil else {
+        guard let projection = await materializer.materialize(sessionID: sessionID, bindings: bindings),
+              projection.isFullyMaterialized
+        else {
             return .unavailable
         }
         return state

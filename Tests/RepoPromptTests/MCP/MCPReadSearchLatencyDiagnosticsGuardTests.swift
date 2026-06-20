@@ -2142,7 +2142,7 @@
                 guard values.isRegularFile == true else { continue }
                 let text = try String(contentsOf: url, encoding: .utf8)
                 if text.contains(needle) {
-                    matches.append(url.path.replacingOccurrences(of: root.path + "/", with: ""))
+                    matches.append(RepoRoot.relativePath(for: url, relativeTo: root))
                 }
             }
             return matches.sorted()
