@@ -153,7 +153,12 @@ actor PartitionStore {
         return PartitionData.empty()
     }
 
-    func save(forRoot rootPath: String, scope: PartitionScope, data: PartitionData) async throws {
+    func save(
+        forRoot rootPath: String,
+        scope: PartitionScope,
+        data: PartitionData
+    ) async throws {
+        try Task.checkCancellation()
         let url = partitionURL(forRoot: rootPath, scope: scope)
 
         // Ensure directories exist: .../Application Support/RepoPrompt CE/Partitions/<repoKey>/
@@ -164,7 +169,9 @@ actor PartitionStore {
         dataToPersist.updatedAt = dateFormatter.string(from: Date())
 
         let encoded = try encoder.encode(dataToPersist)
+        try Task.checkCancellation()
         try encoded.write(to: url, options: [.atomic])
+        try Task.checkCancellation()
 
         // Inform other windows/tabs within the process to reload slices for this scope
         postSaveNotification(rootPath: rootPath, scope: scope)
@@ -179,7 +186,9 @@ actor PartitionStore {
         updates: [String: SliceUpdate],
         mode: SliceMutationMode
     ) async throws -> [String: StoredSlices] {
+        try Task.checkCancellation()
         var data = await load(forRoot: rootPath, scope: scope)
+        try Task.checkCancellation()
         switch mode {
         case .set:
             var next: [String: StoredSlices] = [:]
@@ -266,7 +275,9 @@ actor PartitionStore {
             }
         }
 
+        try Task.checkCancellation()
         try await save(forRoot: rootPath, scope: scope, data: data)
+        try Task.checkCancellation()
         return data.files
     }
 

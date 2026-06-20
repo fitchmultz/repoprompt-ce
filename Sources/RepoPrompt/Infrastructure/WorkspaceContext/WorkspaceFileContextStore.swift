@@ -435,6 +435,18 @@ actor WorkspaceFileContextStore {
             let producedAppliedIndexGeneration: UInt64
         }
 
+        struct ApplyEditsRebaseProbePathSnapshot: Equatable {
+            let rootID: UUID
+            let rootLifetimeID: UUID
+            let rootToken: UUID
+            let rootPath: String
+            let fileID: UUID
+            let fullPath: String
+            let relativePath: String
+            let isSessionWorktree: Bool
+            let producedAppliedIndexGeneration: UInt64
+        }
+
         private final class PublicationInvalidationRecorder: @unchecked Sendable {
             let preparedDeltaCount: Int
             var topologyInvalidationCount = 0
@@ -467,6 +479,7 @@ actor WorkspaceFileContextStore {
         private var rootUnloadDidDetachHandler: (@Sendable ([String]) async -> Void)?
         private var ensureIndexedFilesEligibilityDidResolveHandler: (@Sendable (UUID, String) async -> Void)?
         private var watcherSinkWillApplyHandler: (@Sendable (UUID) async -> Void)?
+        private var storeEditDeferredPublicationDidRegisterHandler: (@Sendable (UUID, String) async -> Void)?
         private var publisherIngressWillWaitHandler: (@Sendable (Set<UUID>) async -> Void)?
         private var watcherServiceStateWillReconcileHandler: (@Sendable (UUID, Bool) async -> Void)?
         private var watcherStopWillBeginHandler: (@Sendable (UUID) async -> Void)?
@@ -578,6 +591,34 @@ actor WorkspaceFileContextStore {
 
         func fileSystemServiceForTesting(rootID: UUID) -> FileSystemService? {
             rootStatesByID[rootID]?.service
+        }
+
+        func debugApplyEditsRebaseProbePathSnapshot(
+            fullPath rawFullPath: String,
+            rootScope: WorkspaceLookupRootScope
+        ) -> ApplyEditsRebaseProbePathSnapshot? {
+            let fullPath = StandardizedPath.absolute(rawFullPath)
+            guard let root = rootsForPathLookup(scope: rootScope)
+                .filter({ StandardizedPath.isDescendant(fullPath, of: $0.standardizedFullPath) })
+                .max(by: { $0.standardizedFullPath.count < $1.standardizedFullPath.count }),
+                let state = rootStatesByID[root.id]
+            else { return nil }
+            let relativePath = URL(fileURLWithPath: fullPath)
+                .relativePath(from: URL(fileURLWithPath: root.standardizedFullPath))
+            guard let file = file(rootID: root.id, relativePath: relativePath),
+                  file.standardizedFullPath == fullPath
+            else { return nil }
+            return ApplyEditsRebaseProbePathSnapshot(
+                rootID: root.id,
+                rootLifetimeID: state.lifetimeID,
+                rootToken: state.service.diagnosticRootToken,
+                rootPath: root.standardizedFullPath,
+                fileID: file.id,
+                fullPath: file.standardizedFullPath,
+                relativePath: file.standardizedRelativePath,
+                isSessionWorktree: root.kind == .sessionWorktree,
+                producedAppliedIndexGeneration: appliedIndexGenerationsByRootID[root.id] ?? 0
+            )
         }
 
         func readSearchRootDiagnosticsSnapshot(
@@ -909,6 +950,12 @@ actor WorkspaceFileContextStore {
             _ handler: (@Sendable () async -> Void)?
         ) async {
             await storeBackedSearchLane.setPermitAcquiredHandlerForTesting(handler)
+        }
+
+        func setStoreEditDeferredPublicationDidRegisterHandlerForTesting(
+            _ handler: (@Sendable (UUID, String) async -> Void)?
+        ) {
+            storeEditDeferredPublicationDidRegisterHandler = handler
         }
 
         func setSearchContentReadChunkHandlerForTesting(
@@ -1542,6 +1589,13 @@ actor WorkspaceFileContextStore {
             }
         #endif
         guard isRootLifetimeCurrent(rootID: root.id, expectedLifetimeID: expectedLifetimeID) else { return }
+        #if DEBUG
+            MCPApplyEditsRebaseProbeRecorder.recordPublisherIngress(
+                rootID: root.id,
+                source: publication.source,
+                deltas: publication.deltas
+            )
+        #endif
         if publication.source == .overflowRootRescan || publication.source == .recoveryFullResync {
             await invalidateRetainedSearchContentForRecoveryUncertainty(rootID: root.id)
             guard isRootLifetimeCurrent(rootID: root.id, expectedLifetimeID: expectedLifetimeID) else { return }
@@ -5324,22 +5378,81 @@ actor WorkspaceFileContextStore {
     @discardableResult
     func editFile(rootID: UUID, relativePath: String, newContent: String) async throws -> WorkspaceFileCatalogMaterializationResult? {
         let state = try state(for: rootID)
+        let expectedLifetimeID = state.lifetimeID
         let standardizedRelativePath = StandardizedPath.relative(relativePath)
+        let deferredPublicationToken: FileSystemDeferredEditPublicationToken
         do {
-            try await state.service.editFile(atRelativePath: standardizedRelativePath, newContent: newContent)
+            guard let token = try await state.service.editFile(
+                atRelativePath: standardizedRelativePath,
+                newContent: newContent,
+                modificationPublicationPolicy: .deferSyntheticModificationToSuccessfulCaller
+            ) else {
+                throw WorkspaceFileContextStoreError.catalogMaterializationFailed(
+                    "store-owned edit completed without a deferred modification publication token"
+                )
+            }
+            deferredPublicationToken = token
         } catch FileSystemError.fileNotFound {
             pruneCatalogFileMissingOnDisk(rootID: rootID, relativePath: standardizedRelativePath, publishDelta: true)
             throw FileSystemError.fileNotFound
         }
-        if let file = file(rootID: rootID, relativePath: standardizedRelativePath) {
-            invalidateSearchContent(file)
-            invalidateCodemapSnapshot(rootID: rootID, relativePath: standardizedRelativePath)
-            if isDiscoverableFileID(file.id) {
-                publishAppliedIndexEvent(root: state.root, modifiedFileIDs: [file.id])
+
+        do {
+            #if DEBUG
+                if let storeEditDeferredPublicationDidRegisterHandler {
+                    await storeEditDeferredPublicationDidRegisterHandler(rootID, standardizedRelativePath)
+                }
+            #endif
+            try Task.checkCancellation()
+            guard isRootLifetimeCurrent(rootID: rootID, expectedLifetimeID: expectedLifetimeID) else {
+                throw WorkspaceFileContextStoreError.rootNotLoaded(rootID)
             }
-            return .materialized(file)
+
+            let result: WorkspaceFileCatalogMaterializationResult?
+            let publishedCanonicalModification: Bool
+            if let file = file(rootID: rootID, relativePath: standardizedRelativePath) {
+                invalidateSearchContent(file)
+                invalidateCodemapSnapshot(rootID: rootID, relativePath: standardizedRelativePath)
+                publishedCanonicalModification = isDiscoverableFileID(file.id)
+                if publishedCanonicalModification {
+                    publishAppliedIndexEvent(root: state.root, modifiedFileIDs: [file.id])
+                    #if DEBUG
+                        MCPApplyEditsRebaseProbeRecorder.recordStoreModification(
+                            rootID: rootID,
+                            fileID: file.id,
+                            generation: appliedIndexGenerationsByRootID[rootID] ?? 0
+                        )
+                    #endif
+                }
+                result = .materialized(file)
+            } else {
+                let materialization = try await materializeCatalogFileAfterDiskWrite(
+                    rootID: rootID,
+                    relativePath: standardizedRelativePath
+                )
+                result = materialization
+                switch materialization {
+                case let .materialized(file):
+                    publishedCanonicalModification = isDiscoverableFileID(file.id)
+                case .ineligible:
+                    publishedCanonicalModification = false
+                }
+            }
+
+            await state.service.resolveDeferredEditPublication(
+                deferredPublicationToken,
+                resolution: publishedCanonicalModification
+                    ? .callerPublishedCanonicalModification
+                    : .publishSyntheticFallback
+            )
+            return result
+        } catch {
+            await state.service.resolveDeferredEditPublication(
+                deferredPublicationToken,
+                resolution: .publishSyntheticFallback
+            )
+            throw error
         }
-        return try await materializeCatalogFileAfterDiskWrite(rootID: rootID, relativePath: standardizedRelativePath)
     }
 
     func moveFile(rootID: UUID, from oldRelativePath: String, to newRelativePath: String) async throws {
@@ -7171,6 +7284,13 @@ actor WorkspaceFileContextStore {
         let modifiedFolderIDs = modifiedFolderIDs.filter(isDiscoverableFolderID)
         guard requiresFullResync || !upsertedFiles.isEmpty || !upsertedFolders.isEmpty || !removedFileIDs.isEmpty || !removedFolderIDs.isEmpty || !removedFilePaths.isEmpty || !removedFolderPaths.isEmpty || !modifiedFileIDs.isEmpty || !modifiedFolderIDs.isEmpty else { return }
         let generation = nextAppliedIndexGeneration(forRootID: root.id)
+        #if DEBUG
+            MCPApplyEditsRebaseProbeRecorder.recordAppliedIndexModification(
+                rootID: root.id,
+                fileIDs: modifiedFileIDs,
+                generation: generation
+            )
+        #endif
         yieldAppliedIndexEvent(WorkspaceAppliedIndexBatchEvent(
             rootID: root.id,
             rootPath: root.standardizedFullPath,

@@ -122,6 +122,336 @@
             _ = await registry.cancel(otherEntry.probeID)
             let finalReleaseCount = await releases.count()
             XCTAssertEqual(finalReleaseCount, 5)
+
+            let workspaceID = try XCTUnwrap(target.workspaceID)
+            func applyEditsState(
+                probeID: UUID = UUID(),
+                target entryTarget: MCPServerViewModel.DebugReadFileAutoSelectionTarget? = nil,
+                expectsSyntheticModification: Bool = true
+            ) -> MCPApplyEditsRebaseProbeState {
+                let resolvedTarget = entryTarget ?? target
+                let storeSnapshot = WorkspaceFileContextStore.ApplyEditsRebaseProbePathSnapshot(
+                    rootID: UUID(),
+                    rootLifetimeID: UUID(),
+                    rootToken: UUID(),
+                    rootPath: "/tmp/worktree",
+                    fileID: UUID(),
+                    fullPath: "/tmp/worktree/fixture.swift",
+                    relativePath: "fixture.swift",
+                    isSessionWorktree: true,
+                    producedAppliedIndexGeneration: 10
+                )
+                return MCPApplyEditsRebaseProbeState(
+                    probeID: probeID,
+                    createdAt: Date(),
+                    expiryMilliseconds: 1000,
+                    deadlineMilliseconds: 5000,
+                    windowID: 1,
+                    serverIdentity: ObjectIdentifier(coordinator),
+                    target: resolvedTarget,
+                    rootScope: .sessionBoundWorkspace(
+                        canonicalRootPaths: [],
+                        physicalRootPaths: [storeSnapshot.rootPath]
+                    ),
+                    rootID: storeSnapshot.rootID,
+                    rootLifetimeID: storeSnapshot.rootLifetimeID,
+                    rootToken: storeSnapshot.rootToken,
+                    fileID: storeSnapshot.fileID,
+                    physicalPath: storeSnapshot.fullPath,
+                    relativePath: storeSnapshot.relativePath,
+                    selectionPathCandidates: [storeSnapshot.fullPath, storeSnapshot.relativePath],
+                    expectedFileSHA256: String(repeating: "0", count: 64),
+                    expectedByteCount: 1,
+                    expectedLineCount: 1,
+                    expectedRanges: [LineRange(start: 1, end: 1)],
+                    expectsSyntheticModification: expectsSyntheticModification,
+                    baselineStore: storeSnapshot,
+                    baselineProjection: WorkspaceFilesViewModel.ApplyEditsRebaseProbePathSnapshot(
+                        handledGeneration: 10,
+                        registrationGeneration: 2,
+                        hasPendingRebaseTask: false
+                    ),
+                    baselineSelection: WorkspaceManagerViewModel.ApplyEditsRebaseProbeSelectionSnapshot(
+                        workspaceID: workspaceID,
+                        tabID: resolvedTarget.tabID,
+                        selectionRevision: 5,
+                        ranges: [LineRange(start: 1, end: 1)]
+                    )
+                )
+            }
+
+            let applyRegistry = MCPApplyEditsRebaseProbeRegistry()
+            MCPApplyEditsRebaseProbeRecorder.resetForTesting()
+            let takenState = applyEditsState()
+            let takenApplyEntry = MCPApplyEditsRebaseProbeRegistry.Entry(
+                probeID: takenState.probeID,
+                createdAt: Date(),
+                expiryMilliseconds: 1000,
+                serverIdentity: takenState.serverIdentity,
+                contextKey: target.contextKey,
+                state: takenState
+            )
+            let insertedTakenApplyProbe = await applyRegistry.insert(takenApplyEntry)
+            XCTAssertTrue(insertedTakenApplyProbe)
+            XCTAssertEqual(MCPApplyEditsRebaseProbeRecorder.activeCountForTesting(), 1)
+            let retainedTakenApplyProbe = await applyRegistry.take(takenState.probeID)
+            XCTAssertNotNil(retainedTakenApplyProbe)
+            let containsTakenApplyProbe = await applyRegistry.containsForTesting(takenState.probeID)
+            XCTAssertFalse(containsTakenApplyProbe)
+            XCTAssertEqual(MCPApplyEditsRebaseProbeRecorder.activeCountForTesting(), 1, "Drain owns recorder cleanup after taking the registry entry.")
+            MCPApplyEditsRebaseProbeRecorder.unregister(takenState.probeID)
+
+            let boundedState = applyEditsState()
+            let boundedEntry = MCPApplyEditsRebaseProbeRegistry.Entry(
+                probeID: boundedState.probeID,
+                createdAt: Date(),
+                expiryMilliseconds: 1000,
+                serverIdentity: boundedState.serverIdentity,
+                contextKey: target.contextKey,
+                state: boundedState
+            )
+            let insertedBoundedApplyProbe = await applyRegistry.insert(boundedEntry)
+            XCTAssertTrue(insertedBoundedApplyProbe)
+            MCPApplyEditsRebaseProbeRecorder.recordServicePublication(
+                rootToken: boundedState.rootToken,
+                source: .syntheticMutation,
+                deltas: [.fileModified("fixture.swift", nil)]
+            )
+            for index in 0 ..< 70 {
+                boundedState.increment("test_events", event: "unsafe / payload \(index)")
+            }
+            let boundedSnapshot = boundedState.snapshot()
+            XCTAssertEqual(boundedSnapshot.events.count, 64)
+            XCTAssertGreaterThan(boundedSnapshot.eventOverflowCount, 0)
+            XCTAssertEqual(boundedSnapshot.counters["service_publications_syntheticMutation"], 1)
+            XCTAssertTrue(boundedSnapshot.events.allSatisfy { !$0.category.contains("/") && $0.category.count <= 48 })
+            let cancelledBoundedApplyProbe = await applyRegistry.cancel(boundedState.probeID)
+            XCTAssertNotNil(cancelledBoundedApplyProbe)
+            XCTAssertEqual(MCPApplyEditsRebaseProbeRecorder.activeCountForTesting(), 0)
+
+            let isolatedState = applyEditsState()
+            let unrelatedState = applyEditsState(target: otherTarget)
+            XCTAssertTrue(MCPApplyEditsRebaseProbeRecorder.register(isolatedState))
+            XCTAssertTrue(MCPApplyEditsRebaseProbeRecorder.register(unrelatedState))
+            let childConnectionID = UUID()
+            let requestIdentity = MCPRequestTimelineIdentity(
+                jsonRPCRequestID: .number(77),
+                connectionID: childConnectionID.uuidString,
+                connectionGeneration: 4,
+                requestOrdinal: 9
+            )
+            MCPApplyEditsRebaseProbeRecorder.recordApplyEditsInvocation(
+                connectionID: childConnectionID,
+                workspaceID: target.workspaceID,
+                tabID: target.tabID,
+                physicalPath: isolatedState.physicalPath,
+                requestIdentity: requestIdentity
+            )
+            MCPApplyEditsRebaseProbeRecorder.recordApplyEditsOutcome(
+                connectionID: childConnectionID,
+                workspaceID: target.workspaceID,
+                tabID: target.tabID,
+                physicalPath: isolatedState.physicalPath,
+                requestIdentity: requestIdentity,
+                editsApplied: 1,
+                outcome: "success"
+            )
+            XCTAssertEqual(isolatedState.snapshot().counters["apply_edits_outcomes"], 1)
+            XCTAssertEqual(isolatedState.snapshot().counters["apply_edits_child_connection_routes"], 1)
+            XCTAssertNil(unrelatedState.snapshot().counters["apply_edits_outcomes"])
+
+            XCTAssertEqual(
+                isolatedState.minimumStableEvidenceFailure(
+                    snapshot: isolatedState.snapshot(),
+                    store: isolatedState.baselineStore,
+                    projection: isolatedState.baselineProjection
+                ),
+                "missing_service_publications_syntheticMutation"
+            )
+            for (counter, amount) in [
+                ("service_publications_syntheticMutation", UInt64(1)),
+                ("publisher_ingress_modifications_syntheticMutation", 1),
+                ("store_modification_publications", 1),
+                ("applied_index_modification_events", 2),
+                ("projection_modification_events", 2),
+                ("rebase_registrations", 2),
+                ("rebase_replacements", 1),
+                ("rebase_executions", 1),
+                ("rebase_successful_completions", 1)
+            ] {
+                isolatedState.increment(counter, by: amount)
+            }
+            let advancedStore = WorkspaceFileContextStore.ApplyEditsRebaseProbePathSnapshot(
+                rootID: isolatedState.baselineStore.rootID,
+                rootLifetimeID: isolatedState.baselineStore.rootLifetimeID,
+                rootToken: isolatedState.baselineStore.rootToken,
+                rootPath: isolatedState.baselineStore.rootPath,
+                fileID: isolatedState.baselineStore.fileID,
+                fullPath: isolatedState.baselineStore.fullPath,
+                relativePath: isolatedState.baselineStore.relativePath,
+                isSessionWorktree: true,
+                producedAppliedIndexGeneration: isolatedState.baselineStore.producedAppliedIndexGeneration + 2
+            )
+            let advancedProjection = WorkspaceFilesViewModel.ApplyEditsRebaseProbePathSnapshot(
+                handledGeneration: isolatedState.baselineProjection.handledGeneration + 2,
+                registrationGeneration: isolatedState.baselineProjection.registrationGeneration + 2,
+                hasPendingRebaseTask: false
+            )
+            XCTAssertNil(isolatedState.minimumStableEvidenceFailure(
+                snapshot: isolatedState.snapshot(),
+                store: advancedStore,
+                projection: advancedProjection
+            ))
+
+            let optimizedState = applyEditsState(expectsSyntheticModification: false)
+            optimizedState.bindRequestIdentity(requestIdentity)
+            for (counter, amount) in [
+                ("apply_edits_invocations", UInt64(1)),
+                ("apply_edits_outcomes", 1),
+                ("apply_edits_applied", 1),
+                ("service_publications_watcher", 1),
+                ("publisher_ingress_modifications_watcher", 1),
+                ("store_modification_publications", 1),
+                ("applied_index_modification_events", 2),
+                ("projection_modification_events", 2),
+                ("rebase_registrations", 2),
+                ("rebase_replacements", 1),
+                ("rebase_executions", 1),
+                ("rebase_successful_completions", 1)
+            ] {
+                optimizedState.increment(counter, by: amount)
+            }
+            let optimizedStore = WorkspaceFileContextStore.ApplyEditsRebaseProbePathSnapshot(
+                rootID: optimizedState.baselineStore.rootID,
+                rootLifetimeID: optimizedState.baselineStore.rootLifetimeID,
+                rootToken: optimizedState.baselineStore.rootToken,
+                rootPath: optimizedState.baselineStore.rootPath,
+                fileID: optimizedState.baselineStore.fileID,
+                fullPath: optimizedState.baselineStore.fullPath,
+                relativePath: optimizedState.baselineStore.relativePath,
+                isSessionWorktree: true,
+                producedAppliedIndexGeneration: optimizedState.baselineStore.producedAppliedIndexGeneration + 2
+            )
+            let optimizedProjection = WorkspaceFilesViewModel.ApplyEditsRebaseProbePathSnapshot(
+                handledGeneration: optimizedState.baselineProjection.handledGeneration + 2,
+                registrationGeneration: optimizedState.baselineProjection.registrationGeneration + 2,
+                hasPendingRebaseTask: false
+            )
+            XCTAssertNil(optimizedState.minimumStableEvidenceFailure(
+                snapshot: optimizedState.snapshot(),
+                store: optimizedStore,
+                projection: optimizedProjection
+            ))
+            optimizedState.increment("service_publications_syntheticMutation")
+            XCTAssertEqual(
+                optimizedState.minimumStableEvidenceFailure(
+                    snapshot: optimizedState.snapshot(),
+                    store: optimizedStore,
+                    projection: optimizedProjection
+                ),
+                "unexpected_service_publications_syntheticMutation"
+            )
+
+            let exactResponseEvent = MCPResponseDeliveryTraceEvent(
+                layer: "transport",
+                phase: "transport_write_completed",
+                requestIdentity: requestIdentity
+            )
+            let unrelatedResponseEvent = MCPResponseDeliveryTraceEvent(
+                layer: "transport",
+                phase: "transport_write_completed",
+                requestIdentity: MCPRequestTimelineIdentity(
+                    jsonRPCRequestID: .number(78),
+                    connectionID: target.connectionID.uuidString,
+                    connectionGeneration: 4,
+                    requestOrdinal: 10
+                )
+            )
+            XCTAssertNil(ServerNetworkManager.debugApplyEditsProbeResponseEvent(
+                for: nil,
+                events: [exactResponseEvent]
+            ))
+            XCTAssertEqual(ServerNetworkManager.debugApplyEditsProbeResponseEvent(
+                for: requestIdentity,
+                events: [unrelatedResponseEvent, exactResponseEvent]
+            ), exactResponseEvent)
+            let decodedApplyEditsEvent = MCPResponseDeliveryTraceEvent(
+                layer: "app_sdk",
+                phase: "sdk_decode_completed",
+                tool: "apply_edits",
+                requestIdentity: requestIdentity
+            )
+            XCTAssertEqual(
+                MCPApplyEditsRebaseProbeRecorder.latestApplyEditsRequestIdentity(
+                    connectionID: childConnectionID,
+                    events: [unrelatedResponseEvent, decodedApplyEditsEvent]
+                ),
+                requestIdentity
+            )
+            MCPApplyEditsRebaseProbeRecorder.unregister(isolatedState.probeID)
+            MCPApplyEditsRebaseProbeRecorder.unregister(unrelatedState.probeID)
+            XCTAssertEqual(MCPApplyEditsRebaseProbeRecorder.activeCountForTesting(), 0)
+
+            let sourceTabState = applyEditsState()
+            XCTAssertTrue(MCPApplyEditsRebaseProbeRecorder.register(sourceTabState))
+            let sourceTabRequestIdentity = MCPRequestTimelineIdentity(
+                jsonRPCRequestID: .number(79),
+                connectionID: childConnectionID.uuidString,
+                connectionGeneration: 4,
+                requestOrdinal: 11
+            )
+            MCPApplyEditsRebaseProbeRecorder.recordApplyEditsInvocation(
+                connectionID: childConnectionID,
+                workspaceID: nil,
+                tabID: UUID(),
+                physicalPath: sourceTabState.physicalPath,
+                requestIdentity: sourceTabRequestIdentity
+            )
+            MCPApplyEditsRebaseProbeRecorder.recordApplyEditsOutcome(
+                connectionID: childConnectionID,
+                workspaceID: nil,
+                tabID: UUID(),
+                physicalPath: sourceTabState.physicalPath,
+                requestIdentity: sourceTabRequestIdentity,
+                editsApplied: 1,
+                outcome: "success"
+            )
+            XCTAssertEqual(sourceTabState.snapshot().counters["apply_edits_source_workspace_routes"], 1)
+            XCTAssertEqual(sourceTabState.snapshot().counters["apply_edits_source_tab_routes"], 1)
+            XCTAssertEqual(sourceTabState.snapshot().counters["apply_edits_outcomes"], 1)
+            MCPApplyEditsRebaseProbeRecorder.unregister(sourceTabState.probeID)
+
+            let expiringState = applyEditsState()
+            let expiringEntry = MCPApplyEditsRebaseProbeRegistry.Entry(
+                probeID: expiringState.probeID,
+                createdAt: Date(),
+                expiryMilliseconds: 1000,
+                serverIdentity: expiringState.serverIdentity,
+                contextKey: target.contextKey,
+                state: expiringState
+            )
+            let insertedExpiringApplyProbe = await applyRegistry.insert(expiringEntry)
+            XCTAssertTrue(insertedExpiringApplyProbe)
+            await applyRegistry.expireForTesting(expiringState.probeID)
+            let containsExpiredApplyProbe = await applyRegistry.containsForTesting(expiringState.probeID)
+            XCTAssertFalse(containsExpiredApplyProbe)
+            XCTAssertEqual(MCPApplyEditsRebaseProbeRecorder.activeCountForTesting(), 0)
+
+            let contextState = applyEditsState()
+            let contextEntry = MCPApplyEditsRebaseProbeRegistry.Entry(
+                probeID: contextState.probeID,
+                createdAt: Date(),
+                expiryMilliseconds: 1000,
+                serverIdentity: contextState.serverIdentity,
+                contextKey: target.contextKey,
+                state: contextState
+            )
+            let insertedContextApplyProbe = await applyRegistry.insert(contextEntry)
+            XCTAssertTrue(insertedContextApplyProbe)
+            await applyRegistry.cancel(serverIdentity: contextState.serverIdentity, contextKey: target.contextKey)
+            let containsContextApplyProbe = await applyRegistry.containsForTesting(contextState.probeID)
+            XCTAssertFalse(containsContextApplyProbe)
+            XCTAssertEqual(MCPApplyEditsRebaseProbeRecorder.activeCountForTesting(), 0)
         }
 
         private var temporaryRoots = FileSystemTemporaryRoots()
@@ -142,11 +472,17 @@
             XCTAssertTrue(diagnostics.contains("mcp_read_file_auto_selection_probe_begin"))
             XCTAssertTrue(diagnostics.contains("mcp_read_file_auto_selection_probe_drain"))
             XCTAssertTrue(diagnostics.contains("mcp_read_file_auto_selection_probe_cancel"))
+            XCTAssertTrue(diagnostics.contains("mcp_apply_edits_rebase_probe_begin"))
+            XCTAssertTrue(diagnostics.contains("mcp_apply_edits_rebase_probe_drain"))
+            XCTAssertTrue(diagnostics.contains("mcp_apply_edits_rebase_probe_cancel"))
 
             for operation in [
                 "mcp_read_file_auto_selection_probe_begin",
                 "mcp_read_file_auto_selection_probe_drain",
-                "mcp_read_file_auto_selection_probe_cancel"
+                "mcp_read_file_auto_selection_probe_cancel",
+                "mcp_apply_edits_rebase_probe_begin",
+                "mcp_apply_edits_rebase_probe_drain",
+                "mcp_apply_edits_rebase_probe_cancel"
             ] {
                 XCTAssertEqual(
                     try sourceFilesContaining(operation),
@@ -205,6 +541,35 @@
             XCTAssertTrue(sibling.contains("releaseForceAuthoritative"))
             XCTAssertTrue(sibling.contains("private static let capacity = 16"))
             XCTAssertTrue(sibling.contains("private static let expirySeconds: TimeInterval = 30 * 60"))
+
+            let applyEditsProbe = try source("Sources/RepoPrompt/Features/Diagnostics/MCP/MCPConnectionManager+DebugDiagnosticsApplyEditsRebaseLatency.swift")
+            XCTAssertTrue(applyEditsProbe.contains("#if DEBUG"))
+            XCTAssertTrue(applyEditsProbe.contains("private static let eventLimit = 64"))
+            XCTAssertTrue(applyEditsProbe.contains("private static let capacity = 16"))
+            XCTAssertTrue(applyEditsProbe.contains("100 ... 30 * 60 * 1000"))
+            XCTAssertTrue(applyEditsProbe.contains("driver_receipt_required"))
+            XCTAssertTrue(applyEditsProbe.contains("waitForPendingSliceRebasesAndCaptureFence"))
+            XCTAssertTrue(applyEditsProbe.contains("minimumStableEvidenceFailure"))
+            XCTAssertTrue(applyEditsProbe.contains("event.requestIdentity == identity"))
+            XCTAssertTrue(applyEditsProbe.contains("current.connectionID == state.target.connectionID"))
+            XCTAssertFalse(applyEditsProbe.contains("debugReadFileAutoSelectionContextSnapshot(for: state.target)"))
+            XCTAssertFalse(applyEditsProbe.contains("publishSyntheticModification"))
+
+            let workspaceFiles = try source("Sources/RepoPrompt/Features/WorkspaceFiles/ViewModels/WorkspaceFilesViewModel.swift")
+            XCTAssertTrue(workspaceFiles.contains("recordRebaseTaskStart"))
+            XCTAssertTrue(workspaceFiles.contains("recordRebaseExecution"))
+            assertSourceOrder(
+                in: workspaceFiles,
+                hooks: [
+                    "try? await Task.sleep(nanoseconds: 300_000_000)",
+                    "guard sliceRebaseTaskIDsByFullPath[fullPath] == taskID",
+                    "MCPApplyEditsRebaseProbeRecorder.recordRebaseExecution"
+                ]
+            )
+
+            let bridgeLedger = try source("Sources/RepoPromptShared/MCP/JSONRPCBridgeLedger.swift")
+            XCTAssertTrue(bridgeLedger.contains("#if DEBUG\n        /// Same-process monotonic timestamp"))
+            XCTAssertTrue(bridgeLedger.contains("value[\"monotonic_uptime_ms\"] = monotonicUptimeMS"))
             let coordinator = try source("Sources/RepoPrompt/Infrastructure/MCP/ViewModels/MCPReadFileAutoSelectionCoordinator.swift")
             XCTAssertTrue(coordinator.contains("#if DEBUG\n        enum DebugCanonicalApplyOutcome"))
             XCTAssertTrue(coordinator.contains("private static let debugMutationSampleLimit = 256"))

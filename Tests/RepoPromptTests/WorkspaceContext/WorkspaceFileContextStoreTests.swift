@@ -1,3 +1,4 @@
+import Combine
 import CoreServices
 @testable import RepoPrompt
 import XCTest
@@ -553,6 +554,8 @@ class WorkspaceFileContextStoreTestCase: XCTestCase {
             try await store.startWatchingRoot(id: record.id)
             let loadedService = await store.fileSystemServiceForTesting(rootID: record.id)
             let service = try XCTUnwrap(loadedService)
+            let publications = LockedFileSystemPublications()
+            let publicationCancellable = await service.publisherForChanges().sink { publications.append($0) }
             let mutationGate = AsyncGate()
             await service.setMutationIOWillBeginHandlerForTesting { operation in
                 guard operation == .edit else { return }
@@ -612,9 +615,86 @@ class WorkspaceFileContextStoreTestCase: XCTestCase {
             XCTAssertNotNil(catalogFile)
             let finalWaiterCount = await service.pendingMutationWaiterCountForTesting()
             XCTAssertEqual(finalWaiterCount, 0)
+            let fallbackPublished = await waitForAsyncCondition(timeout: .seconds(2)) {
+                publications.snapshot().contains { publication in
+                    publication.source == .syntheticMutation
+                        && publication.deltas.contains { delta in
+                            guard case let .fileModified(relativePath, _) = delta else { return false }
+                            return relativePath == "OverwriteAfterCancellation.swift"
+                        }
+                }
+            }
+            XCTAssertTrue(fallbackPublished)
+            let matchingFallbackPublications = publications.snapshot().filter { publication in
+                publication.source == .syntheticMutation
+                    && publication.deltas.contains { delta in
+                        guard case let .fileModified(relativePath, _) = delta else { return false }
+                        return relativePath == "OverwriteAfterCancellation.swift"
+                    }
+            }
+            XCTAssertEqual(matchingFallbackPublications.count, 1)
+            let pendingDeferredPublicationCount = await service.pendingDeferredEditPublicationCountForTesting()
+            XCTAssertEqual(pendingDeferredPublicationCount, 0)
 
             await service.setMutationIOWillBeginHandlerForTesting(nil)
             await store.stopWatchingRoot(id: record.id)
+            withExtendedLifetime(publicationCancellable) {}
+
+            let postTokenRoot = try makeTemporaryRoot(name: "CancelledOverwriteAfterDeferredToken")
+            let postTokenFileURL = postTokenRoot.appendingPathComponent("PostToken.swift")
+            try write("old", to: postTokenFileURL)
+            let postTokenStore = WorkspaceFileContextStore()
+            let postTokenRecord = try await postTokenStore.loadRoot(path: postTokenRoot.path)
+            try await postTokenStore.startWatchingRoot(id: postTokenRecord.id)
+            let maybePostTokenService = await postTokenStore.fileSystemServiceForTesting(rootID: postTokenRecord.id)
+            let postTokenService = try XCTUnwrap(maybePostTokenService)
+            let postTokenPublications = LockedFileSystemPublications()
+            let postTokenPublisher = await postTokenService.publisherForChanges()
+            let postTokenCancellable = postTokenPublisher.sink { postTokenPublications.append($0) }
+            let postTokenGate = AsyncGate()
+            await postTokenStore.setStoreEditDeferredPublicationDidRegisterHandlerForTesting { rootID, relativePath in
+                guard rootID == postTokenRecord.id, relativePath == "PostToken.swift" else { return }
+                await postTokenGate.markStartedAndWaitForRelease()
+            }
+
+            let postTokenEditTask = Task {
+                try await postTokenStore.editFile(
+                    rootID: postTokenRecord.id,
+                    relativePath: "PostToken.swift",
+                    newContent: "new"
+                )
+            }
+            await postTokenGate.waitUntilStarted()
+            postTokenEditTask.cancel()
+            await postTokenGate.release()
+            do {
+                _ = try await postTokenEditTask.value
+                XCTFail("Expected cancellation after deferred publication registration")
+            } catch is CancellationError {
+                // Expected.
+            }
+
+            let postTokenReconciled = await waitForAsyncCondition(timeout: .seconds(5)) {
+                await (try? postTokenStore.readContent(
+                    rootID: postTokenRecord.id,
+                    relativePath: "PostToken.swift"
+                )) == "new"
+            }
+            XCTAssertTrue(postTokenReconciled)
+            let postTokenSyntheticPublications = postTokenPublications.snapshot().filter { publication in
+                publication.source == .syntheticMutation
+                    && publication.deltas.contains { delta in
+                        guard case let .fileModified(relativePath, _) = delta else { return false }
+                        return relativePath == "PostToken.swift"
+                    }
+            }
+            XCTAssertEqual(postTokenSyntheticPublications.count, 1)
+            let postTokenPendingCount = await postTokenService.pendingDeferredEditPublicationCountForTesting()
+            XCTAssertEqual(postTokenPendingCount, 0)
+
+            await postTokenStore.setStoreEditDeferredPublicationDidRegisterHandlerForTesting(nil)
+            await postTokenStore.stopWatchingRoot(id: postTokenRecord.id)
+            withExtendedLifetime(postTokenCancellable) {}
         }
 
         func runTestCancelledMoveDeleteAndTrashSettleBeforeIOAndReconcileAfterCompletion() async throws {
@@ -1118,6 +1198,8 @@ class WorkspaceFileContextStoreTestCase: XCTestCase {
             )
             let currentLifetimeFile = await store.file(rootID: record.id, relativePath: "Late.swift")
             XCTAssertNotNil(currentLifetimeFile)
+            await store.unloadRoot(id: record.id)
+            let reloaded = try await store.loadRoot(path: root.path)
         }
 
         @MainActor
@@ -3767,6 +3849,196 @@ class WorkspaceFileContextStoreTestCase: XCTestCase {
         XCTAssertEqual(result.selection.slices, [newSliceURL.path: [LineRange(start: 2, end: 3)]])
         XCTAssertFalse(result.selection.selectedPaths.contains(oldFullURL.path))
         XCTAssertNil(result.selection.slices[oldSliceURL.path])
+    }
+
+    func runTestStoreOwnedOverwriteDefersOnlyItsSyntheticModificationAndPreservesWatcherIsolationAndFallbacks() async throws {
+        do {
+            let caseLabel = "store canonical publication and watcher freshness"
+            let rootA = try makeTemporaryRoot(name: "DeferredStoreEditA")
+            let rootB = try makeTemporaryRoot(name: "DeferredStoreEditWorktree")
+            let fileAURL = rootA.appendingPathComponent("Shared.swift")
+            let fileBURL = rootB.appendingPathComponent("Shared.swift")
+            try write("struct OldA {}\n", to: fileAURL)
+            try write("struct OldB {}\n", to: fileBURL)
+
+            let store = WorkspaceFileContextStore()
+            let recordA = try await store.loadRoot(path: rootA.path)
+            let recordB = try await store.loadRoot(path: rootB.path, kind: .sessionWorktree)
+            let attachedIngressA = try await store.attachPublisherIngressWithoutStartingWatcherForTesting(rootID: recordA.id)
+            let attachedIngressB = try await store.attachPublisherIngressWithoutStartingWatcherForTesting(rootID: recordB.id)
+            XCTAssertTrue(attachedIngressA)
+            XCTAssertTrue(attachedIngressB)
+            let maybeServiceA = await store.fileSystemServiceForTesting(rootID: recordA.id)
+            let maybeServiceB = await store.fileSystemServiceForTesting(rootID: recordB.id)
+            let serviceA = try XCTUnwrap(maybeServiceA)
+            let serviceB = try XCTUnwrap(maybeServiceB)
+            let publicationsA = LockedFileSystemPublications()
+            let publicationsB = LockedFileSystemPublications()
+            let publisherA = await serviceA.publisherForChanges()
+            let publisherB = await serviceB.publisherForChanges()
+            let cancellableA = publisherA.sink { publicationsA.append($0) }
+            let cancellableB = publisherB.sink { publicationsB.append($0) }
+            var events = await store.appliedIndexEvents().makeAsyncIterator()
+            let maybeFileA = await store.file(rootID: recordA.id, relativePath: "Shared.swift")
+            let fileA = try XCTUnwrap(maybeFileA)
+            _ = try await store.searchContentSnapshot(for: fileA)
+            await store.applyObservedCodemapResults([
+                WorkspaceObservedCodemapResult(
+                    fullPath: fileAURL.path,
+                    modificationDate: Date(),
+                    fileAPI: makeFileAPI(path: fileAURL.path, symbolName: "oldStoreSymbol")
+                )
+            ])
+
+            _ = try await store.editFile(
+                rootID: recordA.id,
+                relativePath: "Shared.swift",
+                newContent: "struct NewA {}\n"
+            )
+            let maybeStoreEvent = await events.next()
+            let storeEvent = try XCTUnwrap(maybeStoreEvent, caseLabel)
+            XCTAssertEqual(storeEvent.rootID, recordA.id, caseLabel)
+            XCTAssertEqual(storeEvent.modifiedFileIDs, [fileA.id], caseLabel)
+            XCTAssertTrue(publicationsA.snapshot().isEmpty, caseLabel)
+            XCTAssertTrue(publicationsB.snapshot().isEmpty, caseLabel)
+            let pendingAfterCanonicalEdit = await serviceA.pendingDeferredEditPublicationCountForTesting()
+            XCTAssertEqual(pendingAfterCanonicalEdit, 0, caseLabel)
+            let editedSearch = try await store.searchContentSnapshot(for: fileA)
+            XCTAssertEqual(editedSearch.content, "struct NewA {}\n", caseLabel)
+            let codemapAPIsAfterEdit = await store.allCodemapFileAPIs()
+            XCTAssertFalse(codemapAPIsAfterEdit.contains { $0.filePath == fileAURL.path }, caseLabel)
+            XCTAssertEqual(try String(contentsOf: fileBURL, encoding: .utf8), "struct OldB {}\n", caseLabel)
+
+            try write("struct WatchedA {}\n", to: fileAURL)
+            let watcherDate = try await serviceA.getFileModificationDate(atRelativePath: "Shared.swift")
+            let watcherSequence = await serviceA.publishFileSystemDeltas(
+                [.fileModified("Shared.swift", watcherDate)],
+                source: .watcher
+            )
+            await store.waitUntilPublisherIngressAppliedForTesting(
+                rootID: recordA.id,
+                servicePublicationSequence: watcherSequence
+            )
+            let maybeWatcherEvent = await events.next()
+            let watcherEvent = try XCTUnwrap(maybeWatcherEvent, caseLabel)
+            XCTAssertGreaterThan(watcherEvent.generation, storeEvent.generation, caseLabel)
+            XCTAssertEqual(watcherEvent.modifiedFileIDs, [fileA.id], caseLabel)
+            XCTAssertEqual(publicationsA.snapshot().map(\.source), [.watcher], caseLabel)
+            let watcherSearch = try await store.searchContentSnapshot(for: fileA)
+            XCTAssertEqual(watcherSearch.content, "struct WatchedA {}\n", caseLabel)
+
+            try await serviceB.editFile(atRelativePath: "Shared.swift", newContent: "struct DirectB {}\n")
+            let directPublications = publicationsB.snapshot()
+            XCTAssertEqual(directPublications.map(\.source), [.syntheticMutation], caseLabel)
+            XCTAssertEqual(directPublications.flatMap(\.deltas).count, 1, caseLabel)
+            let pendingAfterDirectEdit = await serviceB.pendingDeferredEditPublicationCountForTesting()
+            XCTAssertEqual(pendingAfterDirectEdit, 0, caseLabel)
+            withExtendedLifetime((cancellableA, cancellableB)) {}
+        }
+
+        do {
+            let caseLabel = "missing edit emits no false synthetic publication"
+            let root = try makeTemporaryRoot(name: "DeferredStoreEditMissing")
+            let fileURL = root.appendingPathComponent("Missing.swift")
+            try write("old", to: fileURL)
+            let store = WorkspaceFileContextStore()
+            let record = try await store.loadRoot(path: root.path)
+            let maybeService = await store.fileSystemServiceForTesting(rootID: record.id)
+            let service = try XCTUnwrap(maybeService)
+            let publications = LockedFileSystemPublications()
+            let publisher = await service.publisherForChanges()
+            let cancellable = publisher.sink { publications.append($0) }
+            try FileManager.default.removeItem(at: fileURL)
+
+            do {
+                _ = try await store.editFile(rootID: record.id, relativePath: "Missing.swift", newContent: "new")
+                XCTFail("Expected missing-file failure: \(caseLabel)")
+            } catch FileSystemError.fileNotFound {
+                // Expected.
+            }
+            XCTAssertTrue(publications.snapshot().isEmpty, caseLabel)
+            let pendingAfterMissingEdit = await service.pendingDeferredEditPublicationCountForTesting()
+            XCTAssertEqual(pendingAfterMissingEdit, 0, caseLabel)
+            withExtendedLifetime(cancellable) {}
+        }
+
+        do {
+            let caseLabel = "managed-only edit falls back to synthetic publication"
+            let root = try makeTemporaryRoot(name: "DeferredStoreEditIgnored")
+            try write("*.ignored\n", to: root.appendingPathComponent(".gitignore"))
+            try write("old", to: root.appendingPathComponent("Existing.ignored"))
+            let store = WorkspaceFileContextStore()
+            let record = try await store.loadRoot(path: root.path)
+            let maybeService = await store.fileSystemServiceForTesting(rootID: record.id)
+            let service = try XCTUnwrap(maybeService)
+            let publications = LockedFileSystemPublications()
+            let publisher = await service.publisherForChanges()
+            let cancellable = publisher.sink { publications.append($0) }
+
+            let result = try await store.editFile(
+                rootID: record.id,
+                relativePath: "Existing.ignored",
+                newContent: "new"
+            )
+            guard case let .materialized(file)? = result else {
+                XCTFail("Expected managed-only materialization: \(caseLabel)")
+                return
+            }
+            XCTAssertEqual(file.standardizedRelativePath, "Existing.ignored", caseLabel)
+            let managedOnlyPublications = publications.snapshot()
+            XCTAssertEqual(managedOnlyPublications.map(\.source), [.syntheticMutation], caseLabel)
+            XCTAssertEqual(managedOnlyPublications.flatMap(\.deltas).count, 1, caseLabel)
+            let pendingAfterManagedOnlyEdit = await service.pendingDeferredEditPublicationCountForTesting()
+            XCTAssertEqual(pendingAfterManagedOnlyEdit, 0, caseLabel)
+            withExtendedLifetime(cancellable) {}
+        }
+
+        do {
+            let caseLabel = "stale root lifetime resolves synthetic fallback"
+            let root = try makeTemporaryRoot(name: "DeferredStoreEditStaleLifetime")
+            try write("old", to: root.appendingPathComponent("A.swift"))
+            let store = WorkspaceFileContextStore()
+            let record = try await store.loadRoot(path: root.path)
+            let maybeService = await store.fileSystemServiceForTesting(rootID: record.id)
+            let service = try XCTUnwrap(maybeService)
+            let publications = LockedFileSystemPublications()
+            let publisher = await service.publisherForChanges()
+            let cancellable = publisher.sink { publications.append($0) }
+            let mutationGate = AsyncGate()
+            await service.setMutationIOWillBeginHandlerForTesting { operation in
+                guard operation == .edit else { return }
+                await mutationGate.markStartedAndWaitForRelease()
+            }
+
+            let editTask = Task {
+                try await store.editFile(rootID: record.id, relativePath: "A.swift", newContent: "new")
+            }
+            await mutationGate.waitUntilStarted()
+            await store.unloadRoot(id: record.id)
+            await mutationGate.release()
+            do {
+                _ = try await editTask.value
+                XCTFail("Expected stale-root failure: \(caseLabel)")
+            } catch let error as WorkspaceFileContextStoreError {
+                XCTAssertEqual(error, .rootNotLoaded(record.id), caseLabel)
+            }
+            let fallbackPublished = await waitForAsyncCondition(timeout: .seconds(2)) {
+                publications.snapshot().contains { $0.source == .syntheticMutation }
+            }
+            XCTAssertTrue(fallbackPublished, caseLabel)
+            let staleLifetimeFallbacks = publications.snapshot().filter { publication in
+                publication.source == .syntheticMutation
+                    && publication.deltas.contains { delta in
+                        guard case let .fileModified(relativePath, _) = delta else { return false }
+                        return relativePath == "A.swift"
+                    }
+            }
+            XCTAssertEqual(staleLifetimeFallbacks.count, 1, caseLabel)
+            let pendingAfterStaleLifetime = await service.pendingDeferredEditPublicationCountForTesting()
+            XCTAssertEqual(pendingAfterStaleLifetime, 0, caseLabel)
+            await service.setMutationIOWillBeginHandlerForTesting(nil)
+            withExtendedLifetime(cancellable) {}
+        }
     }
 
     func runTestCRUDAndRootUnloadPublishAppliedIndexEvents() async throws {
@@ -6662,6 +6934,23 @@ class WorkspaceFileContextStoreTestCase: XCTestCase {
         }
     #endif
 
+    private final class LockedFileSystemPublications: @unchecked Sendable {
+        private let lock = NSLock()
+        private var publications: [FileSystemDeltaPublication] = []
+
+        func append(_ publication: FileSystemDeltaPublication) {
+            lock.lock()
+            publications.append(publication)
+            lock.unlock()
+        }
+
+        func snapshot() -> [FileSystemDeltaPublication] {
+            lock.lock()
+            defer { lock.unlock() }
+            return publications
+        }
+    }
+
     #if DEBUG
         private final class LockedWorkspaceDiagnosticsClock: @unchecked Sendable {
             private let lock = NSLock()
@@ -7243,6 +7532,10 @@ final class WorkspaceFileContextStoreSearchTests: WorkspaceFileContextStoreTestC
 final class WorkspaceFileContextStoreSearchPart2Tests: WorkspaceFileContextStoreTestCase {
     func testManageSelectionFullSetWithSlicesRemainsDestructive() async throws {
         try await runTestManageSelectionFullSetWithSlicesRemainsDestructive()
+    }
+
+    func testStoreOwnedOverwriteDefersOnlyItsSyntheticModificationAndPreservesWatcherIsolationAndFallbacks() async throws {
+        try await runTestStoreOwnedOverwriteDefersOnlyItsSyntheticModificationAndPreservesWatcherIsolationAndFallbacks()
     }
 
     func testCRUDAndRootUnloadPublishAppliedIndexEvents() async throws {

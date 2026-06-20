@@ -469,7 +469,7 @@ final class PersistentAgentModeMCPReadFileConnectionTests: XCTestCase {
                 ) {
                     await fixture.window.workspaceManager.rebaseSlicesForFileAcrossTabs(
                         fullPath: fixture.liveFileURL.path,
-                        asyncTransform: { ranges in
+                        asyncTransform: { _, ranges in
                             await delayedIngressGate.markStartedAndWaitForRelease()
                             return ranges
                         }

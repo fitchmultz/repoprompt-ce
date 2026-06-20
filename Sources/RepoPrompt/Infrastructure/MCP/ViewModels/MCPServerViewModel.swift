@@ -3465,6 +3465,22 @@ final class MCPServerViewModel: ObservableObject {
         }
 
         @MainActor
+        func debugApplyEditsRebaseProbeLookupContext(
+            for target: DebugReadFileAutoSelectionTarget
+        ) async -> WorkspaceLookupContext? {
+            guard isReadFileAutoSelectionContextCurrent(target.contextKey),
+                  let context = readFileAutoSelectionContext(for: target.contextKey),
+                  context.activeAgentSessionID == target.agentSessionID
+            else { return nil }
+            return await resolveFileToolLookupContext(from: RequestMetadata(
+                connectionID: target.connectionID,
+                clientName: nil,
+                windowID: target.contextKey.windowID,
+                runPurpose: .agentModeRun
+            ))
+        }
+
+        @MainActor
         func debugBeginReadFileAutoSelectionProbe(
             probeID: UUID,
             forceAuthoritative: Bool,
