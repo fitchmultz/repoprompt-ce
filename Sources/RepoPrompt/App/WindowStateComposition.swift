@@ -156,6 +156,9 @@ enum WindowStateCompositionFactory {
             applyEditsApprovalStore: applyEditsApprovalStore,
             piModelPollingService: piModelPollingService
         )
+        workspaceFilesViewModel.setSessionWorktreeBindingsProvider { [weak agentModeViewModel] sessionID in
+            agentModeViewModel?.worktreeBindings(forAgentSessionID: sessionID) ?? []
+        }
         if deferredInitialAgentSystemWorkspaceRefresh {
             agentModeViewModel.deferInitialSystemWorkspaceSessionListRefresh(reason: "programmaticNewWindowWorkspaceSwitch")
         }
