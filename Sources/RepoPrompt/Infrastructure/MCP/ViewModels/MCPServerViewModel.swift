@@ -1055,6 +1055,10 @@ final class MCPServerViewModel: ObservableObject {
     @MainActor
     var tabContextByConnectionID: [UUID: TabScopedContext] = [:]
     @MainActor
+    var detachedContextBuilderTabContextByRunID: [UUID: DetachedContextBuilderTabContext] = [:]
+    @MainActor
+    let contextBuilderTeardownPublicationCoordinator = ContextBuilderTeardownPublicationCoordinator()
+    @MainActor
     var readFileAutoSelectionHandoverLineageByConnectionID: [UUID: ReadFileAutoSelectionHandoverLineage] = [:]
     @MainActor
     var nextReadFileAutoSelectionBindingGeneration: UInt64 = 0
@@ -2228,6 +2232,12 @@ final class MCPServerViewModel: ObservableObject {
         Task { [service] in
             await service.setAlwaysAllowed(clientID: clientID, allowed: allowed)
         }
+    }
+
+    /// Whether the client is one of the built-in always-trusted defaults,
+    /// which cannot be removed from the allow-list.
+    nonisolated func isBuiltInAlwaysAllowedClient(_ clientID: String) -> Bool {
+        ServerController.isBuiltInAlwaysAllowedClient(clientID)
     }
 
     /// Set the global auto-approve flag

@@ -4094,7 +4094,7 @@ class PromptViewModel: ObservableObject {
                 includeFiles: includeFiles,
                 includeUserPrompt: includeUserPrompt,
                 filePathDisplay: filePathDisplayOption,
-                codemapSnapshots: preAssembly.codemapSnapshots,
+                codemapSnapshotBundle: preAssembly.codemapSnapshotBundle,
                 includeDatetimeInUserInstructions: includeDatetime,
                 promptSectionsOrder: promptSectionsOrder,
                 disabledPromptSections: disabledPromptSections,
@@ -4881,7 +4881,6 @@ class PromptViewModel: ObservableObject {
             cfg: activeConfig,
             selection: logicalSelection,
             lookupContext: lookupContext,
-            includeLocalDefinitionsInFileTree: true,
             gitBaseOverride: gitBaseOverride
         )
         let (_, codeEntries) = PromptPackagingService.partitionPromptEntriesForGitDiff(preAssembly.entries)
@@ -4918,16 +4917,20 @@ class PromptViewModel: ObservableObject {
             }
         }
 
-        // Build file contents with effective code map usage
-        let fileBlocks = PromptPackagingService.generateFileContents(
+        // Render the canonical codemap partition with the file map and full/sliced content separately.
+        let partitionedBlocks = PromptPackagingService.generatePartitionedFileBlocks(
             codeEntries,
             filePathDisplay: filePathDisplay,
-            codemapSnapshots: preAssembly.codemapSnapshots,
+            codemapSnapshotBundle: preAssembly.codemapSnapshotBundle,
             displayPathResolver: { entry in
                 preAssembly.displayPath(for: entry)
             }
         )
-        let fileTreeString = preAssembly.fileTreeContent ?? ""
+        let fileBlocks = partitionedBlocks.contentBlocks
+        let fileTreeString = PromptPackagingService.combinedFileMapContent(
+            fileTreeContent: preAssembly.fileTreeContent,
+            codemapBlocks: partitionedBlocks.codemapBlocks
+        ) ?? ""
         let gitDiff = preAssembly.gitDiff
 
         // Meta prompts:
@@ -5518,7 +5521,7 @@ extension PromptViewModel {
             includeFiles: cfg.includeFiles,
             includeUserPrompt: cfg.includeUserPrompt,
             filePathDisplay: filePathDisplayOption,
-            codemapSnapshots: preAssembly.codemapSnapshots,
+            codemapSnapshotBundle: preAssembly.codemapSnapshotBundle,
             includeDatetimeInUserInstructions: includeDatetimeInUserInstructions,
             promptSectionsOrder: promptSectionsOrder,
             disabledPromptSections: disabledPromptSections,
@@ -5635,7 +5638,7 @@ extension PromptViewModel {
         // falling back to the current copy configuration only if unavailable.
         let cfg: PromptContextResolved = resolvedPromptContext(from: chatPreset) ?? resolvePromptContext()
         guard cfg.gitInclusion == .none else {
-            let text = await buildClipboard(for: cfg, includeLocalDefinitionsInFileTree: true)
+            let text = await buildClipboard(for: cfg)
             return estimateTokens(for: text)
         }
         let cacheKey = chatContextTokenBaselineCacheKey(chatPreset: chatPreset, config: cfg)
@@ -5655,8 +5658,7 @@ extension PromptViewModel {
 
         let text = await buildClipboard(
             for: cfg,
-            promptTextOverride: promptTextSnapshot,
-            includeLocalDefinitionsInFileTree: true
+            promptTextOverride: promptTextSnapshot
         )
         let tokenCount = estimateTokens(for: text)
 

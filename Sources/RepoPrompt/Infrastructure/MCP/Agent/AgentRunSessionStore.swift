@@ -416,7 +416,9 @@ actor AgentRunSessionStore {
                 let timeoutTask: Task<Void, Never>? = timeoutSeconds.map { timeout in
                     Task { [weak self] in
                         do {
-                            try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                            try await Task.sleep(
+                                nanoseconds: AgentMCPToolHelpers.timeoutNanosecondsClamped(timeout)
+                            )
                             await self?.timeoutWaiter(sessionID: cursor.registration.sessionID, waiterID: waiterID)
                         } catch {}
                     }

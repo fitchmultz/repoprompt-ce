@@ -274,8 +274,13 @@ class WorkspaceFileContextStoreTestCase: XCTestCase {
             slices: [:],
             codemapAutoEnabled: false
         )
-        let resolution = await service.resolveEntries(selection: selection, store: store, codeMapUsage: .selected)
-        let codemapSnapshots = await store.codemapSnapshotDictionary()
+        let codemapSnapshotBundle = await store.codemapSnapshotBundle()
+        let resolution = await service.resolveEntries(
+            selection: selection,
+            store: store,
+            codeMapUsage: .selected,
+            codemapSnapshotBundle: codemapSnapshotBundle
+        )
 
         let clipboard = await PromptPackagingService.generateClipboardContent(
             metaInstructions: [],
@@ -286,7 +291,7 @@ class WorkspaceFileContextStoreTestCase: XCTestCase {
             includeFiles: true,
             includeUserPrompt: true,
             filePathDisplay: .relative,
-            codemapSnapshots: codemapSnapshots,
+            codemapSnapshotBundle: codemapSnapshotBundle,
             promptSectionsOrder: PromptAssemblyBuilder.defaultSectionOrder,
             disabledPromptSections: [],
             duplicateUserInstructionsAtTop: false

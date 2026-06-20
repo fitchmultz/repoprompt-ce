@@ -393,6 +393,7 @@ final class WorktreeAPISmokeHarnessTests: XCTestCase {
                     beforeProcessingProviderEvent: nil,
                     providerEventDisposition: nil,
                     teardownCompleted: nil,
+                    allowSyntheticRoutingWithoutFinalContext: true,
                     runMCPFollowUp: { mode, _, _ in
                         let chatID = UUID()
                         return ChatSendReply(

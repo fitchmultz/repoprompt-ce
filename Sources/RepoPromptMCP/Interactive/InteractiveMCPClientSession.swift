@@ -157,6 +157,7 @@ private struct RegisteredToolCall {
 
 protocol InteractiveMCPClientSessioning: AnyObject, Sendable {
     var toolsDirty: Bool { get async }
+    var toolsChangeNoticePending: Bool { get async }
     var serverName: String? { get async }
     var serverVersion: String? { get async }
     var selectedWindowID: Int? { get async }
@@ -166,6 +167,7 @@ protocol InteractiveMCPClientSessioning: AnyObject, Sendable {
     func tools() async -> [MCP.Tool]
     func tool(named name: String) async -> MCP.Tool?
     func refreshTools() async throws -> [MCP.Tool]
+    func cachedToolsOrRefresh() async throws -> [MCP.Tool]
     func callTool(name: String, arguments: [String: Value]?, timeout: ToolCallTimeoutPolicy) async throws -> CallTool.Result
     func listWindows() async throws -> CallTool.Result
     func selectWindow(windowID: Int) async throws -> CallTool.Result
@@ -197,6 +199,7 @@ actor InteractiveMCPClientSession: InteractiveMCPClientSessioning {
     private var toolListFetched = false
     private var defaultToolCallTimeout: ToolCallTimeoutPolicy = .default
     private(set) var toolsDirty = false
+    private(set) var toolsChangeNoticePending = false
 
     #if DEBUG
         private let requestSendWillStart: (@Sendable () async -> Void)?
@@ -261,6 +264,7 @@ actor InteractiveMCPClientSession: InteractiveMCPClientSessioning {
         cachedTools = []
         toolListFetched = false
         toolsDirty = false
+        toolsChangeNoticePending = false
 
         // Perform bootstrap handshake and get connected FD
         let connectedFD = try await performBootstrapHandshake()
@@ -335,6 +339,7 @@ actor InteractiveMCPClientSession: InteractiveMCPClientSessioning {
             cachedTools = []
             toolListFetched = false
             toolsDirty = false
+            toolsChangeNoticePending = false
             serverName = nil
             serverVersion = nil
             throw error
@@ -415,6 +420,7 @@ actor InteractiveMCPClientSession: InteractiveMCPClientSessioning {
         cachedTools = []
         toolListFetched = false
         toolsDirty = false
+        toolsChangeNoticePending = false
         logger.debug("Disconnected from MCP server")
     }
 
@@ -431,6 +437,7 @@ actor InteractiveMCPClientSession: InteractiveMCPClientSessioning {
         cachedTools = result.tools
         toolListFetched = true
         toolsDirty = false
+        toolsChangeNoticePending = false
 
         logger.debug("Refreshed tools: \(cachedTools.count) available")
         return cachedTools
@@ -441,6 +448,15 @@ actor InteractiveMCPClientSession: InteractiveMCPClientSessioning {
         cachedTools
     }
 
+    /// Returns the cached tool catalog unless it has never been fetched or the server marked it dirty.
+    @discardableResult
+    func cachedToolsOrRefresh() async throws -> [MCP.Tool] {
+        guard toolListFetched, !toolsDirty else {
+            return try await refreshTools()
+        }
+        return cachedTools
+    }
+
     /// Returns a specific tool by name.
     func tool(named name: String) -> MCP.Tool? {
         cachedTools.first { $0.name == name }
@@ -449,12 +465,13 @@ actor InteractiveMCPClientSession: InteractiveMCPClientSessioning {
     /// Marks the tool list as potentially stale.
     private func markToolsDirty() {
         toolsDirty = true
+        toolsChangeNoticePending = true
         logger.debug("Tool list marked dirty (server sent notification)")
     }
 
-    /// Clears the dirty flag after user acknowledges.
+    /// Clears only the one-shot user notice after acknowledgement; the catalog stays dirty until refreshed.
     func acknowledgeToolsChanged() {
-        toolsDirty = false
+        toolsChangeNoticePending = false
     }
 
     // MARK: - Raw JSON Mode
@@ -588,7 +605,7 @@ actor InteractiveMCPClientSession: InteractiveMCPClientSessioning {
                 }
             }
             let outcome = settlement.finish()
-            await settlement.waitForCancellationDelivery()
+            await waitForCancellationDeliveryIfNeeded(settlement: settlement, outcome: outcome)
             return try Self.resolveToolCallSettlement(
                 outcome,
                 result: result,
@@ -597,7 +614,7 @@ actor InteractiveMCPClientSession: InteractiveMCPClientSessioning {
             )
         } catch {
             let outcome = settlement.finish()
-            await settlement.waitForCancellationDelivery()
+            await waitForCancellationDeliveryIfNeeded(settlement: settlement, outcome: outcome)
             switch outcome {
             case .timedOut:
                 throw InteractiveSessionError.toolCallTimeout(
@@ -609,6 +626,20 @@ actor InteractiveMCPClientSession: InteractiveMCPClientSessioning {
             case .pending, .completed:
                 throw error
             }
+        }
+    }
+
+    private func waitForCancellationDeliveryIfNeeded(
+        settlement: ToolCallSettlementState,
+        outcome: ToolCallSettlementState.Outcome
+    ) async {
+        switch outcome {
+        case .pending, .completed:
+            await settlement.waitForCancellationDelivery()
+        case .timedOut:
+            return
+        case .callerCancelled:
+            await settlement.waitForCancellationDelivery()
         }
     }
 
@@ -720,6 +751,10 @@ actor InteractiveMCPClientSession: InteractiveMCPClientSessioning {
             arguments: [String: Value] = [:]
         ) -> TimeInterval? {
             resolvedTimeout(policy, toolName: toolName, arguments: arguments)
+        }
+
+        func test_markToolsDirty() {
+            markToolsDirty()
         }
     #endif
 
@@ -1077,18 +1112,27 @@ actor InteractiveMCPClientSession: InteractiveMCPClientSessioning {
         var payload = jsonData
         payload.append(UInt8(ascii: "\n"))
 
-        var totalWritten = 0
-        while totalWritten < payload.count {
-            let written = payload.withUnsafeBytes { buf in
-                let ptr = buf.baseAddress!.advanced(by: totalWritten)
-                return Darwin.write(fd, ptr, payload.count - totalWritten)
-            }
-
-            if written < 0 {
-                if errno == EAGAIN || errno == EINTR { continue }
+        do {
+            try NonBlockingFDWriter.writeAll(
+                payload,
+                to: fd,
+                stallTimeout: MCPBootstrapTiming.initialRequestWriteTimeout
+            )
+        } catch let error as NonBlockingFDWriteError {
+            switch error {
+            case .cancelled:
+                throw InteractiveSessionError.cancelled
+            case let .fcntlFailed(errno):
+                throw InteractiveSessionError.descriptorConfigurationFailed(errno: errno)
+            case let .pollFailed(errno):
+                throw InteractiveSessionError.pollFailed(errno: errno)
+            case .localTimeout:
+                throw InteractiveSessionError.writeFailed(errno: ETIMEDOUT)
+            case .brokenPipe:
+                throw InteractiveSessionError.writeFailed(errno: EPIPE)
+            case let .writeFailed(errno, _, _):
                 throw InteractiveSessionError.writeFailed(errno: errno)
             }
-            totalWritten += written
         }
     }
 

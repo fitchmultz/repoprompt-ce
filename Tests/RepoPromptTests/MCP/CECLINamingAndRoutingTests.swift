@@ -87,16 +87,16 @@ final class CECLINamingAndRoutingTests: XCTestCase {
         let temp = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: temp) }
         let rows: [(label: String, configure: (inout InteractiveOptions) -> Void, expectedTail: [String])] = [
-            ("list-tools", { $0.listToolsOnly = true }, ["tools"]),
-            ("tools-schema", { $0.toolsSchemaOnly = true }, ["tools"]),
-            ("describe", { $0.describeTool = "missing_tool" }, ["tool:missing_tool"]),
+            ("list-tools", { $0.listToolsOnly = true }, ["cachedToolsOrRefresh"]),
+            ("tools-schema", { $0.toolsSchemaOnly = true }, ["cachedToolsOrRefresh"]),
+            ("describe", { $0.describeTool = "missing_tool" }, ["cachedToolsOrRefresh"]),
             ("call", {
                 $0.callTool = "get_file_tree"
                 $0.callArgs = "{}"
             }, ["call:get_file_tree"]),
             ("snapshot", {
                 $0.snapshotPath = temp.appendingPathComponent("tools.json").path
-            }, ["refresh"])
+            }, ["cachedToolsOrRefresh"])
         ]
 
         for row in rows {
@@ -192,6 +192,7 @@ private actor FakeInteractiveMCPClientSession: InteractiveMCPClientSessioning {
     private var calls: [String] = []
 
     var toolsDirty = false
+    var toolsChangeNoticePending = false
     var serverName: String? = "Fake MCP"
     var serverVersion: String? = "1"
     var selectedWindowID: Int?
@@ -218,6 +219,11 @@ private actor FakeInteractiveMCPClientSession: InteractiveMCPClientSessioning {
 
     func refreshTools() async throws -> [MCP.Tool] {
         calls.append("refresh")
+        return []
+    }
+
+    func cachedToolsOrRefresh() async throws -> [MCP.Tool] {
+        calls.append("cachedToolsOrRefresh")
         return []
     }
 
