@@ -436,8 +436,11 @@ actor PiNativeSessionController {
                 type: "status",
                 text: reason.map { "pi is compacting context (\($0))" } ?? "pi is compacting context"
             )))
-        case let .compactionEnd(_, _, _, willRetry, errorMessage):
+        case let .compactionEnd(reason, result, aborted, willRetry, errorMessage):
             compactionInProgress = false
+            if let status = Self.compactionEndStatus(reason: reason, result: result, aborted: aborted, errorMessage: errorMessage) {
+                emit(.stream(AIStreamResult(type: "status", text: status)))
+            }
             if willRetry {
                 emit(.stream(AIStreamResult(
                     type: "status",
@@ -508,6 +511,23 @@ actor PiNativeSessionController {
         }
         let delayText = delayMs > 0 ? " after \(delayMs) ms" : ""
         return "\(retryPrefix)\(delayText): \(errorMessage)"
+    }
+
+    private static func compactionEndStatus(
+        reason: String?,
+        result: PiJSONValue?,
+        aborted: Bool,
+        errorMessage: String?
+    ) -> String? {
+        if aborted { return "pi compaction aborted" }
+        if let estimatedTokensAfter = result?.objectValue?["estimatedTokensAfter"]?.intValue {
+            let suffix = reason.map { " (\($0))" } ?? ""
+            return "pi compacted context to about \(estimatedTokensAfter) tokens\(suffix)"
+        }
+        if let errorMessage, !errorMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "pi compaction failed: \(errorMessage)"
+        }
+        return nil
     }
 
     private func toolInvocationID(for toolCallID: String) -> UUID {

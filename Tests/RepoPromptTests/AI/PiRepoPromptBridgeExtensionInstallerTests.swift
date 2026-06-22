@@ -305,6 +305,38 @@ final class PiRepoPromptBridgeExtensionInstallerTests: XCTestCase {
         XCTAssertTrue(source.contains("__REPOPROMPT_CLI__"))
     }
 
+    func testGlobalExtensionURLRespectsConfiguredPiAgentDirectory() throws {
+        let home = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let customAgentDir = home.appendingPathComponent("Custom Pi Agent", isDirectory: true)
+
+        let environment = [PiIntegrationConfiguration.agentDirectoryEnvironmentKey: customAgentDir.path]
+        let extensionURL = customAgentDir
+            .appendingPathComponent("extensions", isDirectory: true)
+            .appendingPathComponent("repoprompt-bridge.ts", isDirectory: false)
+
+        XCTAssertEqual(
+            PiRepoPromptBridgeExtensionInstaller.globalExtensionURL(homeDirectory: home, environment: environment),
+            extensionURL
+        )
+        XCTAssertEqual(
+            try PiRepoPromptBridgeExtensionInstaller.installGlobal(
+                homeDirectory: home,
+                environment: environment,
+                cliPath: "/tmp/repoprompt-mcp"
+            ).extensionURL,
+            extensionURL
+        )
+        XCTAssertEqual(
+            PiRepoPromptBridgeExtensionInstaller.globalInstallStatus(
+                homeDirectory: home,
+                environment: environment,
+                cliPath: "/tmp/repoprompt-mcp"
+            ),
+            .installed
+        )
+    }
+
     func testGlobalInstallWritesWindowlessAutoDiscoveredBridgeAndUninstallRemovesIt() throws {
         let home = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: home) }

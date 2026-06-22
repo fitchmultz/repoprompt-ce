@@ -240,6 +240,7 @@ final class PiIntegratedAgentModeRunner {
             }
 
             let events = await controller.events
+            var didSendPrompt = false
             var didReceivePostPromptProviderEvent = false
             var firstEventWatchdogTask: Task<Void, Never>?
             func markPostPromptProviderEvent(session: AgentModeViewModel.TabSession) {
@@ -252,15 +253,16 @@ final class PiIntegratedAgentModeRunner {
                 var completionGate = PiRunCompletionGate()
                 for await event in events {
                     guard session.isCurrentRunAttempt(ownership, expectedRunID: runID) else { return }
+                    if didSendPrompt, PiFirstProviderEventWatchdog.countsAsPostPromptProviderEvent(event) {
+                        markPostPromptProviderEvent(session: session)
+                    }
                     switch event {
                     case let .stream(result):
-                        markPostPromptProviderEvent(session: session)
                         await hooks.handleHeadlessStreamResult(result, session, runID, runAttemptID)
                     case let .sessionState(state):
                         completionGate.recordSessionState(state)
                         PiRunSessionStateMapper.applySessionState(state, to: session)
                     case let .turnCompleted(_, status):
-                        markPostPromptProviderEvent(session: session)
                         guard let terminalState = completionGate.terminalState(for: status) else { continue }
                         await commitTerminal(
                             terminalState,
@@ -269,12 +271,18 @@ final class PiIntegratedAgentModeRunner {
                         )
                         return
                     case let .extensionUIRequest(request):
-                        markPostPromptProviderEvent(session: session)
                         if request.requiresResponse {
                             await handleBlockingExtensionUIRequest(request, session: session, controller: controller)
+                        } else if let statusText = PiExtensionUIInteractionMapper.fireAndForgetStatusText(from: request) {
+                            session.setRunningStatus(statusText, source: .transport)
+                            await hooks.handleHeadlessStreamResult(
+                                AIStreamResult(type: "status", text: statusText),
+                                session,
+                                runID,
+                                runAttemptID
+                            )
                         }
                     case let .error(message):
-                        markPostPromptProviderEvent(session: session)
                         await commitTerminal(
                             .failed,
                             source: "pi.error",
@@ -296,6 +304,7 @@ final class PiIntegratedAgentModeRunner {
             }
 
             let images = try PiRPCImageContentBuilder.images(from: attachments)
+            didSendPrompt = true
             _ = try await controller.sendUserMessage(initialMessageForRun, images: images)
             firstEventWatchdogTask = Task { @MainActor in
                 try? await Task.sleep(nanoseconds: PiFirstProviderEventWatchdog.timeoutNanoseconds)

@@ -83,12 +83,28 @@ enum PiRepoPromptBridgeExtensionInstaller {
         return extensionURL
     }
 
-    static func globalExtensionURL(homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
-        homeDirectory
-            .appendingPathComponent(".pi", isDirectory: true)
-            .appendingPathComponent("agent", isDirectory: true)
+    static func globalExtensionURL(
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL {
+        globalAgentDirectoryURL(homeDirectory: homeDirectory, environment: environment)
             .appendingPathComponent("extensions", isDirectory: true)
             .appendingPathComponent(globalExtensionFileName, isDirectory: false)
+    }
+
+    static func globalAgentDirectoryURL(
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL {
+        if let override = environment[PiIntegrationConfiguration.agentDirectoryEnvironmentKey]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !override.isEmpty
+        {
+            return URL(fileURLWithPath: (override as NSString).expandingTildeInPath)
+        }
+        return homeDirectory
+            .appendingPathComponent(".pi", isDirectory: true)
+            .appendingPathComponent("agent", isDirectory: true)
     }
 
     static func managedWindowInstallStatuses(
@@ -158,9 +174,10 @@ enum PiRepoPromptBridgeExtensionInstaller {
     static func globalInstallStatus(
         fileManager: FileManager = .default,
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
         cliPath: String? = Bundle.main.url(forAuxiliaryExecutable: "repoprompt-mcp")?.path
     ) -> GlobalInstallationStatus {
-        let extensionURL = globalExtensionURL(homeDirectory: homeDirectory)
+        let extensionURL = globalExtensionURL(homeDirectory: homeDirectory, environment: environment)
         guard fileManager.fileExists(atPath: extensionURL.path),
               let existing = try? String(contentsOf: extensionURL, encoding: .utf8)
         else {
@@ -180,13 +197,14 @@ enum PiRepoPromptBridgeExtensionInstaller {
     static func installGlobal(
         fileManager: FileManager = .default,
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
         cliPath: String? = Bundle.main.url(forAuxiliaryExecutable: "repoprompt-mcp")?.path
     ) throws -> GlobalInstallResult {
         guard let cliPath, !cliPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw InstallerError.cliHelperUnavailable
         }
-        let extensionURL = globalExtensionURL(homeDirectory: homeDirectory)
-        let status = globalInstallStatus(fileManager: fileManager, homeDirectory: homeDirectory, cliPath: cliPath)
+        let extensionURL = globalExtensionURL(homeDirectory: homeDirectory, environment: environment)
+        let status = globalInstallStatus(fileManager: fileManager, homeDirectory: homeDirectory, environment: environment, cliPath: cliPath)
         guard status != .installedByOther else {
             throw InstallerError.globalBridgeAlreadyExists(extensionURL)
         }
@@ -203,10 +221,11 @@ enum PiRepoPromptBridgeExtensionInstaller {
     static func uninstallGlobal(
         fileManager: FileManager = .default,
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
         cliPath: String? = Bundle.main.url(forAuxiliaryExecutable: "repoprompt-mcp")?.path
     ) throws -> Bool {
-        let extensionURL = globalExtensionURL(homeDirectory: homeDirectory)
-        let status = globalInstallStatus(fileManager: fileManager, homeDirectory: homeDirectory, cliPath: cliPath)
+        let extensionURL = globalExtensionURL(homeDirectory: homeDirectory, environment: environment)
+        let status = globalInstallStatus(fileManager: fileManager, homeDirectory: homeDirectory, environment: environment, cliPath: cliPath)
         switch status {
         case .notInstalled:
             return false

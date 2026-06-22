@@ -33,6 +33,38 @@ final class PiRunEventReducerTests: XCTestCase {
         XCTAssertEqual(text, "pi diagnostic: unknownEventType • future_event • Unknown pi event type.")
     }
 
+    func testFirstProviderEventWatchdogCountsOnlyPostPromptBlockingOrTerminalEvents() {
+        XCTAssertFalse(PiFirstProviderEventWatchdog.countsAsPostPromptProviderEvent(.sessionState(sessionState())))
+        XCTAssertFalse(PiFirstProviderEventWatchdog.countsAsPostPromptProviderEvent(.diagnostic(.init(
+            kind: .unknownEventType,
+            eventType: "future_event",
+            message: "Unknown pi event type.",
+            payloadPreview: nil,
+            occurrence: 1
+        ))))
+        XCTAssertFalse(PiFirstProviderEventWatchdog.countsAsPostPromptProviderEvent(.extensionUIRequest(.init(
+            id: "status-1",
+            method: "setStatus",
+            title: nil,
+            message: nil,
+            statusKey: "example",
+            statusText: "ready",
+            raw: [:]
+        ))))
+        XCTAssertTrue(PiFirstProviderEventWatchdog.countsAsPostPromptProviderEvent(.extensionUIRequest(.init(
+            id: "select-1",
+            method: "select",
+            title: nil,
+            message: nil,
+            statusKey: nil,
+            statusText: nil,
+            raw: [:]
+        ))))
+        XCTAssertTrue(PiFirstProviderEventWatchdog.countsAsPostPromptProviderEvent(.stream(AIStreamResult(type: "content", text: "ok"))))
+        XCTAssertTrue(PiFirstProviderEventWatchdog.countsAsPostPromptProviderEvent(.turnCompleted(turnID: UUID(), status: .completed)))
+        XCTAssertTrue(PiFirstProviderEventWatchdog.countsAsPostPromptProviderEvent(.error("failed")))
+    }
+
     func testFirstProviderEventWatchdogFiresOnlyBeforeProviderEventAndTerminalCommit() {
         XCTAssertTrue(PiFirstProviderEventWatchdog.shouldFire(
             didReceivePostPromptProviderEvent: false,

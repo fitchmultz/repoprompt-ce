@@ -89,6 +89,25 @@ enum PiExtensionUIInteractionMapper {
         }
     }
 
+    static func fireAndForgetStatusText(from request: PiRPCClient.PiExtensionUIRequest) -> String? {
+        guard !request.requiresResponse else { return nil }
+        switch request.method {
+        case "notify":
+            return request.message?.nonEmpty.map { "pi: \($0)" }
+        case "setStatus":
+            guard let statusText = request.statusText?.nonEmpty else { return nil }
+            if let statusKey = request.statusKey?.nonEmpty {
+                return "pi \(statusKey): \(statusText)"
+            }
+            return "pi: \(statusText)"
+        case "setWidget":
+            let lines = request.raw["widgetLines"]?.arrayValue?.compactMap(\.stringValue) ?? []
+            return lines.first?.nonEmpty.map { "pi: \($0)" }
+        default:
+            return nil
+        }
+    }
+
     static func timeoutSeconds(from request: PiRPCClient.PiExtensionUIRequest) -> TimeInterval {
         guard let timeoutMS = request.raw["timeout"]?.intValue, timeoutMS > 0 else {
             return ContextBuilderDefaults.questionTimeoutSeconds

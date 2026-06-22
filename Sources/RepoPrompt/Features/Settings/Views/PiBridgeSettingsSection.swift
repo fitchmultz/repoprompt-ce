@@ -20,7 +20,7 @@ struct PiBridgeSettingsSection: View {
                     .padding(.top, 2)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("~/.pi/agent/extensions/repoprompt-bridge.ts")
+                    Text(PiRepoPromptBridgeExtensionInstaller.globalExtensionURL().path)
                         .font(.system(size: fontPreset.rawValue, design: .monospaced))
                         .fontWeight(.medium)
                     Text(statusText)

@@ -115,6 +115,7 @@ enum PiIntegrationConfiguration {
     static let managedRunEnvironmentValue = "1"
     static let permissionLevelEnvironmentKey = "REPOPROMPT_PI_PERMISSION_LEVEL"
     static let inheritedSubagentExtensionsEnvironmentKey = "PI_SUBAGENT_INHERITED_EXTENSIONS_JSON"
+    static let agentDirectoryEnvironmentKey = "PI_CODING_AGENT_DIR"
 
     /// A pi model is eligible for RepoPrompt when pi reports a non-empty model
     /// identifier that can be selected by pi's RPC `set_model` contract. RepoPrompt
@@ -131,7 +132,7 @@ enum PiIntegrationConfiguration {
     }
 
     /// RepoPrompt-managed pi RPC runs are explicit user actions for the selected workspace.
-    /// pi 0.79+ otherwise ignores project-local AGENTS.md/.pi inputs in non-interactive RPC mode.
+    /// pi 0.79+ otherwise ignores project-local trust-gated inputs in non-interactive RPC mode.
     static func managedRPCLaunchArguments(
         bridgeExtensionPath: String? = nil,
         launchPolicy: PiManagedRunLaunchPolicy

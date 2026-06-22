@@ -1,6 +1,6 @@
 # pi Integration Architecture
 
-Current as of 2026-06-15 for pi 0.79.4. This document is contributor-facing: use it when editing RepoPrompt CE's pi provider, managed pi RPC runs, model discovery, Agent Mode runner, or RepoPrompt MCP bridge extension.
+Current as of 2026-06-22 for pi 0.79.10. This document is contributor-facing: use it when editing RepoPrompt CE's pi provider, managed pi RPC runs, model discovery, Agent Mode runner, or RepoPrompt MCP bridge extension.
 
 ## Scope and goals
 
@@ -93,7 +93,7 @@ RepoPrompt sets `REPOPROMPT_PI_MANAGED_RUN=1` for managed runs. The global/windo
 
 RepoPrompt also sets `REPOPROMPT_PI_PERMISSION_LEVEL` for managed runs. The window-scoped bridge reads this value before pi built-in tools execute and applies RepoPrompt's preflight policy gate. This gate is a RepoPrompt approval/policy boundary; it is not an OS or kernel sandbox.
 
-Minimum supported pi version is currently `0.79.0`, enforced by `PiIntegrationConfiguration.checkManagedRPCAvailability` before managed RPC runs that require the supported-version check. RepoPrompt is validated against pi 0.79.4. The 0.79.4 changelog does not require a launch-argument or RPC protocol change for RepoPrompt: first-run theme detection is interactive-only, release `SHA256SUMS` files matter only if RepoPrompt later downloads standalone pi binaries, and package-command handle cleanup does not remove RepoPrompt's responsibility to keep its bridge factory bounded and session-scoped state cleaned up.
+Minimum supported pi version is currently `0.79.0`, enforced by `PiIntegrationConfiguration.checkManagedRPCAvailability` before managed RPC runs that require the supported-version check. RepoPrompt is validated against pi 0.79.10. The 0.79.0-0.79.10 changelog keeps the same required managed launch shape for RepoPrompt. Important integration inputs from that range: project trust and RPC extension UI start at 0.79.0, `ctx.isProjectTrusted()` appears in 0.79.1, `CONFIG_DIR_NAME` / public diff helpers appear in 0.79.7, compaction events/results now include `estimatedTokensAfter`, and extension compaction events include `reason` plus `willRetry` in 0.79.10. None of these require removing `--approve` or changing JSONL framing.
 
 ### Built-in tool permission policy
 
@@ -180,7 +180,7 @@ Timeout behavior must be explicit because pi commands can mutate session/runtime
 RepoPrompt installs a managed pi extension that dynamically exposes RepoPrompt MCP tools as pi tools.
 
 - Window-scoped bridge: installed under the app support `RepoPrompt CE/PiBridge` directory for a specific window and passed via `--extension` to managed pi RPC runs.
-- Global bridge: installed at `~/.pi/agent/extensions/repoprompt-bridge.ts` only through explicit RepoPrompt settings/UI flows. It is unmanaged by a specific window and must not load during `REPOPROMPT_PI_MANAGED_RUN=1`.
+- Global bridge: installed under the effective pi user agent directory (`$PI_CODING_AGENT_DIR/extensions/repoprompt-bridge.ts` when set, otherwise `~/.pi/agent/extensions/repoprompt-bridge.ts`) only through explicit RepoPrompt settings/UI flows. It is unmanaged by a specific window and must not load during `REPOPROMPT_PI_MANAGED_RUN=1`.
 - Managed marker: `// RepoPrompt CE managed pi bridge extension`. Never overwrite an extension at the global path unless this marker is present.
 
 The bridge source is maintained as `AppResources/PiBridge/repoprompt-bridge.ts` and rendered by Swift with placeholder substitution for the CLI path, window ID, managed env key, client identity, and argument arrays.
@@ -198,7 +198,7 @@ Bridge constants:
 | `MAX_RESULT_CHARS` | Maximum returned text payload before bridge-side truncation. |
 | `MAX_TOOL_INPUT_UI_CHARS` | Maximum serialized pi built-in input shown in approval UI before redaction/truncation. |
 
-Bridge tool results include `details.bridgeVersion`, `details.tool`, `details.windowID`, `details.exitCode`, `details.truncated`, `details.cliPath`, `details.schemaArgs`, `details.toolArgsPrefix`, and `details.isManagedWindowBridge` for downstream rendering and diagnostics. The `repoprompt_bridge_status` tool also reports structured schema-load/registration diagnostics: `schemaLoadStatus`, `schemaToolCount`, `registeredToolCount`, `registrationFailureCount`, `registrationFailures`, `failureClass`, and `error`. Dynamic tool schema export failure should degrade to the status tool; an individual dynamic tool registration failure should skip that tool and report degraded status rather than crash the whole bridge.
+Bridge tool results include `details.bridgeVersion`, `details.tool`, `details.windowID`, `details.exitCode`, `details.truncated`, `details.cliPath`, `details.schemaArgs`, `details.toolArgsPrefix`, and `details.isManagedWindowBridge` for downstream rendering and diagnostics. The `repoprompt_bridge_status` tool also reports structured schema-load/registration diagnostics: `schemaLoadStatus`, `schemaToolCount`, `registeredToolCount`, `registrationFailureCount`, `registrationFailures`, `failureClass`, and `error`. Dynamic tool schema export failure should degrade to the status tool; an individual dynamic tool registration failure should skip that tool and report degraded status rather than crash the whole bridge. Schema loading happens during the async extension factory, so keep the timeout bounded and avoid adding extra startup/reload work there.
 
 The bridge also registers a fixed read-only `repoprompt_window_status` tool. It calls RepoPrompt MCP `bind_context` with `op=list` and exists as a stable pi-facing routing discovery tool when provider/tool adapters fail to expose or select the raw `bind_context` name. Agents should use `repoprompt_window_status` instead of shelling out to `repoprompt-mcp` when they need the current RepoPrompt window, tab, workspace, or binding status.
 
@@ -214,7 +214,7 @@ Managed Agent Mode runs register the expected pi process PID and acquire an MCP 
 
 ### Extension UI
 
-pi RPC dialog methods (`select`, `confirm`, `input`, `editor`) are converted to `AgentAskUserInteraction` and answered through `extension_ui_response`. Fire-and-forget UI requests (`notify`, `setStatus`, `setWidget`, `setTitle`, `set_editor_text`) may be logged or surfaced later, but they must not block a run waiting for a response.
+pi RPC dialog methods (`select`, `confirm`, `input`, `editor`) are converted to `AgentAskUserInteraction` and answered through `extension_ui_response`. Fire-and-forget UI requests (`notify`, `setStatus`, `setWidget`, `setTitle`, `set_editor_text`) must never block waiting for a response; RepoPrompt surfaces concise `notify`, `setStatus`, and first-line `setWidget` text as Agent Mode status updates and ignores title/editor-text mutations that are TUI-specific in pi.
 
 Timeouts from pi extension UI are milliseconds and map to RepoPrompt question timeouts in seconds.
 
@@ -243,7 +243,7 @@ Use the coordinated `make dev-*` commands by default so builds, tests, and launc
 - RepoPrompt launches pi through the configured `pi` CLI profile and supplemental PATH hints.
 - Managed runs use `--mode rpc --approve`; model discovery and prompt-only flows can add `--no-session --no-tools`.
 - The window-scoped bridge is generated and installed automatically for Agent Mode pi runs. RepoPrompt keeps other managed window-scoped bridge files in place so concurrent pi runs in different windows can survive pi extension reload/rebind events; stale managed bridge files are repaired in place during install.
-- The global bridge is optional and user-managed through RepoPrompt; it must not overwrite a non-RepoPrompt extension at the same path.
+- The global bridge is optional and user-managed through RepoPrompt; it must not overwrite a non-RepoPrompt extension at the same path. If `PI_CODING_AGENT_DIR` is set, install/status/uninstall must target that effective pi agent directory instead of the default `~/.pi/agent`.
 - Live smoke requires a CE debug app and CE debug CLI that talk to this checkout, not a production non-CE app.
 
 A typical non-disruptive smoke, when the debug app is already running and the debug CLI is installed, is:

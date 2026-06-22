@@ -1230,6 +1230,7 @@ final class PiNativeSessionControllerTests: XCTestCase {
             return nil
         }
 
+        XCTAssertTrue(streamResults.contains { $0.type == "status" && ($0.text?.contains("about 456 tokens") ?? false) })
         XCTAssertTrue(streamResults.contains { $0.type == "status" && ($0.text?.contains("compaction will retry") ?? false) })
         XCTAssertTrue(streamResults.contains { $0.type == "content" && $0.text == "after compaction retry" })
     }
@@ -1283,6 +1284,12 @@ final class PiNativeSessionControllerTests: XCTestCase {
             }
         }
         collector.cancel()
+        XCTAssertTrue(events.contains { event in
+            if case let .stream(result) = event {
+                return result.type == "status" && (result.text?.contains("about 123 tokens") ?? false)
+            }
+            return false
+        })
         XCTAssertEqual(events.count { event in
             if case .turnCompleted = event { return true }
             return false
@@ -2238,7 +2245,7 @@ final class PiNativeSessionControllerTests: XCTestCase {
         def emit_compaction_retry_continuation():
             global COMPACTION_ACTIVE
             COMPACTION_ACTIVE = False
-            emit({"type": "compaction_end", "reason": "overflow", "result": {"messageCount": 2}, "aborted": False, "willRetry": True, "errorMessage": "context overflow"})
+            emit({"type": "compaction_end", "reason": "overflow", "result": {"messageCount": 2, "estimatedTokensAfter": 456}, "aborted": False, "willRetry": True})
             emit({"type": "agent_start"})
             emit({"type": "turn_start"})
             emit({"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": "after compaction retry"}})
@@ -2506,7 +2513,7 @@ final class PiNativeSessionControllerTests: XCTestCase {
                     emit_compaction_retry_continuation()
                 elif scenario == "compaction_threshold_finish":
                     COMPACTION_ACTIVE = False
-                    emit({"type": "compaction_end", "reason": "threshold", "result": {"messageCount": 2}, "aborted": False, "willRetry": False})
+                    emit({"type": "compaction_end", "reason": "threshold", "result": {"messageCount": 2, "estimatedTokensAfter": 123}, "aborted": False, "willRetry": False})
                 elif scenario == "compaction_nonretry_queued_continuation_end":
                     emit_compaction_nonretry_queued_continuation_end()
                 elif scenario == "compaction_nonretry_queued_continuation_final":

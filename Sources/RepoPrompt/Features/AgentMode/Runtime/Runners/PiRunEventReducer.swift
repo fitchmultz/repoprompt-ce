@@ -35,6 +35,17 @@ enum PiFirstProviderEventWatchdog {
     static let source = "pi.firstProviderEventTimeout"
     static let errorText = "pi accepted the prompt but did not produce any response events within 60 seconds."
 
+    static func countsAsPostPromptProviderEvent(_ event: PiNativeSessionController.Event) -> Bool {
+        switch event {
+        case .stream, .turnCompleted, .error:
+            true
+        case let .extensionUIRequest(request):
+            request.requiresResponse
+        case .sessionState, .diagnostic:
+            false
+        }
+    }
+
     static func shouldFire(
         didReceivePostPromptProviderEvent: Bool,
         didCommitTerminal: Bool,

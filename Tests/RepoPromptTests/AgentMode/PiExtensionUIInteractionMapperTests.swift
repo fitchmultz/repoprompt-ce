@@ -48,6 +48,26 @@ final class PiExtensionUIInteractionMapperTests: XCTestCase {
         XCTAssertEqual(interaction.questions.first?.allowsCustom, true)
     }
 
+    func testFireAndForgetRequestsMapToStatusText() {
+        XCTAssertEqual(
+            PiExtensionUIInteractionMapper.fireAndForgetStatusText(from: uiRequest(method: "notify", message: "Saved")),
+            "pi: Saved"
+        )
+        XCTAssertEqual(
+            PiExtensionUIInteractionMapper.fireAndForgetStatusText(from: uiRequest(method: "setStatus", statusKey: "build", statusText: "Running")),
+            "pi build: Running"
+        )
+        XCTAssertEqual(
+            PiExtensionUIInteractionMapper.fireAndForgetStatusText(from: uiRequest(
+                method: "setWidget",
+                raw: ["widgetLines": .array([.string("Line 1"), .string("Line 2")])]
+            )),
+            "pi: Line 1"
+        )
+        XCTAssertNil(PiExtensionUIInteractionMapper.fireAndForgetStatusText(from: uiRequest(method: "setTitle", title: "Title")))
+        XCTAssertNil(PiExtensionUIInteractionMapper.fireAndForgetStatusText(from: uiRequest(method: "select", message: "Pick")))
+    }
+
     func testResponsesMapConfirmValuesAndCancellation() {
         let confirmRequest = uiRequest(method: "confirm")
         XCTAssertEqual(
@@ -99,6 +119,7 @@ final class PiExtensionUIInteractionMapperTests: XCTestCase {
         method: String,
         title: String? = nil,
         message: String? = nil,
+        statusKey: String? = nil,
         statusText: String? = nil,
         raw: [String: PiJSONValue] = [:]
     ) -> PiRPCClient.PiExtensionUIRequest {
@@ -107,13 +128,14 @@ final class PiExtensionUIInteractionMapperTests: XCTestCase {
         requestRaw["method"] = .string(method)
         if let title { requestRaw["title"] = .string(title) }
         if let message { requestRaw["message"] = .string(message) }
+        if let statusKey { requestRaw["statusKey"] = .string(statusKey) }
         if let statusText { requestRaw["statusText"] = .string(statusText) }
         return PiRPCClient.PiExtensionUIRequest(
             id: "ui-1",
             method: method,
             title: title,
             message: message,
-            statusKey: nil,
+            statusKey: statusKey,
             statusText: statusText,
             raw: requestRaw
         )
