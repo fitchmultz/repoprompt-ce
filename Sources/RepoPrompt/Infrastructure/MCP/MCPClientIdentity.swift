@@ -127,6 +127,10 @@ enum MCPClientIdentity {
         return sameFamily(lhsNormalized, rhsNormalized)
     }
 
+    static func isManagedPiBridgeExecutionClient(_ raw: String?) -> Bool {
+        normalized(raw) == "pi-schema"
+    }
+
     static func isHeadlessAgentClient(_ raw: String?) -> Bool {
         guard let family = canonicalFamilyID(raw) else { return false }
         switch family {

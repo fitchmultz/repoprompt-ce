@@ -80,6 +80,63 @@ final class MCPPiManagedBridgeIdentityAdmissionTests: XCTestCase {
         #endif
     }
 
+    func testUnrelatedManagedPiBridgeClientFallsBackWhileAnotherPiAgentPIDIsExpected() async throws {
+        #if DEBUG
+            let runID = UUID()
+            let connectionID = UUID()
+            let windowID = 62006
+            let unrelatedExpectedPID = pid_t(Int32.max - 7)
+            try await withInstalledPiPolicy(runID: runID, windowID: windowID) {
+                await manager.registerExpectedAgentPID(unrelatedExpectedPID, for: agentClientName, runID: runID)
+
+                let bootstrapAdmission = await manager.debugBootstrapPolicyAdmissionStatus(
+                    bootstrapClientName: managedBridgeClientName,
+                    connectionID: connectionID,
+                    clientPid: Int(getpid()),
+                    timeout: 0.01
+                )
+                XCTAssertEqual(bootstrapAdmission, "notRequired")
+
+                let admission = await manager.debugAgentPolicyAdmissionStatus(
+                    clientName: managedBridgeClientName,
+                    bootstrapClientName: managedBridgeClientName,
+                    connectionID: connectionID,
+                    clientPid: Int(getpid()),
+                    timeout: 0.01
+                )
+                XCTAssertEqual(admission, "notRequired")
+
+                let autoApproved = await manager.debugShouldAutoApproveExpectedAgentClient(
+                    clientName: managedBridgeClientName,
+                    clientPid: Int(getpid())
+                )
+                XCTAssertFalse(autoApproved)
+
+                let result = await manager.debugApplyPendingPolicy(
+                    clientName: managedBridgeClientName,
+                    connectionID: connectionID,
+                    clientPid: Int(getpid()),
+                    bootstrapClientName: managedBridgeClientName,
+                    pidGateTimeout: 0.01,
+                    requireRunRouting: false
+                )
+
+                await manager.clearExpectedAgentPID(unrelatedExpectedPID, for: agentClientName, runID: runID)
+
+                XCTAssertEqual(result.outcome, "fallback")
+                XCTAssertNil(result.runID)
+                let mappedRunID = await manager.runIDForConnection(connectionID)
+                XCTAssertNil(mappedRunID)
+                let pendingAfterFallback = await manager.debugPendingPolicySnapshot(for: agentClientName)
+                XCTAssertTrue(pendingAfterFallback.contains { $0.runID == runID })
+            } cleanup: {
+                await manager.removeConnection(connectionID)
+            }
+        #else
+            throw XCTSkip("Pi managed bridge admission diagnostics require DEBUG helpers.")
+        #endif
+    }
+
     func testPersonalPiBridgeClientCannotConsumeManagedPiAgentModePolicy() async throws {
         #if DEBUG
             let runID = UUID()

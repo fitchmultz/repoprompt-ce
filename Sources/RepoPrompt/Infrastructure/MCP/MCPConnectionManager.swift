@@ -3117,7 +3117,16 @@ actor ServerNetworkManager {
         sessionKey: String?,
         clientPid: Int? = nil
     ) -> Bool {
-        if oldestPendingPolicyEntry(for: clientName) != nil {
+        if oldestPendingPolicyEntry(for: clientName, where: { policy in
+            guard policy.requiresExpectedAgentPID else { return true }
+            guard let clientPid else { return true }
+            let descendantStatus = isExpectedAgentDescendant(
+                clientName: clientName,
+                clientPid: clientPid,
+                runID: policy.runID
+            )
+            return descendantStatus != false || !MCPClientIdentity.isManagedPiBridgeExecutionClient(clientName)
+        }) != nil {
             return true
         }
         if preferredLiveRunAffinity(for: clientName, sessionKey: sessionKey) != nil {
@@ -6433,9 +6442,9 @@ actor ServerNetworkManager {
         case true:
             return hasReservedPIDGatedPolicy ? nil : .ready
         case false:
-            return hasReservedPIDGatedPolicy ? nil : .notRequired
+            return MCPClientIdentity.isManagedPiBridgeExecutionClient(clientName) ? .notRequired : (hasReservedPIDGatedPolicy ? nil : .notRequired)
         case nil:
-            return nil
+            return hasReservedPIDGatedPolicy ? .ready : nil
         }
     }
 
@@ -6454,9 +6463,6 @@ actor ServerNetworkManager {
         }
         // Do not spend the ownership wait twice. A PID-gated policy is checked and
         // consumed atomically after the authoritative MCP initialize identity arrives.
-        if hasPIDGatedPendingPolicy(for: bootstrapClientName) {
-            return .ready
-        }
         if let readiness = directAgentBootstrapAdmissionStatus(
             clientName: bootstrapClientName,
             sessionKey: sessionKey,
@@ -6517,10 +6523,6 @@ actor ServerNetworkManager {
         // PID-gated ownership is resolved atomically at policy consumption. This covers
         // helper bootstrap identities (for example repoprompt_ce_cli_debug) that transition
         // to an authoritative provider identity before the ACP parent PID is registered.
-        if hasPIDGatedPendingPolicy(for: clientName) {
-            return .ready
-        }
-
         if hasAgentPolicyAdmissionTarget(clientName: clientName, sessionKey: sessionKey, clientPid: clientPid) {
             return .ready
         }
@@ -9199,6 +9201,18 @@ actor ServerNetworkManager {
         return isExpectedAgentDescendant(clientName: clientName, clientPid: clientPid, runID: policy.runID) == true
     }
 
+    private func pidGatedPolicyBelongsToDifferentPID(
+        _ policy: ClientConnectionPolicy,
+        clientName: String,
+        clientPid: Int?
+    ) -> Bool {
+        guard policy.requiresExpectedAgentPID,
+              MCPClientIdentity.isManagedPiBridgeExecutionClient(clientName),
+              let clientPid
+        else { return false }
+        return isExpectedAgentDescendant(clientName: clientName, clientPid: clientPid, runID: policy.runID) == false
+    }
+
     private func oldestReservedPendingPolicyEntry(
         for clientName: String
     ) -> (key: String, index: Int, policy: ClientConnectionPolicy)? {
@@ -9282,6 +9296,16 @@ actor ServerNetworkManager {
         requireRunRouting: Bool = true,
         expectedLifecycleGeneration: UInt64? = nil
     ) async -> PendingPolicyApplicationOutcome {
+        if oldestPendingPolicyEntry(for: clientName, where: {
+            $0.reservationConnectionID == nil && canConsumePendingPolicy($0, clientName: clientName, clientPid: clientPid)
+        }) == nil,
+            let pidGatedEntry = oldestPendingPolicyEntry(for: clientName, where: { $0.requiresExpectedAgentPID }),
+            pidGatedPolicyBelongsToDifferentPID(pidGatedEntry.policy, clientName: clientName, clientPid: clientPid)
+        {
+            await applyRoutingFallback(clientName: clientName, connectionID: connectionID, clientPid: clientPid)
+            return .fallback
+        }
+
         if let reservedEntry = oldestReservedPendingPolicyEntry(for: clientName),
            canConsumePendingPolicy(reservedEntry.policy, clientName: clientName, clientPid: clientPid)
         {
@@ -9351,6 +9375,12 @@ actor ServerNetworkManager {
                         }
                     #endif
                     return .rejected(runID: runID, reason: "policy_removed")
+                }
+                if let pidGatedEntry = oldestPendingPolicyEntry(for: clientName, where: { $0.requiresExpectedAgentPID }),
+                   pidGatedPolicyBelongsToDifferentPID(pidGatedEntry.policy, clientName: clientName, clientPid: clientPid)
+                {
+                    await applyRoutingFallback(clientName: clientName, connectionID: connectionID, clientPid: clientPid)
+                    return .fallback
                 }
                 guard Date() < deadline else {
                     logReservedPendingPolicy(
