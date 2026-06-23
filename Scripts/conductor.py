@@ -77,7 +77,31 @@ DEFAULT_XCTEST_STALL_SECONDS = 120.0
 # no-skip-build fallback may legitimately spend longer in SwiftPM planning.
 ROOT_TEST_SKIP_BUILD_SILENT_STARTUP_SECONDS = 15.0
 ROOT_TEST_BUILD_RETRY_SILENT_STARTUP_SECONDS = 90.0
+# Once a batch prints build progress, the silent-startup window is disarmed, so a
+# wedged test launch (build completes, but the xctest binary never emits a marker)
+# would otherwise hang until the 900s job timeout. Bound the gap between xctest
+# progress markers; build/compile output does not reset it, only `Build complete!`
+# and `Test Case` markers do. Reuse the shared per-test stall budget for parity
+# with the daemon-level watchdog used by filtered runs.
+ROOT_TEST_XCTEST_STALL_SECONDS = DEFAULT_XCTEST_STALL_SECONDS
+# A launch stall (built, but no xctest output before stalling) is almost always a
+# transient SwiftPM/test-launch wedge that clears on a fresh process. Retry it a
+# bounded number of times before failing the run.
+ROOT_TEST_LAUNCH_STALL_RETRY_LIMIT = 1
 ROOT_TEST_BATCH_SIZE = 8
+# Suites that leak process-global async work or singletons and so must run
+# alone-in-process instead of batched with co-tenants. WorkspaceFileContextStore*
+# and PiNativeSessionController are watcher/actor heavy. PersistentAgentModeMCPReadFileConnection
+# drives socketpair MCP integration through ServerNetworkManager.shared /
+# WindowStatesManager.shared / MCPReadFileAutoSelectionProbeRegistry.shared; its async
+# read-file auto-selection header mirror is a @MainActor publish that can lose a race when
+# co-tenant socket/MCP suites keep background tasks alive, intermittently leaving the mirrored
+# selection empty even after the test's settle barrier observes the workers drained.
+ROOT_TEST_ISOLATED_SUITE_PREFIXES = ("RepoPromptTests.WorkspaceFileContextStore",)
+ROOT_TEST_ISOLATED_SUITE_NAMES = (
+    "RepoPromptTests.PiNativeSessionControllerTests",
+    "RepoPromptTests.PersistentAgentModeMCPReadFileConnectionTests",
+)
 SMOKE_AGENT_WAIT_SECONDS = 120.0
 WORKSPACE_FILE_CONTEXT_STORE_TEST_SHARDS = [
     "WorkspaceFileContextStoreCoreTests",
@@ -3275,6 +3299,7 @@ def run_operation_command_streaming_with_silent_startup_guard(
     env: Optional[Dict[str, str]] = None,
     allow_exit_codes: Optional[set[int]] = None,
     silent_startup_seconds: Optional[float] = None,
+    xctest_stall_seconds: Optional[float] = None,
     start_new_session: bool = False,
 ) -> Tuple[int, str, str, bool]:
     allowed = allow_exit_codes if allow_exit_codes is not None else {0}
@@ -3297,12 +3322,23 @@ def run_operation_command_streaming_with_silent_startup_guard(
             process_group_id = os.getpgid(process.pid)
     captured: List[str] = []
     output_seen = threading.Event()
+    # `xctest_marker_at[0]` is armed by `Build complete!` and reset by every
+    # `Test Case` progress marker, so a wedged launch or a stuck test is bounded
+    # even after build output has disarmed the silent-startup window. Build and
+    # compile lines intentionally do not reset it.
+    progress_lock = threading.Lock()
+    xctest_marker_at: List[Optional[float]] = [None]
 
     def relay_output() -> None:
         assert process.stdout is not None
         for line in process.stdout:
             output_seen.set()
             captured.append(line)
+            if xctest_stall_seconds is not None:
+                stripped = line.strip()
+                if XCTEST_BUILD_COMPLETE_RE.match(stripped) or XCTEST_PROGRESS_RE.match(stripped):
+                    with progress_lock:
+                        xctest_marker_at[0] = time.monotonic()
             print(line, end="", flush=True)
 
     def collect_signal_targets(seed_pids: Set[int]) -> Tuple[Set[int], Set[int]]:
@@ -3346,15 +3382,39 @@ def run_operation_command_streaming_with_silent_startup_guard(
     relay = threading.Thread(target=relay_output, daemon=True)
     relay.start()
     timed_out = False
-    if silent_startup_seconds is not None:
-        deadline = time.monotonic() + silent_startup_seconds
-        while not output_seen.is_set() and process.poll() is None:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                timed_out = True
-                terminate_silent_startup()
-                break
-            time.sleep(min(0.05, remaining))
+    timeout_reason: Optional[str] = None
+    monotonic_start = time.monotonic()
+    while process.poll() is None:
+        startup_active = silent_startup_seconds is not None and not output_seen.is_set()
+        stall_active = xctest_stall_seconds is not None
+        if not startup_active and not stall_active:
+            # No guard can fire from here on; fall through to a blocking wait.
+            break
+        deadline: Optional[float] = None
+        reason: Optional[str] = None
+        if startup_active:
+            deadline = monotonic_start + silent_startup_seconds  # type: ignore[operator]
+            reason = f"no output after {silent_startup_seconds}s"
+        if stall_active:
+            with progress_lock:
+                marker_at = xctest_marker_at[0]
+            if marker_at is not None:
+                stall_deadline = marker_at + xctest_stall_seconds  # type: ignore[operator]
+                if deadline is None or stall_deadline < deadline:
+                    deadline = stall_deadline
+                    reason = f"no XCTest progress for {xctest_stall_seconds}s"
+        if deadline is None:
+            # Guard is armed but waiting for its trigger (e.g. a build in flight
+            # before `Build complete!`); keep polling without capping runtime.
+            time.sleep(0.05)
+            continue
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            timed_out = True
+            timeout_reason = reason
+            terminate_silent_startup()
+            break
+        time.sleep(min(0.05, remaining))
     if timed_out:
         return_code = 124
     else:
@@ -3365,7 +3425,7 @@ def run_operation_command_streaming_with_silent_startup_guard(
             process.stdout.close()
     stdout = "".join(captured)
     if timed_out:
-        print(f"status: no output after {silent_startup_seconds}s", flush=True)
+        print(f"status: {timeout_reason or 'timed out'}", flush=True)
     else:
         print(f"status: {return_code}", flush=True)
     if return_code not in allowed:
@@ -3596,6 +3656,10 @@ def root_test_filter_for_suites(suites: Sequence[str]) -> str:
     return r"RepoPromptTests\.(" + "|".join(re.escape(name) for name in names) + ")"
 
 
+def root_test_suite_requires_isolation(suite: str) -> bool:
+    return suite.startswith(ROOT_TEST_ISOLATED_SUITE_PREFIXES) or suite in ROOT_TEST_ISOLATED_SUITE_NAMES
+
+
 def operation_root_tests(repo_root: Path) -> int:
     print(f"Running root tests in XCTest batches of up to {ROOT_TEST_BATCH_SIZE} suites", flush=True)
     list_argv = ["swift", "test", "list"]
@@ -3627,12 +3691,7 @@ def operation_root_tests(repo_root: Path) -> int:
 
     checkout_suite = f"RepoPromptTests.{CHECKOUT_REFRESH_TEST_FILTER}"
     regular_suites = [suite for suite in suites if suite != checkout_suite]
-    isolated_suites = [
-        suite
-        for suite in regular_suites
-        if suite.startswith("RepoPromptTests.WorkspaceFileContextStore")
-        or suite == "RepoPromptTests.PiNativeSessionControllerTests"
-    ]
+    isolated_suites = [suite for suite in regular_suites if root_test_suite_requires_isolation(suite)]
     batchable_suites = [suite for suite in regular_suites if suite not in isolated_suites]
     suite_batches = [
         batchable_suites[index : index + ROOT_TEST_BATCH_SIZE]
@@ -3645,33 +3704,68 @@ def operation_root_tests(repo_root: Path) -> int:
     for suite_batch in suite_batches:
         suite_filter = root_test_filter_for_suites(suite_batch)
         suite_label_name = suite_filter if len(suite_batch) == 1 else f"{suite_batch[0]}..{suite_batch[-1]}"
-        suite_attempts = [
-            (f"swift test --skip-build --filter {suite_label_name}", ["swift", "test", "--skip-build", "--filter", suite_filter]),
-            (f"swift test --filter {suite_label_name}", ["swift", "test", "--filter", suite_filter]),
-        ]
-        for attempt, (suite_label, suite_argv) in enumerate(suite_attempts, start=1):
-            silent_startup_seconds = (
-                ROOT_TEST_SKIP_BUILD_SILENT_STARTUP_SECONDS
-                if attempt == 1
-                else ROOT_TEST_BUILD_RETRY_SILENT_STARTUP_SECONDS
-            )
-            code, stdout, _stderr, _output_seen = run_operation_command_streaming_with_silent_startup_guard(
-                suite_label,
-                suite_argv,
-                repo_root,
-                silent_startup_seconds=silent_startup_seconds,
-                start_new_session=True,
-            )
-            if code == 124 and attempt == 1 and not root_test_xctest_started(stdout):
-                print(
-                    f"WARNING: {suite_label_name} produced no XCTest output for {ROOT_TEST_SKIP_BUILD_SILENT_STARTUP_SECONDS:.0f}s; retrying once without --skip-build",
-                    flush=True,
-                )
-                continue
-            if code != 0:
-                return code
-            break
+        code = run_root_test_suite_batch(repo_root, suite_filter, suite_label_name)
+        if code != 0:
+            return code
     return 0
+
+
+def run_root_test_suite_batch(repo_root: Path, suite_filter: str, suite_label_name: str) -> int:
+    """Run one batch of root XCTest suites, recovering transient launch stalls.
+
+    Returns 0 on success, otherwise the failing process exit code. A "launch
+    stall" — the batch built (or skipped build) but never emitted an XCTest
+    marker before stalling — is treated as transient and retried on a fresh
+    process. A stall *after* XCTest output started is a genuinely stuck test and
+    fails fast so it is not masked by a retry.
+    """
+
+    def run_attempt(label: str, argv: List[str], silent_startup_seconds: float) -> Tuple[int, str]:
+        code, stdout, _stderr, _output_seen = run_operation_command_streaming_with_silent_startup_guard(
+            label,
+            argv,
+            repo_root,
+            silent_startup_seconds=silent_startup_seconds,
+            xctest_stall_seconds=ROOT_TEST_XCTEST_STALL_SECONDS,
+            start_new_session=True,
+        )
+        return code, stdout
+
+    def launch_stalled(code: int, stdout: str) -> bool:
+        return code == 124 and not root_test_xctest_started(stdout)
+
+    # Fast path: the binary is already built, so try --skip-build first.
+    skip_label = f"swift test --skip-build --filter {suite_label_name}"
+    skip_argv = ["swift", "test", "--skip-build", "--filter", suite_filter]
+    code, stdout = run_attempt(skip_label, skip_argv, ROOT_TEST_SKIP_BUILD_SILENT_STARTUP_SECONDS)
+    if code == 0:
+        return 0
+    if not launch_stalled(code, stdout):
+        return code
+    print(
+        f"WARNING: {suite_label_name} produced no XCTest output for "
+        f"{ROOT_TEST_SKIP_BUILD_SILENT_STARTUP_SECONDS:.0f}s; retrying without --skip-build",
+        flush=True,
+    )
+
+    # A skip-build launch stall is usually a wedged SwiftPM planning/launch step.
+    # Rebuild on a fresh process, then retry a bounded number of times if the
+    # freshly built binary still stalls before producing any XCTest output.
+    build_label = f"swift test --filter {suite_label_name}"
+    build_argv = ["swift", "test", "--filter", suite_filter]
+    for retry in range(ROOT_TEST_LAUNCH_STALL_RETRY_LIMIT + 1):
+        code, stdout = run_attempt(build_label, build_argv, ROOT_TEST_BUILD_RETRY_SILENT_STARTUP_SECONDS)
+        if code == 0:
+            return 0
+        if launch_stalled(code, stdout) and retry < ROOT_TEST_LAUNCH_STALL_RETRY_LIMIT:
+            print(
+                f"WARNING: {suite_label_name} built but stalled before any XCTest output; "
+                f"retrying on a fresh process ({retry + 1}/{ROOT_TEST_LAUNCH_STALL_RETRY_LIMIT})",
+                flush=True,
+            )
+            continue
+        return code
+    return code
 
 
 def operation_release_preflight_missing(_repo_root: Path) -> int:

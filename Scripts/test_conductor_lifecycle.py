@@ -311,6 +311,51 @@ class LifecycleQueueTests(LifecycleTestCase):
             self.assertEqual(silent_startup_seconds, conductor.ROOT_TEST_SKIP_BUILD_SILENT_STARTUP_SECONDS)
             self.assertTrue(start_new_session)
 
+    def test_root_test_suite_requires_isolation_covers_singleton_coupled_suites(self) -> None:
+        for suite in (
+            "RepoPromptTests.WorkspaceFileContextStoreIngressTests",
+            "RepoPromptTests.WorkspaceFileContextStoreCorePart2Tests",
+            "RepoPromptTests.PiNativeSessionControllerTests",
+            "RepoPromptTests.PersistentAgentModeMCPReadFileConnectionTests",
+        ):
+            self.assertTrue(conductor.root_test_suite_requires_isolation(suite), suite)
+        for suite in (
+            "RepoPromptTests.AlphaTests",
+            "RepoPromptTests.PersistentMCPDistinctConnectionConcurrencyTests",
+        ):
+            self.assertFalse(conductor.root_test_suite_requires_isolation(suite), suite)
+
+    def test_root_tests_isolate_persistent_agent_mode_mcp_suite_from_batches(self) -> None:
+        tmp, _state = self.make_state()
+        self.addCleanup(tmp.cleanup)
+        list_output = "\n".join([
+            "RepoPromptTests.AlphaTests/testAlpha",
+            "RepoPromptTests.BetaTests/testBeta",
+            "RepoPromptTests.PersistentAgentModeMCPReadFileConnectionTests/testWorktree",
+            "RepoPromptTests.PersistentMCPDistinctConnectionConcurrencyTests/testDistinct",
+        ])
+        completed = subprocess.CompletedProcess(["swift", "test", "list"], 0, stdout=list_output, stderr="")
+        filters: list[str] = []
+
+        def fake_stream(_name, argv, _cwd, **_kwargs):
+            filters.append(argv[-1])
+            return 0, "", "", True
+
+        with mock.patch.object(conductor.subprocess, "run", return_value=completed), mock.patch.object(
+            conductor,
+            "run_operation_command_streaming_with_silent_startup_guard",
+            side_effect=fake_stream,
+        ):
+            code = conductor.operation_root_tests(Path(tmp.name))
+
+        self.assertEqual(code, 0)
+        # The MCP socketpair suite runs alone-in-process; the other distinct-connection
+        # suite stays batched with the ordinary suites.
+        self.assertEqual(filters, [
+            r"RepoPromptTests\.(AlphaTests|BetaTests|PersistentMCPDistinctConnectionConcurrencyTests)",
+            "RepoPromptTests.PersistentAgentModeMCPReadFileConnectionTests",
+        ])
+
     def test_root_tests_retry_one_suite_without_xctest_startup_output_without_skip_build(self) -> None:
         tmp, _state = self.make_state()
         self.addCleanup(tmp.cleanup)
@@ -418,6 +463,113 @@ time.sleep(30)
             time.sleep(0.05)
         with self.assertRaises(ProcessLookupError):
             os.kill(descendant_pid, 0)
+
+    def test_streaming_guard_kills_batch_that_stalls_after_build_complete(self) -> None:
+        # Build output disarms the silent-startup window, so a wedged test launch
+        # (build completes, but the xctest binary never emits a marker) must be
+        # bounded by the xctest stall guard instead of hanging until the job timeout.
+        script = "import time; print('Build complete! (1.00s)', flush=True); time.sleep(30)"
+
+        code, stdout, _stderr, output_seen = conductor.run_operation_command_streaming_with_silent_startup_guard(
+            "stalled launch",
+            [sys.executable, "-u", "-c", script],
+            Path.cwd(),
+            silent_startup_seconds=5.0,
+            xctest_stall_seconds=0.5,
+            start_new_session=True,
+        )
+
+        self.assertEqual(code, 124)
+        self.assertTrue(output_seen)
+        self.assertIn("Build complete!", stdout)
+        self.assertFalse(conductor.root_test_xctest_started(stdout))
+
+    def test_streaming_guard_allows_xctest_progress_within_stall_window(self) -> None:
+        script = (
+            "import time\n"
+            "print('Build complete! (1.00s)', flush=True)\n"
+            "for index in range(3):\n"
+            "    print(\"Test Case '-[Suite testCase%d]' started.\" % index, flush=True)\n"
+            "    time.sleep(0.1)\n"
+            "    print(\"Test Case '-[Suite testCase%d]' passed (0.100 seconds).\" % index, flush=True)\n"
+        )
+
+        code, stdout, _stderr, output_seen = conductor.run_operation_command_streaming_with_silent_startup_guard(
+            "progressing batch",
+            [sys.executable, "-u", "-c", script],
+            Path.cwd(),
+            silent_startup_seconds=5.0,
+            xctest_stall_seconds=0.5,
+            start_new_session=True,
+        )
+
+        self.assertEqual(code, 0)
+        self.assertTrue(output_seen)
+        self.assertTrue(conductor.root_test_xctest_started(stdout))
+
+    def test_root_tests_retry_launch_stall_after_build_on_fresh_process(self) -> None:
+        tmp, _state = self.make_state()
+        self.addCleanup(tmp.cleanup)
+        completed = subprocess.CompletedProcess(
+            ["swift", "test", "list"],
+            0,
+            stdout="RepoPromptTests.LaunchStallTests/testCase\n",
+            stderr="",
+        )
+        built_but_stalled = "[0/1] Planning build\nBuild complete! (3.0s)\n"
+        side_effects = [
+            (124, built_but_stalled, "", True),  # skip-build launch stall
+            (124, built_but_stalled, "", True),  # rebuild also stalls before xctest output
+            (0, "Test Suite 'Selected tests' passed\n", "", True),  # fresh process recovers
+        ]
+
+        with mock.patch.object(conductor.subprocess, "run", return_value=completed), mock.patch.object(
+            conductor,
+            "run_operation_command_streaming_with_silent_startup_guard",
+            side_effect=side_effects,
+        ) as stream:
+            code = conductor.operation_root_tests(Path(tmp.name))
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stream.call_count, 3)
+        self.assertEqual(
+            stream.call_args_list[0].args[1],
+            ["swift", "test", "--skip-build", "--filter", "RepoPromptTests.LaunchStallTests"],
+        )
+        self.assertEqual(
+            stream.call_args_list[1].args[1],
+            ["swift", "test", "--filter", "RepoPromptTests.LaunchStallTests"],
+        )
+        self.assertEqual(
+            stream.call_args_list[2].args[1],
+            ["swift", "test", "--filter", "RepoPromptTests.LaunchStallTests"],
+        )
+        for call in stream.call_args_list:
+            self.assertEqual(
+                call.kwargs.get("xctest_stall_seconds"),
+                conductor.ROOT_TEST_XCTEST_STALL_SECONDS,
+            )
+
+    def test_root_tests_launch_stall_retry_is_bounded(self) -> None:
+        tmp, _state = self.make_state()
+        self.addCleanup(tmp.cleanup)
+        completed = subprocess.CompletedProcess(
+            ["swift", "test", "list"],
+            0,
+            stdout="RepoPromptTests.WedgedTests/testCase\n",
+            stderr="",
+        )
+        built_but_stalled = (124, "Build complete! (3.0s)\n", "", True)
+
+        with mock.patch.object(conductor.subprocess, "run", return_value=completed), mock.patch.object(
+            conductor,
+            "run_operation_command_streaming_with_silent_startup_guard",
+            return_value=built_but_stalled,
+        ) as stream:
+            code = conductor.operation_root_tests(Path(tmp.name))
+
+        self.assertEqual(code, 124)
+        self.assertEqual(stream.call_count, 2 + conductor.ROOT_TEST_LAUNCH_STALL_RETRY_LIMIT)
 
     def test_release_artifact_delegates_release_script_with_release_lanes_and_timeout(self) -> None:
         tmp, state = self.make_state()
