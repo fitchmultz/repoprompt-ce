@@ -386,7 +386,6 @@ final class MCPContextBuilderToolProvider: MCPWindowToolProviding {
 
                 if let mode,
                    snapshot.runState == .completed,
-                   !snapshot.usedAgentOutputAsPrompt,
                    !effectivePrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 {
                     try Task.checkCancellation()

@@ -369,6 +369,85 @@ final class ContextBuilderMCPProgressTimelineTests: XCTestCase {
     }
 
     @MainActor
+    func testContextBuilderGeneratesRequestedMCPResponseWhenAgentOutputSeedsEmptyPrompt() async throws {
+        #if DEBUG
+            let provider = ContextBuilderImmediateCompletionProvider()
+            let previousAutoStart = GlobalSettingsStore.shared.mcpAutoStart()
+            GlobalSettingsStore.shared.setMCPAutoStart(false, commit: false)
+            let window = WindowState { _, _, _, _, _ in provider }
+            GlobalSettingsStore.shared.setMCPAutoStart(previousAutoStart, commit: false)
+            WindowStatesManager.shared.registerWindowState(window)
+            defer { WindowStatesManager.shared.unregisterWindowState(window) }
+            await window.workspaceManager.awaitInitialized()
+
+            let root = FileManager.default.temporaryDirectory
+                .appendingPathComponent("ContextBuilderEmptyPromptFollowUpTests-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+
+            let workspace = window.workspaceManager.createWorkspace(
+                name: "Context Builder empty prompt follow-up test",
+                repoPaths: [root.path],
+                ephemeral: true
+            )
+            await window.workspaceManager.switchWorkspace(
+                to: workspace,
+                saveState: false,
+                reason: "ContextBuilderMCPProgressTimelineTests.emptyPromptFollowUp"
+            )
+
+            let activeWorkspace = try XCTUnwrap(window.workspaceManager.activeWorkspace)
+            let tabID = try XCTUnwrap(
+                activeWorkspace.activeComposeTabID ?? activeWorkspace.composeTabs.first?.id
+            )
+            XCTAssertEqual(window.workspaceManager.composeTab(with: tabID)?.promptText, "")
+
+            let followUpRecorder = ContextBuilderFollowUpInvocationRecorder()
+            window.contextBuilderAgentViewModel.installRunTestHooks(
+                ContextBuilderAgentViewModel.RunTestHooks(
+                    beforeProcessingProviderEvent: nil,
+                    providerEventDisposition: nil,
+                    teardownCompleted: nil,
+                    allowSyntheticRoutingWithoutFinalContext: true,
+                    runMCPFollowUp: { mode, prompt, selection in
+                        await followUpRecorder.record(
+                            mode: mode,
+                            prompt: prompt,
+                            selection: selection
+                        )
+                        let chatID = UUID()
+                        return ChatSendReply(
+                            chatId: chatID,
+                            shortId: String(chatID.uuidString.prefix(8)).lowercased(),
+                            mode: mode.mcpModeName,
+                            response: "deterministic plan",
+                            errors: nil
+                        )
+                    }
+                )
+            )
+            defer { window.contextBuilderAgentViewModel.installRunTestHooks(nil) }
+
+            let tools = await window.mcpServer.windowMCPTools
+            let contextBuilder = try XCTUnwrap(
+                tools.first { $0.name == MCPWindowToolName.contextBuilder }
+            )
+            _ = try await contextBuilder([
+                "instructions": .string("Seed the empty prompt, then generate a plan."),
+                "response_type": .string("plan"),
+                "context_id": .string(tabID.uuidString)
+            ])
+
+            let recordedInvocation = await followUpRecorder.snapshot()
+            let invocation = try XCTUnwrap(recordedInvocation)
+            XCTAssertEqual(invocation.mode, .plan)
+            XCTAssertEqual(invocation.prompt, "Discovery complete")
+        #else
+            throw XCTSkip("Provider-path Context Builder injection is DEBUG-only.")
+        #endif
+    }
+
+    @MainActor
     func testCommitAndClearTabContextReportsPersistenceSubphasesInOrder() async throws {
         let previousAutoStart = GlobalSettingsStore.shared.mcpAutoStart()
         GlobalSettingsStore.shared.setMCPAutoStart(false, commit: false)
