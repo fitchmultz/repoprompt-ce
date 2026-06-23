@@ -448,6 +448,83 @@ final class ContextBuilderMCPProgressTimelineTests: XCTestCase {
     }
 
     @MainActor
+    func testContextBuilderDoesNotGenerateMCPResponseFromRoutingFailureOutput() async throws {
+        #if DEBUG
+            let provider = ContextBuilderImmediateCompletionProvider(output: "Blocked. Active-tab compatibility fallback is not allowed during discoverRun execution. Retry after run-scoped routing is established.")
+            let previousAutoStart = GlobalSettingsStore.shared.mcpAutoStart()
+            GlobalSettingsStore.shared.setMCPAutoStart(false, commit: false)
+            let window = WindowState { _, _, _, _, _ in provider }
+            GlobalSettingsStore.shared.setMCPAutoStart(previousAutoStart, commit: false)
+            WindowStatesManager.shared.registerWindowState(window)
+            defer { WindowStatesManager.shared.unregisterWindowState(window) }
+            await window.workspaceManager.awaitInitialized()
+
+            let root = FileManager.default.temporaryDirectory
+                .appendingPathComponent("ContextBuilderRoutingFailureTests-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+
+            let workspace = window.workspaceManager.createWorkspace(
+                name: "Context Builder routing failure test",
+                repoPaths: [root.path],
+                ephemeral: true
+            )
+            await window.workspaceManager.switchWorkspace(
+                to: workspace,
+                saveState: false,
+                reason: "ContextBuilderMCPProgressTimelineTests.routingFailure"
+            )
+
+            let activeWorkspace = try XCTUnwrap(window.workspaceManager.activeWorkspace)
+            let tabID = try XCTUnwrap(
+                activeWorkspace.activeComposeTabID ?? activeWorkspace.composeTabs.first?.id
+            )
+
+            let followUpRecorder = ContextBuilderFollowUpInvocationRecorder()
+            window.contextBuilderAgentViewModel.installRunTestHooks(
+                ContextBuilderAgentViewModel.RunTestHooks(
+                    beforeProcessingProviderEvent: nil,
+                    providerEventDisposition: nil,
+                    teardownCompleted: nil,
+                    allowSyntheticRoutingWithoutFinalContext: true,
+                    runMCPFollowUp: { mode, prompt, selection in
+                        await followUpRecorder.record(mode: mode, prompt: prompt, selection: selection)
+                        let chatID = UUID()
+                        return ChatSendReply(
+                            chatId: chatID,
+                            shortId: String(chatID.uuidString.prefix(8)).lowercased(),
+                            mode: mode.mcpModeName,
+                            response: "should not be generated",
+                            errors: nil
+                        )
+                    }
+                )
+            )
+            defer { window.contextBuilderAgentViewModel.installRunTestHooks(nil) }
+
+            let tools = await window.mcpServer.windowMCPTools
+            let contextBuilder = try XCTUnwrap(
+                tools.first { $0.name == MCPWindowToolName.contextBuilder }
+            )
+
+            do {
+                _ = try await contextBuilder([
+                    "instructions": .string("Trigger routing failure."),
+                    "response_type": .string("plan"),
+                    "context_id": .string(tabID.uuidString)
+                ])
+                XCTFail("context_builder should surface routing failure instead of generating a plan")
+            } catch {
+                XCTAssertTrue(error.localizedDescription.contains("Active-tab compatibility fallback is not allowed"), error.localizedDescription)
+            }
+            let recordedInvocation = await followUpRecorder.snapshot()
+            XCTAssertNil(recordedInvocation)
+        #else
+            throw XCTSkip("Provider-path Context Builder injection is DEBUG-only.")
+        #endif
+    }
+
+    @MainActor
     func testCommitAndClearTabContextReportsPersistenceSubphasesInOrder() async throws {
         let previousAutoStart = GlobalSettingsStore.shared.mcpAutoStart()
         GlobalSettingsStore.shared.setMCPAutoStart(false, commit: false)
@@ -560,13 +637,19 @@ final class ContextBuilderMCPProgressTimelineTests: XCTestCase {
 }
 
 private final class ContextBuilderImmediateCompletionProvider: HeadlessAgentProvider {
+    private let output: String
+
+    init(output: String = "Discovery complete") {
+        self.output = output
+    }
+
     func streamAgentMessage(
         _ message: AgentMessage,
         runID: UUID?
     ) async throws -> AsyncThrowingStream<AIStreamResult, Error> {
         _ = message
         let stream = AsyncThrowingStream<AIStreamResult, Error> { continuation in
-            continuation.yield(AIStreamResult(type: "content", text: "Discovery complete"))
+            continuation.yield(AIStreamResult(type: "content", text: output))
             continuation.finish()
         }
         if let runID {

@@ -10845,6 +10845,26 @@ actor ServerNetworkManager {
                                         }
                                     }
 
+                                    if !bypassWindowRouting,
+                                       await self.runIDForConnection(connectionID) == nil,
+                                       let clientName = await self.clientIdentifier(forConnection: connectionID)
+                                    {
+                                        let managerToken = await self.connections[connectionID]?.capabilityToken
+                                        let cachedToken = await self.capabilityTokenByConnection[connectionID]
+                                        let sessionKey = managerToken ?? cachedToken
+                                        if let liveAffinity = await self.preferredLiveRunAffinity(for: clientName, sessionKey: sessionKey),
+                                           chosenID == nil || chosenID == liveAffinity.windowID
+                                        {
+                                            chosenID = liveAffinity.windowID
+                                            await self.applyLiveRunAffinity(
+                                                liveAffinity,
+                                                clientName: clientName,
+                                                connectionID: connectionID,
+                                                reason: "window-only-tool-call"
+                                            )
+                                        }
+                                    }
+
                                     // PRIORITY 3: Auto-route to active window when:
                                     // - Currently in single-window mode, OR
                                     // - Connection was established during single-window mode (stays bound even when more windows open)

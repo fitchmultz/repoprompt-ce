@@ -384,6 +384,12 @@ final class MCPContextBuilderToolProvider: MCPWindowToolProviding {
 
                 let mode = responseType?.headlessMode
 
+                if snapshot.usedAgentOutputAsPrompt,
+                   Self.isRoutingFailurePrompt(effectivePrompt)
+                {
+                    throw MCPError.internalError(effectivePrompt.trimmingCharacters(in: .whitespacesAndNewlines))
+                }
+
                 if let mode,
                    snapshot.runState == .completed,
                    !effectivePrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -511,6 +517,12 @@ final class MCPContextBuilderToolProvider: MCPWindowToolProviding {
             }
             return try await runContextBuilderAndPlan()
         }
+    }
+
+    private nonisolated static func isRoutingFailurePrompt(_ prompt: String) -> Bool {
+        let normalized = prompt.lowercased()
+        return normalized.contains("active-tab compatibility fallback is not allowed")
+            || normalized.contains("retry after run-scoped routing is established")
     }
 
     private static func withHeartbeat<T: Sendable>(
