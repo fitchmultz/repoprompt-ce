@@ -4939,26 +4939,7 @@ extension ToolOutputFormatter {
             }
         }
         if let progress {
-            var progressParts: [String] = []
-            if let toolCount = progress["tool_call_count"]?.intValue {
-                progressParts.append("\(toolCount) tool call\(toolCount == 1 ? "" : "s")")
-            }
-            if let lastTool = progress["last_tool_name"]?.stringValue, !lastTool.isEmpty {
-                progressParts.append("last tool `\(lastTool)`")
-            }
-            if let elapsed = progress["turn_elapsed_seconds"]?.doubleValue, elapsed >= 1 {
-                progressParts.append("turn \(Int(elapsed))s")
-            }
-            if !progressParts.isEmpty {
-                lines.append("- Progress: \(progressParts.joined(separator: " · "))")
-            }
-            if let progressStatus = progress["status_text"]?.stringValue?
-                .trimmingCharacters(in: .whitespacesAndNewlines),
-                !progressStatus.isEmpty,
-                progressStatus != statusText
-            {
-                lines.append("- Currently: \(progressStatus)")
-            }
+            lines.append(contentsOf: formattedAgentRunProgressLines(progress: progress, statusText: statusText))
         }
         if let roleLabel, !roleLabel.isEmpty {
             var roleLine = "- Role: **\(roleLabel)**"
@@ -5046,6 +5027,34 @@ extension ToolOutputFormatter {
             lines.append("\n**\(heading)**\n\n\(assistantText)")
         }
         return [.text(lines.joined(separator: "\n"))]
+    }
+
+    private static func formattedAgentRunProgressLines(
+        progress: [String: Value],
+        statusText: String?
+    ) -> [String] {
+        var lines: [String] = []
+        var progressParts: [String] = []
+        if let toolCount = progress["tool_call_count"]?.intValue {
+            progressParts.append("\(toolCount) tool call\(toolCount == 1 ? "" : "s")")
+        }
+        if let lastTool = progress["last_tool_name"]?.stringValue, !lastTool.isEmpty {
+            progressParts.append("last tool `\(lastTool)`")
+        }
+        if let elapsed = progress["turn_elapsed_seconds"]?.doubleValue, elapsed >= 1 {
+            progressParts.append("turn \(Int(elapsed))s")
+        }
+        if !progressParts.isEmpty {
+            lines.append("- Progress: \(progressParts.joined(separator: " · "))")
+        }
+        if let progressStatus = progress["status_text"]?.stringValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !progressStatus.isEmpty,
+            progressStatus != statusText
+        {
+            lines.append("- Currently: \(progressStatus)")
+        }
+        return lines
     }
 
     private static func agentRunWorktreeObjects(from object: [String: Value]) -> [[String: Value]] {

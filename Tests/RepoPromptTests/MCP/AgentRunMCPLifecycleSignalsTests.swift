@@ -8,7 +8,8 @@ final class AgentRunMCPLifecycleSignalsTests: XCTestCase {
         let items: [AgentChatItem] = [
             AgentChatItem(kind: .toolCall, text: "", toolName: "bash", toolInvocationID: invocationID)
         ]
-        XCTAssertTrue(AgentRunMCPLifecycleSignals.hasInFlightToolWork(in: items))
+        let transcript = AgentTranscriptIO.importLegacyItems(items)
+        XCTAssertTrue(AgentRunMCPLifecycleSignals.hasInFlightToolWork(in: transcript))
     }
 
     func testHasInFlightToolWorkClearsAfterMatchingResult() {
@@ -17,22 +18,23 @@ final class AgentRunMCPLifecycleSignalsTests: XCTestCase {
             AgentChatItem(kind: .toolCall, text: "", toolName: "bash", toolInvocationID: invocationID),
             AgentChatItem(kind: .toolResult, text: "ok", toolName: "bash", toolInvocationID: invocationID)
         ]
-        XCTAssertFalse(AgentRunMCPLifecycleSignals.hasInFlightToolWork(in: items))
+        let transcript = AgentTranscriptIO.importLegacyItems(items)
+        XCTAssertFalse(AgentRunMCPLifecycleSignals.hasInFlightToolWork(in: transcript))
     }
 
     func testCompletionSignalsFlagsIncompleteCompletedRunWithOpenTool() {
         let invocationID = UUID()
         var session = AgentModeViewModel.TabSession(tabID: UUID())
-        session.items = [
+        session.transcript = AgentTranscriptIO.importLegacyItems([
             AgentChatItem(kind: .toolCall, text: "", toolName: "edit", toolInvocationID: invocationID)
-        ]
+        ])
         session.runState = .completed
 
         let signals = AgentRunMCPLifecycleSignals.completionSignals(status: .completed, session: session)
         XCTAssertTrue(signals.mayBeIncomplete)
         XCTAssertTrue(signals.hasInFlightToolWork)
         XCTAssertEqual(
-            AgentRunMCPLifecycleSignals.terminalCompletionReason(status: .completed, session: session),
+            AgentRunMCPLifecycleSignals.terminalCompletionReason(status: .completed, signals: signals),
             .incomplete
         )
     }
@@ -40,14 +42,10 @@ final class AgentRunMCPLifecycleSignalsTests: XCTestCase {
     func testRunProgressIncludesStatusTextAndToolMetadata() {
         var session = AgentModeViewModel.TabSession(tabID: UUID())
         session.runningStatusText = "Editing agent_runtime.rs"
-        session.items = [
-            AgentChatItem(kind: .toolCall, text: "", toolName: "edit", toolInvocationID: UUID())
-        ]
-        let turn = AgentTranscriptTurn(
-            terminalState: .running,
-            startedAt: Date().addingTimeInterval(-12)
+        session.transcript = AgentTranscriptIO.importLegacyItems(
+            [AgentChatItem(kind: .toolCall, text: "", toolName: "edit", toolInvocationID: UUID())],
+            terminalState: .running
         )
-        session.transcript = AgentTranscript(version: 1, turns: [turn], nextSequenceIndex: 0)
 
         let progress = AgentRunMCPLifecycleSignals.runProgress(for: session, status: .running)
         XCTAssertEqual(progress?.statusText, "Editing agent_runtime.rs")

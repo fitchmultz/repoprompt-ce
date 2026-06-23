@@ -9,6 +9,13 @@ import Darwin
 import Foundation
 
 public extension String {
+    /// Escapes characters for safe inclusion in XML element text content.
+    var xmlElementEscaped: String {
+        replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+    }
+
     internal static func truncateModelName(_ text: String, maxLength: Int = 40) -> String {
         if text.count <= maxLength {
             return text
