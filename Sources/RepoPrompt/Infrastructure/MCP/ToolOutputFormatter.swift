@@ -5044,6 +5044,9 @@ extension ToolOutputFormatter {
         if let elapsed = progress["turn_elapsed_seconds"]?.doubleValue, elapsed >= 1 {
             progressParts.append("turn \(Int(elapsed))s")
         }
+        if let idle = progress["last_activity_elapsed_seconds"]?.doubleValue, idle >= 1 {
+            progressParts.append("last activity \(Int(idle))s ago")
+        }
         if !progressParts.isEmpty {
             lines.append("- Progress: \(progressParts.joined(separator: " · "))")
         }

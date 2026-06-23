@@ -1595,7 +1595,8 @@ struct AgentRunMCPToolService {
             statusText: object["status_text"]?.stringValue,
             lastToolName: object["last_tool_name"]?.stringValue,
             toolCallCount: object["tool_call_count"]?.intValue ?? 0,
-            turnElapsedSeconds: object["turn_elapsed_seconds"]?.doubleValue
+            turnElapsedSeconds: object["turn_elapsed_seconds"]?.doubleValue,
+            lastActivityElapsedSeconds: object["last_activity_elapsed_seconds"]?.doubleValue
         )
     }
 

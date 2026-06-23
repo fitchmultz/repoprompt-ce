@@ -8,6 +8,7 @@ enum AgentRunMCPLifecycleSignals {
         let lastToolName: String?
         let toolCallCount: Int
         let turnElapsedSeconds: Double?
+        let lastActivityElapsedSeconds: Double?
 
         func asObject() -> [String: Value] {
             var object: [String: Value] = [
@@ -21,6 +22,9 @@ enum AgentRunMCPLifecycleSignals {
             }
             if let turnElapsedSeconds {
                 object["turn_elapsed_seconds"] = .double(turnElapsedSeconds)
+            }
+            if let lastActivityElapsedSeconds {
+                object["last_activity_elapsed_seconds"] = .double(lastActivityElapsedSeconds)
             }
             return object
         }
@@ -53,13 +57,15 @@ enum AgentRunMCPLifecycleSignals {
 
     static func runProgress(for session: AgentModeViewModel.TabSession, status: AgentRunMCPSnapshot.Status) -> RunProgress? {
         guard !status.isTerminal else { return nil }
-        let activities = currentTurnActivities(in: session)
+        let activities = transcriptActivities(in: session)
         let toolCalls = toolCallActivities(in: activities)
         let lastToolName = toolCalls.last?.toolExecution?.toolName
+        let now = Date()
         let turnElapsedSeconds: Double? = {
             guard let lastTurn = session.transcript.turns.last, !lastTurn.isCompleted else { return nil }
-            return Date().timeIntervalSince(lastTurn.startedAt)
+            return now.timeIntervalSince(lastTurn.startedAt)
         }()
+        let lastActivityElapsedSeconds = activities.map(\.timestamp).max().map { now.timeIntervalSince($0) }
         let statusText = session.runningStatusText?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedStatusText = (statusText?.isEmpty == false) ? statusText : nil
@@ -67,7 +73,8 @@ enum AgentRunMCPLifecycleSignals {
             statusText: normalizedStatusText,
             lastToolName: lastToolName,
             toolCallCount: toolCalls.count,
-            turnElapsedSeconds: turnElapsedSeconds
+            turnElapsedSeconds: turnElapsedSeconds,
+            lastActivityElapsedSeconds: lastActivityElapsedSeconds
         )
     }
 
@@ -154,8 +161,8 @@ enum AgentRunMCPLifecycleSignals {
         return false
     }
 
-    private static func currentTurnActivities(in session: AgentModeViewModel.TabSession) -> [AgentTranscriptActivity] {
-        session.transcript.turns.last?.allActivities ?? []
+    private static func transcriptActivities(in session: AgentModeViewModel.TabSession) -> [AgentTranscriptActivity] {
+        session.transcript.turns.flatMap(\.allActivities)
     }
 
     private static func toolCallActivities(in activities: [AgentTranscriptActivity]) -> [AgentTranscriptActivity] {

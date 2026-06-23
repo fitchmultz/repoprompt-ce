@@ -39,19 +39,24 @@ final class AgentRunMCPLifecycleSignalsTests: XCTestCase {
         )
     }
 
-    func testRunProgressIncludesStatusTextAndToolMetadata() {
+    func testRunProgressIncludesStatusTextAndTranscriptWideToolMetadata() {
         var session = AgentModeViewModel.TabSession(tabID: UUID())
         session.runningStatusText = "Editing agent_runtime.rs"
         session.transcript = AgentTranscriptIO.importLegacyItems(
-            [AgentChatItem(kind: .toolCall, text: "", toolName: "edit", toolInvocationID: UUID())],
+            [
+                AgentChatItem(kind: .toolCall, text: "", toolName: "read", toolInvocationID: UUID()),
+                AgentChatItem(kind: .toolResult, text: "ok", toolName: "read", toolInvocationID: UUID()),
+                AgentChatItem(kind: .toolCall, text: "", toolName: "edit", toolInvocationID: UUID())
+            ],
             terminalState: .running
         )
 
         let progress = AgentRunMCPLifecycleSignals.runProgress(for: session, status: .running)
         XCTAssertEqual(progress?.statusText, "Editing agent_runtime.rs")
         XCTAssertEqual(progress?.lastToolName, "edit")
-        XCTAssertEqual(progress?.toolCallCount, 1)
+        XCTAssertEqual(progress?.toolCallCount, 2)
         XCTAssertNotNil(progress?.turnElapsedSeconds)
+        XCTAssertNotNil(progress?.lastActivityElapsedSeconds)
     }
 
     func testSnapshotObjectIncludesRoleProgressAndTerminalReason() {
