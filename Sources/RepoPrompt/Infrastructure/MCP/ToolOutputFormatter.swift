@@ -4855,6 +4855,8 @@ extension ToolOutputFormatter {
         let statusText = object["status_text"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
         let sessionName = session?["name"]?.stringValue
         let agentName = agent?["name"]?.stringValue ?? agent?["id"]?.stringValue
+        let agentHarness = agent?["harness"]?.stringValue ?? agentName
+        let roleLabel = object["role"]?.stringValue ?? agent?["role"]?.stringValue
         let model = agent?["model"]?.stringValue
         let reasoning = agent?["reasoning_effort"]?.stringValue
         let assistantText = object["assistant_text"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -4866,6 +4868,9 @@ extension ToolOutputFormatter {
         let interactionPrompt = interaction?["prompt"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
         let delivery = humanizedAgentDelivery(meta?["delivery"]?.stringValue)
         let failureReason = object["failure_reason"]?.stringValue
+        let terminalCompletionReason = object["terminal_completion_reason"]?.stringValue
+        let completionSignals = object["completion_signals"]?.objectValue
+        let progress = object["progress"]?.objectValue
         let workflowName = object["workflow_name"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
         let workflowID = object["workflow_id"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
         let worktrees = agentRunWorktreeObjects(from: object)
@@ -4876,6 +4881,17 @@ extension ToolOutputFormatter {
         }
         if let failureReason, !failureReason.isEmpty {
             lines.append("- Failure reason: `\(failureReason)`")
+        }
+        if let terminalCompletionReason, !terminalCompletionReason.isEmpty, isTerminal {
+            lines.append("- Terminal reason: `\(terminalCompletionReason)`")
+        }
+        if let completionSignals, completionSignals["may_be_incomplete"]?.boolValue == true {
+            lines.append("- **Warning**: completion may be incomplete — verify with `git status` / `read_file` before trusting done.")
+            if let warnings = completionSignals["warnings"]?.arrayValue?.compactMap(\.stringValue), !warnings.isEmpty {
+                for warning in warnings {
+                    lines.append("  - \(warning)")
+                }
+            }
         }
         if let workflowName, !workflowName.isEmpty {
             if let workflowID, !workflowID.isEmpty, workflowID != workflowName {
@@ -4922,7 +4938,38 @@ extension ToolOutputFormatter {
                 lines.append("- Pending: \(pendingIDs.map { "`\($0)`" }.joined(separator: ", "))")
             }
         }
-        if let agentName, !agentName.isEmpty {
+        if let progress {
+            var progressParts: [String] = []
+            if let toolCount = progress["tool_call_count"]?.intValue {
+                progressParts.append("\(toolCount) tool call\(toolCount == 1 ? "" : "s")")
+            }
+            if let lastTool = progress["last_tool_name"]?.stringValue, !lastTool.isEmpty {
+                progressParts.append("last tool `\(lastTool)`")
+            }
+            if let elapsed = progress["turn_elapsed_seconds"]?.doubleValue, elapsed >= 1 {
+                progressParts.append("turn \(Int(elapsed))s")
+            }
+            if !progressParts.isEmpty {
+                lines.append("- Progress: \(progressParts.joined(separator: " · "))")
+            }
+            if let progressStatus = progress["status_text"]?.stringValue?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+                !progressStatus.isEmpty,
+                progressStatus != statusText
+            {
+                lines.append("- Currently: \(progressStatus)")
+            }
+        }
+        if let roleLabel, !roleLabel.isEmpty {
+            var roleLine = "- Role: **\(roleLabel)**"
+            if let model, !model.isEmpty {
+                roleLine += " · model `\(model)`"
+            }
+            if let agentHarness, !agentHarness.isEmpty, agentHarness != roleLabel {
+                roleLine += " · harness `\(agentHarness)`"
+            }
+            lines.append(roleLine)
+        } else if let agentName, !agentName.isEmpty {
             var agentLine = "- Agent: **\(agentName)**"
             if let model, !model.isEmpty {
                 agentLine += " · `\(model)`"

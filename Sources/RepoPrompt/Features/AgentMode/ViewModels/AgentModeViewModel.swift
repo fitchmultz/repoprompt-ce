@@ -4846,6 +4846,19 @@ final class AgentModeViewModel: ObservableObject {
             return "Agent Session"
         }()
         let failureReason = AgentRunMCPSnapshot.FailureReason.classify(status: status, statusText: resolvedStatusText)
+        let lifecycleStatusText = AgentRunMCPLifecycleSignals.resolvedStatusText(
+            session: session,
+            status: status,
+            existing: resolvedStatusText
+        )
+        let runProgress = AgentRunMCPLifecycleSignals.runProgress(for: session, status: status)
+        let terminalCompletionReason = AgentRunMCPLifecycleSignals.terminalCompletionReason(
+            status: status,
+            session: session
+        )
+        let completionSignals = status.isTerminal
+            ? AgentRunMCPLifecycleSignals.completionSignals(status: status, session: session)
+            : nil
         return AgentRunMCPSnapshot(
             sessionID: resolvedSessionID,
             tabID: session.tabID,
@@ -4855,13 +4868,17 @@ final class AgentModeViewModel: ObservableObject {
             modelRaw: session.selectedModelRaw,
             reasoningEffortRaw: session.selectedReasoningEffortRaw,
             status: status,
-            statusText: resolvedStatusText,
+            statusText: lifecycleStatusText,
             latestAssistantPreview: mcpResolvedAssistantPreview(session: session, status: status),
             interaction: interaction,
             transcriptItemCount: transcriptItemCount,
             updatedAt: Date(),
             parentSessionID: session.parentSessionID,
             failureReason: failureReason,
+            taskLabelRaw: context.taskLabelKind?.rawValue,
+            runProgress: runProgress,
+            terminalCompletionReason: terminalCompletionReason,
+            completionSignals: completionSignals,
             worktreeBindings: session.worktreeBindings.map { AgentRunMCPSnapshot.WorktreeBinding(binding: $0) },
             activeWorktreeMerges: session.worktreeMergeOperations.activeWorktreeMergeSummaries
         )

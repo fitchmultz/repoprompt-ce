@@ -3429,6 +3429,29 @@ enum AgentTranscriptIO {
         )
     }
 
+    /// Returns only the latest substantive assistant message from a transcript, without tool-arg truncation.
+    static func buildTailAssistantOnlyLogXML(from transcript: AgentTranscript) -> String {
+        guard let text = latestAssistantPreviewText(from: transcript)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !text.isEmpty
+        else {
+            return "<transcript>\n</transcript>"
+        }
+        let escaped = xmlEscaped(text)
+        return """
+        <transcript>
+        <assistant>\(escaped)</assistant>
+        </transcript>
+        """
+    }
+
+    private static func xmlEscaped(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+    }
+
     static func buildHandoffTranscriptItems(from transcript: AgentTranscript, upToRowID: UUID) -> [AgentChatItem] {
         handoffExportEntries(from: transcript, upToRowID: upToRowID).compactMap(\.migratedItem).enumerated().map { index, item in
             var copy = item

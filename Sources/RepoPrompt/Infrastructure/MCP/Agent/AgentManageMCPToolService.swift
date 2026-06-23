@@ -260,6 +260,11 @@ struct AgentManageMCPToolService {
         }
         let offset = max(0, args["offset"]?.intValue ?? 0)
         let limit = max(1, args["limit"]?.intValue ?? 20)
+        let tailAssistantOnly = try parseBool(
+            args["tail_assistant_only"],
+            name: "tail_assistant_only",
+            defaultValue: false
+        )
 
         let agentModeVM = targetWindow.agentModeViewModel
         let transcriptInfo = try await resolveTranscript(
@@ -275,6 +280,12 @@ struct AgentManageMCPToolService {
             nextSequenceIndex: transcriptInfo.transcript.nextSequenceIndex,
             compactionFrontier: nil
         )
+        let transcriptXML = if tailAssistantOnly {
+            AgentTranscriptIO.buildTailAssistantOnlyLogXML(from: transcriptInfo.transcript)
+        } else {
+            AgentTranscriptIO.buildSpartanLogXML(from: slicedTranscript)
+        }
+        let finalAssistantText = AgentTranscriptIO.latestAssistantPreviewText(from: transcriptInfo.transcript)
 
         var result: [String: Value] = [
             "session_id": .string(transcriptInfo.sessionID.uuidString),
@@ -282,10 +293,14 @@ struct AgentManageMCPToolService {
             "turn_limit": .int(limit),
             "returned_turn_count": .int(slicedTurns.count),
             "total_turns": .int(totalTurns),
-            "transcript_xml": .string(
-                AgentTranscriptIO.buildSpartanLogXML(from: slicedTranscript)
-            )
+            "transcript_xml": .string(transcriptXML)
         ]
+        if tailAssistantOnly {
+            result["tail_assistant_only"] = .bool(true)
+        }
+        if let finalAssistantText, !finalAssistantText.isEmpty {
+            result["final_assistant_text"] = .string(finalAssistantText)
+        }
         if let name = transcriptInfo.name, !name.isEmpty {
             result["name"] = .string(name)
         }

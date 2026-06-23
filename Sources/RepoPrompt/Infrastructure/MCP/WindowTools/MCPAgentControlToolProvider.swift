@@ -173,7 +173,7 @@ final class MCPAgentControlToolProvider: MCPWindowToolProviding {
 
             - `list_agents`: Returns top-level `task_labels` as the authoritative role-label→model mapping (explore, engineer, pair, design), plus `agents[].models[]` with explicit compound `model_id` targets for callers that want to pin a specific agent/model/effort. Use `task_labels` entries for role-based routing; use `agents[].models[].model_id` for exact selections. Pass `roles_only=true` to return only `task_labels` and omit the explicit per-agent target catalog.
             - `list_sessions`: Browse sessions. Returns `session_id` for each session. Filter by MCP-facing `state` (e.g. `running`, `waiting_for_input`, `completed`, `failed`). When called from agent mode, automatically scopes to sessions spawned by the current agent session.
-            - `get_log`: Read faithful transcript XML for a session, preserving visible assistant/tool order without handoff compaction or narration pruning. Use `offset`/`limit` to page by turns.
+            - `get_log`: Read faithful transcript XML for a session, preserving visible assistant/tool order without handoff compaction or narration pruning. Use `offset`/`limit` to page by turns. Responses always include untruncated `final_assistant_text` when available; use `tail_assistant_only=true` for just the closing assistant summary.
             - `extract_handoff` (`handoff` alias): Export the full `<forked_session ...>` handoff XML for a live or persisted session. Persisted sessions export transcript-only payloads; `include_file_contents` is accepted only for a live source tab that is currently active so file selection can be snapshotted reliably. Use `output_path` to write to a file; inline XML is returned by default only when no output path is provided.
             - `create_session` / `resume_session`: Create or resume a session with a specific `model_id`.
             - `stop_session`: Stop a live session.
@@ -188,7 +188,7 @@ final class MCPAgentControlToolProvider: MCPWindowToolProviding {
                 **list_agents**: roles_only?
                 **list_workflows**: no additional fields
                 **list_sessions**: agent?, state?, limit?
-                **get_log**: session_id (required), offset?, limit?
+                **get_log**: session_id (required), offset?, limit?, tail_assistant_only?
                 **extract_handoff / handoff**: session_id (required), up_to_item_id?, include_file_contents?, output_path?, overwrite?, inline?, max_transcript_items?, max_tool_args_characters?
                 **create_session**: model_id?, session_name?
                 **resume_session**: session_id (required), model_id?
@@ -212,6 +212,7 @@ final class MCPAgentControlToolProvider: MCPWindowToolProviding {
                     "max_tool_args_characters": .integer(description: "[extract_handoff] Tool argument character budget; clamped to 0...20000. Default 2000."),
                     "state": .string(description: "[list_sessions] Session state filter. Use MCP-facing values such as running, waiting_for_input, completed, failed."),
                     "offset": .integer(description: "[get_log] Turn offset."),
+                    "tail_assistant_only": .boolean(description: "[get_log] When true, return only the latest substantive assistant message in transcript_xml. final_assistant_text is still included when available."),
                     "session_ids": .array(description: "[cleanup_sessions] Array of session UUIDs to delete.", items: .string()),
                     "roles_only": .boolean(description: "[list_agents] When true, return only the authoritative role-label mapping (task_labels) and omit the explicit per-agent target catalog. Default false.")
                 ],

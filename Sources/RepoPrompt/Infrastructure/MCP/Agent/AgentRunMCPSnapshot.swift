@@ -316,8 +316,58 @@ struct AgentRunMCPSnapshot: Equatable {
     let updatedAt: Date
     let parentSessionID: UUID?
     let failureReason: FailureReason?
+    let taskLabelRaw: String?
+    let runProgress: AgentRunMCPLifecycleSignals.RunProgress?
+    let terminalCompletionReason: AgentRunMCPLifecycleSignals.TerminalCompletionReason?
+    let completionSignals: AgentRunMCPLifecycleSignals.CompletionSignals?
     let worktreeBindings: [WorktreeBinding]
     let activeWorktreeMerges: [AgentSessionWorktreeMergeSummary]
+
+    init(
+        sessionID: UUID,
+        tabID: UUID?,
+        sessionName: String?,
+        agentRaw: String?,
+        agentDisplayName: String?,
+        modelRaw: String?,
+        reasoningEffortRaw: String?,
+        status: Status,
+        statusText: String?,
+        latestAssistantPreview: String?,
+        interaction: Interaction?,
+        transcriptItemCount: Int,
+        updatedAt: Date,
+        parentSessionID: UUID?,
+        failureReason: FailureReason?,
+        taskLabelRaw: String? = nil,
+        runProgress: AgentRunMCPLifecycleSignals.RunProgress? = nil,
+        terminalCompletionReason: AgentRunMCPLifecycleSignals.TerminalCompletionReason? = nil,
+        completionSignals: AgentRunMCPLifecycleSignals.CompletionSignals? = nil,
+        worktreeBindings: [WorktreeBinding],
+        activeWorktreeMerges: [AgentSessionWorktreeMergeSummary]
+    ) {
+        self.sessionID = sessionID
+        self.tabID = tabID
+        self.sessionName = sessionName
+        self.agentRaw = agentRaw
+        self.agentDisplayName = agentDisplayName
+        self.modelRaw = modelRaw
+        self.reasoningEffortRaw = reasoningEffortRaw
+        self.status = status
+        self.statusText = statusText
+        self.latestAssistantPreview = latestAssistantPreview
+        self.interaction = interaction
+        self.transcriptItemCount = transcriptItemCount
+        self.updatedAt = updatedAt
+        self.parentSessionID = parentSessionID
+        self.failureReason = failureReason
+        self.taskLabelRaw = taskLabelRaw
+        self.runProgress = runProgress
+        self.terminalCompletionReason = terminalCompletionReason
+        self.completionSignals = completionSignals
+        self.worktreeBindings = worktreeBindings
+        self.activeWorktreeMerges = activeWorktreeMerges
+    }
 
     var isActionableForMCPWait: Bool {
         interaction != nil || status == .waitingForInput || status.isTerminal
@@ -344,6 +394,18 @@ struct AgentRunMCPSnapshot: Equatable {
         if let failureReason {
             obj["failure_reason"] = .string(failureReason.rawValue)
         }
+        if let taskLabelRaw, !taskLabelRaw.isEmpty {
+            obj["role"] = .string(taskLabelRaw)
+        }
+        if let runProgress {
+            obj["progress"] = .object(runProgress.asObject())
+        }
+        if let terminalCompletionReason {
+            obj["terminal_completion_reason"] = .string(terminalCompletionReason.rawValue)
+        }
+        if let completionSignals {
+            obj["completion_signals"] = .object(completionSignals.asObject())
+        }
 
         var sessionObj: [String: Value] = [
             "id": .string(sessionID.uuidString),
@@ -357,13 +419,18 @@ struct AgentRunMCPSnapshot: Equatable {
         }
         obj["session"] = .object(sessionObj)
 
-        if agentRaw != nil || modelRaw != nil {
-            obj["agent"] = .object([
+        if agentRaw != nil || modelRaw != nil || taskLabelRaw != nil {
+            var agentObj: [String: Value] = [
                 "id": Self.stringOrNull(agentRaw),
                 "name": Self.stringOrNull(agentDisplayName),
+                "harness": Self.stringOrNull(agentDisplayName),
                 "model": Self.stringOrNull(modelRaw),
                 "reasoning_effort": Self.stringOrNull(reasoningEffortRaw)
-            ])
+            ]
+            if let taskLabelRaw, !taskLabelRaw.isEmpty {
+                agentObj["role"] = .string(taskLabelRaw)
+            }
+            obj["agent"] = .object(agentObj)
         }
 
         if !worktreeBindings.isEmpty {

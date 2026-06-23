@@ -1557,6 +1557,11 @@ struct AgentRunMCPToolService {
         let tabID = (session?["context_id"] ?? session?["tab_id"])?.stringValue.flatMap(UUID.init(uuidString:))
         let parentSessionID = session?["parent_session_id"]?.stringValue.flatMap(UUID.init(uuidString:))
         let failureReason = object["failure_reason"]?.stringValue.flatMap(AgentRunMCPSnapshot.FailureReason.init(rawValue:))
+        let taskLabelRaw = object["role"]?.stringValue ?? agent?["role"]?.stringValue
+        let runProgress = runProgress(from: object["progress"]?.objectValue)
+        let terminalCompletionReason = object["terminal_completion_reason"]?.stringValue
+            .flatMap(AgentRunMCPLifecycleSignals.TerminalCompletionReason.init(rawValue:))
+        let completionSignals = completionSignals(from: object["completion_signals"]?.objectValue)
         let worktreeBindings = worktreeBindings(from: object)
         let activeWorktreeMerges = activeWorktreeMerges(from: object)
         return AgentRunMCPSnapshot(
@@ -1575,8 +1580,32 @@ struct AgentRunMCPToolService {
             updatedAt: updatedAt,
             parentSessionID: parentSessionID,
             failureReason: failureReason,
+            taskLabelRaw: taskLabelRaw,
+            runProgress: runProgress,
+            terminalCompletionReason: terminalCompletionReason,
+            completionSignals: completionSignals,
             worktreeBindings: worktreeBindings,
             activeWorktreeMerges: activeWorktreeMerges
+        )
+    }
+
+    private func runProgress(from object: [String: Value]?) -> AgentRunMCPLifecycleSignals.RunProgress? {
+        guard let object else { return nil }
+        return AgentRunMCPLifecycleSignals.RunProgress(
+            statusText: object["status_text"]?.stringValue,
+            lastToolName: object["last_tool_name"]?.stringValue,
+            toolCallCount: object["tool_call_count"]?.intValue ?? 0,
+            turnElapsedSeconds: object["turn_elapsed_seconds"]?.doubleValue
+        )
+    }
+
+    private func completionSignals(from object: [String: Value]?) -> AgentRunMCPLifecycleSignals.CompletionSignals? {
+        guard let object else { return nil }
+        let warnings = object["warnings"]?.arrayValue?.compactMap(\.stringValue) ?? []
+        return AgentRunMCPLifecycleSignals.CompletionSignals(
+            mayBeIncomplete: object["may_be_incomplete"]?.boolValue ?? false,
+            hasInFlightToolWork: object["has_in_flight_tool_work"]?.boolValue ?? false,
+            warnings: warnings
         )
     }
 
