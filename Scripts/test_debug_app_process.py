@@ -162,6 +162,11 @@ class LifecycleSurfaceTests(unittest.TestCase):
             (bin_dir / "dirname").symlink_to(dirname)
             env = os.environ.copy()
             env["PATH"] = str(bin_dir)
+            # Non-interactive bash sources BASH_ENV (or ENV); a developer startup file there
+            # can re-add Homebrew/system paths and restore python3, defeating the PATH
+            # restriction this test depends on. Drop both so the launcher really sees no python3.
+            env.pop("BASH_ENV", None)
+            env.pop("ENV", None)
 
             result = subprocess.run(
                 ["/bin/bash", str(launcher)],
