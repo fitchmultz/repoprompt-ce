@@ -73,6 +73,7 @@ enum AgentModel: String, CaseIterable, Codable {
     case glm47 = "glm-4.7"
     case glm5Turbo = "glm-5-turbo"
     case glm5 = "glm-5.1"
+    case glm52 = "glm-5.2"
 
     // Claude-compatible backend no-model display entries
     case kimiCode = "kimi-code"
@@ -121,6 +122,7 @@ enum AgentModel: String, CaseIterable, Codable {
         case .glm47: "GLM 4.7"
         case .glm5Turbo: "GLM 5 Turbo"
         case .glm5: "GLM 5.1"
+        case .glm52: "GLM 5.2"
         case .kimiCode: "Kimi Code"
         case .customClaudeCompatible: "CC Custom"
         case .cursorAuto: "Auto"
@@ -164,7 +166,8 @@ enum AgentModel: String, CaseIterable, Codable {
         case .claudeHaiku45: "Pinned Claude Haiku 4.5. Fast and lightweight for quick edits and exploration."
         case .glm47: "GLM tier via Z.ai. Fast and lightweight, good for exploration."
         case .glm5Turbo: "GLM tier via Z.ai. Balanced, good for general work."
-        case .glm5: "GLM 5.1 tier via Z.ai. Strongest GLM tier, good for complex tasks."
+        case .glm5: "GLM 5.1 tier via Z.ai. Strong for complex tasks."
+        case .glm52: "GLM 5.2 tier via Z.ai. Strongest GLM tier."
         case .kimiCode: "Kimi Code backend. RepoPrompt does not pass a model flag."
         case .customClaudeCompatible: "Custom Claude-compatible backend. RepoPrompt does not pass a model flag when configured for no-model behavior."
         case .cursorAuto: "Let Cursor choose the best model automatically. Built-in fallback for Cursor ACP runs when dynamic model metadata is unavailable."
@@ -441,15 +444,69 @@ enum AgentModel: String, CaseIterable, Codable {
     /// Returns `nil` for models where the context window is unknown or unverified.
     var contextWindowTokens: Int? {
         switch self {
-        case .claudeFable5, .claudeOpus1m:
+        case .claudeFable5, .claudeOpus1m,
+             .claudeSonnet46,
+             .claudeOpus47, .claudeOpus46:
             1_000_000
         case .claudeSonnet, .claudeOpus, .claudeHaiku,
-             .claudeSonnet46, .claudeSonnet45,
-             .claudeOpus47, .claudeOpus46, .claudeOpus45,
-             .claudeHaiku45:
+             .claudeSonnet45,
+             .claudeOpus45,
+             .claudeHaiku45,
+             .glm47, .glm5Turbo, .glm5:
             200_000
         default:
             nil
+        }
+    }
+
+    static func knownContextWindowTokens(forRaw rawModel: String?, agentKind: AgentProviderKind?) -> Int? {
+        guard let rawModel else { return nil }
+        let normalized = rawModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return nil }
+
+        if let agentKind,
+           let resolved = resolvedModel(forRaw: normalized, agentKind: agentKind),
+           let tokens = resolved.contextWindowTokens
+        {
+            return tokens
+        }
+        if let exact = AgentModel(rawValue: normalized), let tokens = exact.contextWindowTokens {
+            return tokens
+        }
+        guard agentKind != nil else { return nil }
+        return knownContextWindowTokens(fromRawModelID: normalized)
+    }
+
+    private static func knownContextWindowTokens(fromRawModelID rawModel: String) -> Int? {
+        let lower = rawModel.lowercased()
+        let withoutEffort = lower.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? lower
+        let modelID = withoutEffort.split(separator: "/").last.map(String.init) ?? withoutEffort
+
+        if modelID.contains("@1m") || modelID.contains("[1m]") {
+            return 1_000_000
+        }
+
+        switch modelID {
+        case "claude-fable-5",
+             "claude-fable-latest",
+             "claude-opus-4-6",
+             "claude-opus-4-7",
+             "claude-opus-4-8",
+             "claude-opus-latest",
+             "claude-sonnet-4-6",
+             "claude-sonnet-latest":
+            return 1_000_000
+        default:
+            break
+        }
+
+        guard modelID == "glm-5.2" else { return nil }
+        let providerPath = withoutEffort.split(separator: "/").dropLast().joined(separator: "/")
+        switch providerPath {
+        case "zai", "z-ai", "openrouter/z-ai":
+            return 1_000_000
+        default:
+            return nil
         }
     }
 }

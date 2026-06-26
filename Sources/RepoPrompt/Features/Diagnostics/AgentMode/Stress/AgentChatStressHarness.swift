@@ -412,6 +412,10 @@
         @Published private(set) var grouping: AgentChatStressGroupingSnapshot = .empty
         @Published private(set) var recentEvents: [String] = []
 
+        private var pendingTelemetry: AgentChatStressTelemetrySnapshot?
+        private var telemetryFlushScheduled = false
+        private var pendingGrouping: AgentChatStressGroupingSnapshot?
+        private var groupingFlushScheduled = false
         private var targetTabID: UUID?
         private var persistedReplaySessionID: UUID?
         private var scenarioTask: Task<Void, Never>?
@@ -545,6 +549,10 @@
             persistedReplaySessionID = nil
             hasLoggedComposeTabWait = false
             hasLoggedWorkspaceWait = false
+            pendingTelemetry = nil
+            telemetryFlushScheduled = false
+            pendingGrouping = nil
+            groupingFlushScheduled = false
             telemetry = .empty
             grouping = .empty
             recentEvents = []
@@ -563,11 +571,31 @@
         }
 
         func recordScrollSnapshot(_ snapshot: AgentChatStressTelemetrySnapshot) {
-            telemetry = snapshot
+            pendingTelemetry = snapshot
+            guard !telemetryFlushScheduled else { return }
+            telemetryFlushScheduled = true
+            Task { @MainActor [weak self] in
+                await Task.yield()
+                guard let self else { return }
+                telemetryFlushScheduled = false
+                guard let snapshot = pendingTelemetry else { return }
+                pendingTelemetry = nil
+                telemetry = snapshot
+            }
         }
 
         func recordGroupingSnapshot(_ snapshot: AgentChatStressGroupingSnapshot) {
-            grouping = snapshot
+            pendingGrouping = snapshot
+            guard !groupingFlushScheduled else { return }
+            groupingFlushScheduled = true
+            Task { @MainActor [weak self] in
+                await Task.yield()
+                guard let self else { return }
+                groupingFlushScheduled = false
+                guard let snapshot = pendingGrouping else { return }
+                pendingGrouping = nil
+                grouping = snapshot
+            }
         }
 
         func note(_ message: String) {

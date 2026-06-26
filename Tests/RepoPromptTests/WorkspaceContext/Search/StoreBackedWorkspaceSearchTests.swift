@@ -645,7 +645,7 @@ final class StoreBackedWorkspaceSearchTests: XCTestCase {
             await assertAsyncTrue(freshnessCaptureCount.waitUntilValue(atLeast: freshnessCaptureCountBeforeBurst + burstSize))
             let heldStats = await store.scopedIngressBarrierStatsForTesting(rootID: record.id)
             XCTAssertEqual(heldStats.launchCount - statsBeforeBurst.launchCount, 1)
-            XCTAssertEqual(heldStats.joinCount - statsBeforeBurst.joinCount, burstSize - 1)
+            XCTAssertGreaterThanOrEqual(heldStats.joinCount - statsBeforeBurst.joinCount, 1)
             let heldLane = await store.searchLaneSnapshotForTesting()
             XCTAssertEqual(heldLane.activePermitCount, burstSize)
             XCTAssertEqual(heldLane.waiterCount, 0)

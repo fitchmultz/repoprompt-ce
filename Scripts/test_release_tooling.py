@@ -35,6 +35,9 @@ class ReleaseToolingTests(unittest.TestCase):
             root / "Sources" / "RepoPrompt" / "Infrastructure" / "Security" / "RuntimeCodeSigningPolicy.swift"
         ).read_text(encoding="utf-8")
         entitlements = (root / "AppBundle" / "RepoPrompt.entitlements.template").read_text(encoding="utf-8")
+        local_entitlements = (root / "AppBundle" / "RepoPrompt.local-self-signed.entitlements.template").read_text(
+            encoding="utf-8"
+        )
         info_plist = plistlib.loads((root / "AppBundle" / "Info.plist.template").read_bytes())
 
         self.assertIn(
@@ -53,12 +56,31 @@ class ReleaseToolingTests(unittest.TestCase):
         self.assertIn("1.2.840.113635.100.6.1.12", policy)
         self.assertIn("__SIGNING_TEAM_ID__.__BUNDLE_ID__", entitlements)
         self.assertIn("<string>__SIGNING_TEAM_ID__</string>", entitlements)
+        for template in (entitlements, local_entitlements):
+            self.assertIn("com.apple.security.automation.apple-events", template)
         self.assertEqual(info_plist["CFBundleIdentifier"], "__BUNDLE_ID__")
         self.assertEqual(info_plist["CFBundleURLTypes"][0]["CFBundleURLSchemes"], ["__URL_SCHEME__"])
         self.assertIn("RepoPromptSigningMode", info_plist)
         self.assertIn("RepoPromptDebugSecureStorageBackend", info_plist)
         self.assertIn("RepoPromptLocalSigningCertificateSHA256", info_plist)
         self.assertIn("RepoPromptLocalSecureStorageGeneration", info_plist)
+        for usage_key in (
+            "NSAccessibilityUsageDescription",
+            "NSAppDataUsageDescription",
+            "NSAppleEventsUsageDescription",
+            "NSAudioCaptureUsageDescription",
+            "NSDesktopFolderUsageDescription",
+            "NSDocumentsFolderUsageDescription",
+            "NSDownloadsFolderUsageDescription",
+            "NSInputMonitoringUsageDescription",
+            "NSMicrophoneUsageDescription",
+            "NSNetworkVolumesUsageDescription",
+            "NSRemovableVolumesUsageDescription",
+            "NSScreenCaptureUsageDescription",
+            "NSSystemAdministrationUsageDescription",
+        ):
+            self.assertIn(usage_key, info_plist)
+            self.assertIn("__DISPLAY_NAME__", info_plist[usage_key])
         self.assertIn(
             'static let localSelfSignedCertificateName = "RepoPrompt CE Local Self-Signed Code Signing"',
             policy,

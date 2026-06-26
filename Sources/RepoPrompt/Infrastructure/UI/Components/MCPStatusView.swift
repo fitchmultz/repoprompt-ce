@@ -205,10 +205,7 @@ struct MCPStatusView: View {
 
     private func activeToolRow(_ conn: MCPService.DashboardConnection) -> some View {
         HStack(spacing: 12) {
-            // Animated spinner
-            ProgressView()
-                .progressViewStyle(CircularProgressViewStyle())
-                .scaleEffect(0.7)
+            AgentActivityArc(tint: .blue, size: 13, lineWidth: 1.4, label: "Active MCP tool")
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(conn.activeToolName ?? "Unknown")

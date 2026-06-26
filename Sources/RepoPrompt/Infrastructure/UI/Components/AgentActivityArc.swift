@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// Tiny SwiftUI-only activity indicator for exact-height Agent Mode chrome.
-/// Native `ProgressView` can trip AppKit min/max layout assertions in these slots.
+/// Tiny SwiftUI-only activity indicator for exact-height app chrome.
+/// Native `ProgressView` can trip AppKit min/max layout assertions in compact slots.
 struct AgentActivityArc: View {
     var tint: Color = .accentColor
     var size: CGFloat = 15

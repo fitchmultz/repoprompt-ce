@@ -2593,7 +2593,7 @@ enum AgentModelCatalog {
             let targets = group.options.map { option -> DiscoveryStartTarget in
                 let selectionID = AgentModelSelectionID(agentRaw: agent.rawValue, modelRaw: option.rawValue)
                 let specifier = CodexModelSpecifier(raw: option.rawValue)
-                let contextWindow: Int? = AgentModel(rawValue: option.rawValue)?.contextWindowTokens
+                let contextWindow = AgentModel.knownContextWindowTokens(forRaw: option.rawValue, agentKind: agent)
                 return DiscoveryStartTarget(
                     selectionID: selectionID,
                     modelRaw: option.rawValue,
@@ -2700,7 +2700,7 @@ enum AgentModelCatalog {
     ) -> DiscoveryModel {
         let selectionID = AgentModelSelectionID(agentRaw: agent.rawValue, modelRaw: option.rawValue)
         let staticModel = AgentModel(rawValue: option.rawValue)
-        let contextWindow = staticModel?.contextWindowTokens
+        let contextWindow = AgentModel.knownContextWindowTokens(forRaw: option.rawValue, agentKind: agent)
         let tags = staticModel?.discoveryTags ?? AgentModelDiscoveryTag.infer(from: option.rawValue)
 
         let target = DiscoveryStartTarget(

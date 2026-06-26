@@ -26,7 +26,20 @@
   <key>SUFeedURL</key><string>https://github.com/repoprompt/repoprompt-ce-updates/releases/latest/download/appcast.xml</string>
   <key>SUPublicEDKey</key><string>845kp9v5+kp4U6no85H53cUdnbfN3NmE1PJHKwH8Pd4=</string>
   <key>SUBundleName</key><string>__DISPLAY_NAME__.app</string>
-  <key>NSLocalNetworkUsageDescription</key><string>RepoPrompt CE needs local network access to enable MCP server functionality, allowing external tools to connect and interact with your workspace.</string>
+  <key>NSAppleEventsUsageDescription</key><string>__DISPLAY_NAME__ needs Automation access so agent runners can control local apps when you approve those workflows.</string>
+  <key>NSAccessibilityUsageDescription</key><string>__DISPLAY_NAME__ needs Accessibility access so agent runners can inspect and operate local app interfaces when you approve those workflows.</string>
+  <key>NSAppDataUsageDescription</key><string>__DISPLAY_NAME__ needs App Management access so agent runners can inspect app containers and app-managed files when you approve those workflows.</string>
+  <key>NSAudioCaptureUsageDescription</key><string>__DISPLAY_NAME__ needs System Audio Recording access so agent runners can capture system audio when you approve those workflows.</string>
+  <key>NSDesktopFolderUsageDescription</key><string>__DISPLAY_NAME__ needs Desktop folder access so agent runners can read and write workspace files there when you approve those workflows.</string>
+  <key>NSDocumentsFolderUsageDescription</key><string>__DISPLAY_NAME__ needs Documents folder access so agent runners can read and write workspace files there when you approve those workflows.</string>
+  <key>NSDownloadsFolderUsageDescription</key><string>__DISPLAY_NAME__ needs Downloads folder access so agent runners can read and write downloaded files when you approve those workflows.</string>
+  <key>NSInputMonitoringUsageDescription</key><string>__DISPLAY_NAME__ needs Input Monitoring access so agent runners can observe approved keyboard-driven workflows and global shortcuts.</string>
+  <key>NSLocalNetworkUsageDescription</key><string>__DISPLAY_NAME__ needs local network access to enable MCP server functionality, allowing external tools to connect and interact with your workspace.</string>
+  <key>NSMicrophoneUsageDescription</key><string>__DISPLAY_NAME__ needs microphone access so agent runners can capture audio input when you approve those workflows.</string>
+  <key>NSNetworkVolumesUsageDescription</key><string>__DISPLAY_NAME__ needs network volume access so agent runners can read and write workspace files there when you approve those workflows.</string>
+  <key>NSRemovableVolumesUsageDescription</key><string>__DISPLAY_NAME__ needs removable volume access so agent runners can read and write workspace files there when you approve those workflows.</string>
+  <key>NSScreenCaptureUsageDescription</key><string>__DISPLAY_NAME__ needs Screen Recording access so agent runners can inspect screens and capture visual evidence when you approve those workflows.</string>
+  <key>NSSystemAdministrationUsageDescription</key><string>__DISPLAY_NAME__ needs system administration access so agent runners can perform approved developer and app-management workflows.</string>
   <key>NSBonjourServices</key><array><string>_preflight_check._tcp</string><string>_mcp._tcp</string></array>
 </dict>
 </plist>

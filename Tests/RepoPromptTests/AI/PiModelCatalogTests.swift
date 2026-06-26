@@ -36,6 +36,12 @@ final class PiModelCatalogTests: XCTestCase {
         XCTAssertEqual(zaiOption.description, "GLM 5.2 — Strong GLM")
         XCTAssertEqual(zaiOption.supportedPiThinkingLevels, [.off, .minimal, .low, .medium, .high])
         XCTAssertEqual(AgentModelCatalog.displayName(for: "zai/glm-5.2", agentKind: .pi, availability: availability), "GLM 5.2")
+        let piDiscovery = try XCTUnwrap(AgentModelCatalog.discoveryAgents(availability: availability).first { $0.agent == .pi })
+        let glmDiscovery = try XCTUnwrap(piDiscovery.models.first { $0.id == "zai/glm-5.2" })
+        XCTAssertEqual(glmDiscovery.contextWindowTokens, 1_000_000)
+        XCTAssertEqual(glmDiscovery.startTargets.first?.contextWindowTokens, 1_000_000)
+        let opusDiscovery = try XCTUnwrap(piDiscovery.models.first { $0.id == "anthropic/claude-opus-4-6" })
+        XCTAssertEqual(opusDiscovery.contextWindowTokens, 1_000_000)
         XCTAssertEqual(AgentModelCatalog.displayName(for: "openai-codex/gpt-5.5:low", agentKind: .pi, availability: availability), "GPT 5.5 Low")
         XCTAssertTrue(AgentModelCatalog.isValid(rawModel: "zai/glm-5.2", for: .pi, availability: availability))
         XCTAssertTrue(AgentModelCatalog.isValid(rawModel: "openai-codex/gpt-5.5:low", for: .pi, availability: availability))
@@ -73,6 +79,22 @@ final class PiModelCatalogTests: XCTestCase {
             AgentModelCatalog.piThinkingLevelOptions(for: "openai-codex/gpt-5.5-pro", workspacePath: "/tmp/new-ai-workspace"),
             [.medium, .high, .xhigh]
         )
+    }
+
+    func testOpenRouterZaiGLM52DiscoveryUsesOneMillionTokenContextWindow() throws {
+        let snapshot = PiDiscoveredModels(
+            options: [
+                AgentModelOption(rawValue: "openrouter/z-ai/glm-5.2", displayName: "GLM 5.2", description: nil, isDefault: true),
+                AgentModelOption(rawValue: "cursor/glm-5.2", displayName: "Cursor GLM 5.2", description: nil, isDefault: false)
+            ],
+            currentModelRaw: "openrouter/z-ai/glm-5.2"
+        )
+        XCTAssertTrue(AgentPiModelRegistry.shared.updateDiscoveredModels(snapshot))
+
+        let availability = AgentModelCatalog.AvailabilityContext(piAvailable: true)
+        let piDiscovery = try XCTUnwrap(AgentModelCatalog.discoveryAgents(availability: availability).first { $0.agent == .pi })
+        XCTAssertEqual(piDiscovery.models.first { $0.id == "openrouter/z-ai/glm-5.2" }?.contextWindowTokens, 1_000_000)
+        XCTAssertEqual(piDiscovery.models.first { $0.id == "cursor/glm-5.2" }?.contextWindowTokens, nil)
     }
 
     func testProviderlessNoSlashPiModelsAreNotExposedAsSelectableOptions() throws {

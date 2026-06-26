@@ -78,7 +78,11 @@ struct AgentPermissionsPopoverView: View {
                 "Sub-agent policy",
                 selection: Binding(
                     get: { subagentVM.globalPolicy },
-                    set: { subagentVM.setGlobalPolicy($0) }
+                    set: { policy in
+                        DispatchQueue.main.async {
+                            subagentVM.setGlobalPolicy(policy)
+                        }
+                    }
                 )
             ) {
                 ForEach(AgentSubagentPermissionPolicy.allCases, id: \.self) { policy in

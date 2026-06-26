@@ -174,11 +174,69 @@ final class AgentRuntimeSidebarViewModelTests: XCTestCase {
             ),
             liveSelectedFileCount: nil,
             selectedAgent: .claudeCode,
-            selectedModelRaw: "claude-fable-5"
+            selectedModelRaw: "sonnet"
         )
 
         XCTAssertEqual(store.runtimeVM.snapshot.contextWindowTokens, 250_000)
         XCTAssertEqual(store.runtimeVM.snapshot.effectiveContextWindowTokens, 250_000)
+    }
+
+    func testExtendedContextSelectionOverridesConservativeProviderDefault() {
+        let store = AgentRuntimeMetricsUIStore()
+        store.update(
+            transcriptSnapshot: AgentTranscriptAnalyticsSnapshot(),
+            codexUsage: AgentContextUsage(
+                modelContextWindow: 200_000,
+                lastTotalTokens: 1000,
+                totalTotalTokens: nil
+            ),
+            liveSelectedFileCount: nil,
+            selectedAgent: .claudeCode,
+            selectedModelRaw: "opus[1m]:xhigh"
+        )
+
+        XCTAssertEqual(store.runtimeVM.snapshot.contextWindowTokens, 200_000)
+        XCTAssertEqual(store.runtimeVM.snapshot.effectiveContextWindowTokens, 1_000_000)
+    }
+
+    func testZaiGLM52SelectionUsesOneMillionTokenContextWindow() {
+        let store = AgentRuntimeMetricsUIStore()
+        store.update(
+            transcriptSnapshot: AgentTranscriptAnalyticsSnapshot(),
+            codexUsage: AgentContextUsage(
+                modelContextWindow: 200_000,
+                lastTotalTokens: 1000,
+                totalTotalTokens: nil
+            ),
+            liveSelectedFileCount: nil,
+            selectedAgent: .pi,
+            selectedModelRaw: "zai/glm-5.2:high"
+        )
+
+        XCTAssertEqual(store.runtimeVM.snapshot.contextWindowTokens, 200_000)
+        XCTAssertEqual(store.runtimeVM.snapshot.effectiveContextWindowTokens, 1_000_000)
+
+        store.update(
+            transcriptSnapshot: AgentTranscriptAnalyticsSnapshot(),
+            codexUsage: nil,
+            liveSelectedFileCount: nil,
+            selectedAgent: .pi,
+            selectedModelRaw: "openrouter/z-ai/glm-5.2"
+        )
+        XCTAssertEqual(store.runtimeVM.snapshot.effectiveContextWindowTokens, 1_000_000)
+    }
+
+    func testCursorGLM52DoesNotInheritZaiContextWindow() {
+        let store = AgentRuntimeMetricsUIStore()
+        store.update(
+            transcriptSnapshot: AgentTranscriptAnalyticsSnapshot(),
+            codexUsage: nil,
+            liveSelectedFileCount: nil,
+            selectedAgent: .cursor,
+            selectedModelRaw: "glm-5.2"
+        )
+
+        XCTAssertEqual(store.runtimeVM.snapshot.effectiveContextWindowTokens, 200_000)
     }
 
     func testItemsUpdateWithoutSelectedAgentResolvesExactRawsOnly() {

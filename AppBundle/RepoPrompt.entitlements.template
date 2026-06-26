@@ -6,6 +6,8 @@
     <string>__SIGNING_TEAM_ID__.__BUNDLE_ID__</string>
     <key>com.apple.developer.team-identifier</key>
     <string>__SIGNING_TEAM_ID__</string>
+    <key>com.apple.security.automation.apple-events</key>
+    <true/>
     <key>com.apple.security.cs.allow-jit</key>
     <true/>
     <key>com.apple.security.files.bookmarks.app-scope</key>

@@ -4,6 +4,19 @@ import Security
 import XCTest
 
 final class KeychainServiceTests: XCTestCase {
+    func testSecureKeysServiceDefersDefaultBackendResolutionUntilUse() throws {
+        var providerCallCount = 0
+        let backend = TestSecureStorageBackend(values: [.anthropicAPI: "stored-value"])
+        let service = SecureKeysService(secureStorageProvider: {
+            providerCallCount += 1
+            return backend
+        })
+
+        XCTAssertEqual(providerCallCount, 0)
+        XCTAssertEqual(try service.getPlainValue(for: .anthropicAPI, accessMode: .nonInteractive(reason: .test)), "stored-value")
+        XCTAssertEqual(providerCallCount, 1)
+    }
+
     func testNoninteractiveReadAddsUISkip() throws {
         let fake = FakeSecItemClient { _, result in
             result?.pointee = Data("stored-value".utf8) as NSData

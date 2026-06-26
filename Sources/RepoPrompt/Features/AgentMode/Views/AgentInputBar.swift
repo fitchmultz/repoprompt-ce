@@ -1174,6 +1174,12 @@ struct AgentComposerView: View, Equatable {
         permissionBinding?.isWarning ?? false
     }
 
+    private func deferProviderSettingsChange(_ action: @escaping () -> Void) {
+        DispatchQueue.main.async {
+            action()
+        }
+    }
+
     @ViewBuilder
     private var approvalPopoverChip: some View {
         let warn = permissionChipIsWarning
@@ -1240,7 +1246,9 @@ struct AgentComposerView: View, Equatable {
                             isSelected: option.isSelected,
                             disabled: !option.isEnabled
                         ) {
-                            actions.setProviderPermissionLevel(option.id)
+                            deferProviderSettingsChange {
+                                actions.setProviderPermissionLevel(option.id)
+                            }
                         }
                     }
 
@@ -1264,7 +1272,11 @@ struct AgentComposerView: View, Equatable {
 
             Toggle(isOn: Binding(
                 get: { props.autoEditEnabled },
-                set: { actions.setAutoEditEnabled($0) }
+                set: { enabled in
+                    deferProviderSettingsChange {
+                        actions.setAutoEditEnabled(enabled)
+                    }
+                }
             )) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Auto Edit")
@@ -1332,21 +1344,27 @@ struct AgentComposerView: View, Equatable {
                     Toggle("Bash", isOn: Binding(
                         get: { codexTools.bashToolEnabled },
                         set: { newValue in
-                            actions.setCodexBashToolEnabled(newValue)
+                            deferProviderSettingsChange {
+                                actions.setCodexBashToolEnabled(newValue)
+                            }
                         }
                     ))
 
                     Toggle("Search", isOn: Binding(
                         get: { codexTools.searchToolEnabled },
                         set: { newValue in
-                            actions.setCodexSearchToolEnabled(newValue)
+                            deferProviderSettingsChange {
+                                actions.setCodexSearchToolEnabled(newValue)
+                            }
                         }
                     ))
 
                     Toggle("Goals", isOn: Binding(
                         get: { codexTools.goalSupportEnabled },
                         set: { newValue in
-                            actions.setCodexGoalSupportEnabled(newValue)
+                            deferProviderSettingsChange {
+                                actions.setCodexGoalSupportEnabled(newValue)
+                            }
                         }
                     ))
                     .hoverTooltip("Codex /goal support is enabled by default. Turn this off to stop RepoPrompt from enabling features.goals for Codex app-server launch and thread config.")
@@ -1367,7 +1385,9 @@ struct AgentComposerView: View, Equatable {
                                         codexTools.mcpServerStatesByNormalizedName[normalizedServerToggleKey(entry.normalizedName)] ?? isRepoPromptServer
                                     },
                                     set: { newValue in
-                                        actions.setCodexMCPServerEnabled(entry.normalizedName, newValue)
+                                        deferProviderSettingsChange {
+                                            actions.setCodexMCPServerEnabled(entry.normalizedName, newValue)
+                                        }
                                     }
                                 )
                             ) {
@@ -1408,7 +1428,9 @@ struct AgentComposerView: View, Equatable {
                     Toggle("Bash", isOn: Binding(
                         get: { claudeTools.bashToolEnabled },
                         set: { newValue in
-                            actions.setClaudeBashToolEnabled(newValue)
+                            deferProviderSettingsChange {
+                                actions.setClaudeBashToolEnabled(newValue)
+                            }
                         }
                     ))
                 } header: {
@@ -1419,7 +1441,9 @@ struct AgentComposerView: View, Equatable {
                     Toggle("RepoPrompt Only", isOn: Binding(
                         get: { claudeTools.mcpStrictModeEnabled },
                         set: { newValue in
-                            actions.setClaudeMCPStrictModeEnabled(newValue)
+                            deferProviderSettingsChange {
+                                actions.setClaudeMCPStrictModeEnabled(newValue)
+                            }
                         }
                     ))
                 } header: {
@@ -1438,7 +1462,9 @@ struct AgentComposerView: View, Equatable {
                     Toggle("Lazy Tool Loading", isOn: Binding(
                         get: { claudeTools.toolSearchEnabled },
                         set: { newValue in
-                            actions.setClaudeToolSearchEnabled(newValue)
+                            deferProviderSettingsChange {
+                                actions.setClaudeToolSearchEnabled(newValue)
+                            }
                         }
                     ))
                 } header: {
@@ -1457,7 +1483,9 @@ struct AgentComposerView: View, Equatable {
                     Picker(selection: Binding(
                         get: { claudeTools.agentModePromptDelivery },
                         set: { newValue in
-                            actions.setClaudeAgentModePromptDelivery(newValue)
+                            deferProviderSettingsChange {
+                                actions.setClaudeAgentModePromptDelivery(newValue)
+                            }
                         }
                     )) {
                         ForEach(ClaudeAgentToolPreferences.AgentModePromptDelivery.allCases, id: \.rawValue) { delivery in

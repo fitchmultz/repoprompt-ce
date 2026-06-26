@@ -449,6 +449,8 @@ public enum ClaudeCompatibleModelCatalog {
             "GLM 5 Turbo"
         case "glm-5.1":
             "GLM 5.1"
+        case "glm-5.2":
+            "GLM 5.2"
         default:
             modelID
         }

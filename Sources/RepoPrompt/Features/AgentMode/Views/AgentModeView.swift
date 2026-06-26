@@ -2232,8 +2232,13 @@ struct AgentModeChatDetailView: View {
         _ = advanceRehydrateRestoreIfNeeded(proxy: proxy)
     }
 
+    @ViewBuilder
     private func versionedScrollableContent(proxy: ScrollViewProxy, viewportHeight: CGFloat) -> some View {
-        legacyScrollableContent(proxy: proxy, viewportHeight: viewportHeight)
+        if #available(macOS 15.0, *) {
+            modernScrollableContent(proxy: proxy, viewportHeight: viewportHeight)
+        } else {
+            legacyScrollableContent(proxy: proxy, viewportHeight: viewportHeight)
+        }
     }
 
     @available(macOS 15.0, *)
@@ -2253,44 +2258,6 @@ struct AgentModeChatDetailView: View {
         .transaction { txn in
             if didChatChange { txn.disablesAnimations = true }
         }
-        .onScrollGeometryChange(for: AgentTranscriptScrollMetrics.self, of: { geometry in
-            scrollMetrics(from: geometry)
-        }, action: { _, newMetrics in
-            DispatchQueue.main.async {
-                let oldMetrics = applyScrollMetrics(newMetrics)
-                recordRehydrateLayoutSampleIfNeeded(metrics: newMetrics)
-                recordPendingBottomScrollOutcomeLayoutMutationIfNeeded(oldMetrics: oldMetrics, newMetrics: newMetrics)
-                recordUserScrollProgressIfNeeded(oldMetrics: oldMetrics, newMetrics: newMetrics)
-                recordScrollGeometryTransition(proxy: proxy, oldMetrics: oldMetrics, newMetrics: newMetrics)
-                if isRehydrateRestoreActive {
-                    finishRehydrateRestoreIfSettled()
-                    return
-                }
-                if !runInteractionSnapshot.runState.isActive,
-                   resolveIdleBoundaryDetachIfNeeded(currentMetrics: newMetrics)
-                {
-                    return
-                }
-                guard let session = activeUserScrollSession else { return }
-                guard !programmaticScrollGate.isInFlight else { return }
-                guard !isInteractionBlockerVisible else { return }
-                if AgentTranscriptAutoFollowRearmPolicy.shouldDetachFromLiveBottom(
-                    runtime: makeScrollRuntimeState(distanceToBottom: newMetrics.distanceToBottom),
-                    latestManualIntent: session.latestIntent,
-                    progress: makeViewportProgress(
-                        baselineDistanceToBottom: session.baselineMetrics.distanceToBottom,
-                        baselineVisibleMinY: session.baselineMetrics.visibleMinY,
-                        currentDistanceToBottom: newMetrics.distanceToBottom,
-                        currentVisibleMinY: newMetrics.visibleMinY
-                    ),
-                    minimumViewportEscapeDistance: Self.detachDistanceThreshold,
-                    suppressGeometryDetach: shouldSuppressGeometryDrivenPinnedDetach(),
-                    suppressRepinGraceDetach: shouldSuppressRepinGraceDetach(newMetrics: newMetrics)
-                ) {
-                    detachFromLiveBottom(markUserDetached: true)
-                }
-            }
-        })
         .onScrollPhaseChange { oldPhase, newPhase, context in
             debugLog("scrollPhase", details: "old=\(oldPhase) new=\(newPhase)")
             currentUserScrollPhase = userScrollPhase(from: newPhase)
@@ -2340,8 +2307,12 @@ struct AgentModeChatDetailView: View {
             )
         #if DEBUG
             .onPreferenceChange(AgentToolCardRenderStatePreferenceKey.self) { states in
-                visibleToolCardRenderStatesByID = states
-                publishStressTelemetrySnapshot()
+                guard visibleToolCardRenderStatesByID != states else { return }
+                DispatchQueue.main.async {
+                    guard visibleToolCardRenderStatesByID != states else { return }
+                    visibleToolCardRenderStatesByID = states
+                    publishStressTelemetrySnapshot()
+                }
             }
         #endif
     }
@@ -3244,25 +3215,22 @@ struct AgentModeChatDetailView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    @ViewBuilder
     private var versionedBottomSentinel: some View {
-        if #unavailable(macOS 15.0) {
-            Color.clear
-                .frame(height: 1)
-                .id("bottomSentinel")
-                .onAppear {
-                    legacyIsNearBottom = true
-                    recordCurrentRehydrateLayoutSample()
-                    finishRehydrateRestoreIfSettled()
-                }
-                .onDisappear {
-                    legacyIsNearBottom = false
-                }
-        }
+        Color.clear
+            .frame(height: 1)
+            .id("bottomSentinel")
+            .onAppear {
+                legacyIsNearBottom = true
+                recordCurrentRehydrateLayoutSample()
+                finishRehydrateRestoreIfSettled()
+            }
+            .onDisappear {
+                legacyIsNearBottom = false
+            }
     }
 
     private var shouldShowScrollToBottomButton: Bool {
-        !isPinnedToLiveBottom || !isNearBottom
+        !isNearBottom
     }
 
     private var streamingHistoryIndicator: some View {
@@ -3477,6 +3445,9 @@ struct AgentModeChatDetailView: View {
             let performScroll = {
                 switch intent {
                 case .bottom:
+                    if #available(macOS 15.0, *) {
+                        bottomAffordance.isNearBottom = true
+                    }
                     proxy.scrollTo("bottomTarget", anchor: .bottom)
                 case let .anchor(semanticAnchor, placement, _, _):
                     guard let resolvedBlockID = resolveVisibleBlockID(for: semanticAnchor) else { return }
@@ -4103,10 +4074,10 @@ struct AgentModeChatDetailView: View {
                   !userDetachedAutoFollow,
                   !isInteractionBlockerVisible,
                   !isRehydrateRestoreActive,
-                  finalMetrics.distanceToBottom > Self.scrollToBottomSuccessDistanceThreshold
+                  finalMetrics.distanceToBottom > Self.detachDistanceThreshold
         {
-            requestPinnedLiveBottom(proxy: proxy, source: .bottomClearanceChange)
-            outcome = "corrected"
+            detachFromLiveBottom(markUserDetached: true)
+            outcome = "detached"
         }
 
         if !runInteractionSnapshot.runState.isActive {

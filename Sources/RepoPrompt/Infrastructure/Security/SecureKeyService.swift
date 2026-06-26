@@ -28,12 +28,22 @@ extension SecurePlainStringStoring {
 
 /// Secure key storage service backed by canonical Keychain/plain UTF-8 values.
 final class SecureKeysService {
-    private let secureStorage: SecureKeyValueStorageBackend
+    private let secureStorageProvider: @Sendable () -> SecureKeyValueStorageBackend
 
-    init(
-        secureStorage: SecureKeyValueStorageBackend = SecureKeyValueStorageFactory.defaultBackend()
-    ) {
-        self.secureStorage = secureStorage
+    convenience init() {
+        self.init(secureStorageProvider: { SecureKeyValueStorageFactory.defaultBackend() })
+    }
+
+    init(secureStorage: SecureKeyValueStorageBackend) {
+        secureStorageProvider = { secureStorage }
+    }
+
+    init(secureStorageProvider: @escaping @Sendable () -> SecureKeyValueStorageBackend) {
+        self.secureStorageProvider = secureStorageProvider
+    }
+
+    private var secureStorage: SecureKeyValueStorageBackend {
+        secureStorageProvider()
     }
 
     // MARK: - API Key Storage

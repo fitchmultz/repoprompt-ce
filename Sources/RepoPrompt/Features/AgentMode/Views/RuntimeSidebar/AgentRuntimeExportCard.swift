@@ -420,7 +420,7 @@ private struct AgentSelectedFilesPopover: View {
             tabSwitcher(split: split)
 
             if isLoading, model == nil {
-                ProgressView()
+                AgentActivityArc(size: 15, lineWidth: 1.5, label: "Loading context export")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if split.rows.isEmpty {
                 emptyState(title: "No files selected")

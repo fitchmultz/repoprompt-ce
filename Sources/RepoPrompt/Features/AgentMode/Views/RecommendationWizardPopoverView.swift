@@ -240,7 +240,7 @@ struct RecommendationWizardPopoverView: View {
 
     private var loadingView: some View {
         VStack(spacing: 12) {
-            ProgressView()
+            AgentActivityArc(size: 15, lineWidth: 1.5, label: "Analyzing setup")
             Text("Analyzing your setup...")
                 .font(.subheadline)
                 .foregroundColor(.secondary)

@@ -42,14 +42,21 @@ final class AgentRuntimeSidebarViewModel: ObservableObject {
         /// `resolvedModel(forRaw:agentKind:)`; without one, only an exact raw match
         /// can be trusted because the specifier grammar is agent-specific.
         var effectiveContextWindowTokens: Int {
-            if let contextWindowTokens { return contextWindowTokens }
-            let model: AgentModel? = if let selectedAgent {
-                AgentModel.resolvedModel(forRaw: selectedModelRaw, agentKind: selectedAgent)
-            } else {
-                selectedModelRaw.flatMap(AgentModel.init(rawValue:))
+            let selectedModelContextWindow = AgentModel.knownContextWindowTokens(
+                forRaw: selectedModelRaw,
+                agentKind: selectedAgent
+            )
+            if let contextWindowTokens {
+                if let selectedModelContextWindow,
+                   selectedModelContextWindow >= 1_000_000,
+                   contextWindowTokens < selectedModelContextWindow
+                {
+                    return selectedModelContextWindow
+                }
+                return contextWindowTokens
             }
-            if let modelContextWindow = model?.contextWindowTokens {
-                return modelContextWindow
+            if let selectedModelContextWindow {
+                return selectedModelContextWindow
             }
             switch selectedAgent {
             case .claudeCode, .claudeCodeGLM, .kimiCode, .customClaudeCompatible: return 200_000

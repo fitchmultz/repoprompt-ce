@@ -383,9 +383,7 @@ struct MCPServerPopoverContent: View {
                 }
 
                 if isProcessing {
-                    ProgressView()
-                        .progressViewStyle(CircularProgressViewStyle())
-                        .scaleEffect(0.7)
+                    AgentActivityArc(size: 13, lineWidth: 1.4, label: "Updating MCP server")
                 }
 
                 Toggle("", isOn: Binding(

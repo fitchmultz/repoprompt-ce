@@ -40,9 +40,7 @@ struct MCPConnectionsCounter: View {
                 // Activity indicator or connection icon
                 ZStack {
                     if hasActivity {
-                        ProgressView()
-                            .progressViewStyle(CircularProgressViewStyle())
-                            .scaleEffect(0.4)
+                        AgentActivityArc(tint: statusColor, size: 13, lineWidth: 1.4, label: "Active MCP tool")
                     } else {
                         Image(systemName: "link")
                             .font(.system(size: 10, weight: .semibold))

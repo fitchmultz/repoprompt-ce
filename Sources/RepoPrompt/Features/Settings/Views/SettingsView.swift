@@ -127,13 +127,19 @@ struct SettingsView: View {
     /// for the sidebar highlight only; the real `selectedTab` remains the
     /// alias so the detail pane keeps rendering the correct scoped content.
     private var sidebarSelection: Binding<SettingsTab?> {
-        Binding(
+        let selection = $selectedTab
+        return Binding(
             get: {
+                let selectedTab = selection.wrappedValue
                 if Self.legacyAliasTabs.contains(selectedTab) { return .workflowPresets }
                 return selectedTab
             },
             set: { newValue in
-                if let newValue { selectedTab = newValue }
+                guard let newValue, selection.wrappedValue != newValue else { return }
+                DispatchQueue.main.async {
+                    guard selection.wrappedValue != newValue else { return }
+                    selection.wrappedValue = newValue
+                }
             }
         )
     }
