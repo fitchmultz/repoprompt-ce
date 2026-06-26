@@ -2232,13 +2232,8 @@ struct AgentModeChatDetailView: View {
         _ = advanceRehydrateRestoreIfNeeded(proxy: proxy)
     }
 
-    @ViewBuilder
     private func versionedScrollableContent(proxy: ScrollViewProxy, viewportHeight: CGFloat) -> some View {
-        if #available(macOS 15.0, *) {
-            modernScrollableContent(proxy: proxy, viewportHeight: viewportHeight)
-        } else {
-            legacyScrollableContent(proxy: proxy, viewportHeight: viewportHeight)
-        }
+        legacyScrollableContent(proxy: proxy, viewportHeight: viewportHeight)
     }
 
     @available(macOS 15.0, *)
@@ -2261,37 +2256,39 @@ struct AgentModeChatDetailView: View {
         .onScrollGeometryChange(for: AgentTranscriptScrollMetrics.self, of: { geometry in
             scrollMetrics(from: geometry)
         }, action: { _, newMetrics in
-            let oldMetrics = applyScrollMetrics(newMetrics)
-            recordRehydrateLayoutSampleIfNeeded(metrics: newMetrics)
-            recordPendingBottomScrollOutcomeLayoutMutationIfNeeded(oldMetrics: oldMetrics, newMetrics: newMetrics)
-            recordUserScrollProgressIfNeeded(oldMetrics: oldMetrics, newMetrics: newMetrics)
-            recordScrollGeometryTransition(proxy: proxy, oldMetrics: oldMetrics, newMetrics: newMetrics)
-            if isRehydrateRestoreActive {
-                finishRehydrateRestoreIfSettled()
-                return
-            }
-            if !runInteractionSnapshot.runState.isActive,
-               resolveIdleBoundaryDetachIfNeeded(currentMetrics: newMetrics)
-            {
-                return
-            }
-            guard let session = activeUserScrollSession else { return }
-            guard !programmaticScrollGate.isInFlight else { return }
-            guard !isInteractionBlockerVisible else { return }
-            if AgentTranscriptAutoFollowRearmPolicy.shouldDetachFromLiveBottom(
-                runtime: makeScrollRuntimeState(distanceToBottom: newMetrics.distanceToBottom),
-                latestManualIntent: session.latestIntent,
-                progress: makeViewportProgress(
-                    baselineDistanceToBottom: session.baselineMetrics.distanceToBottom,
-                    baselineVisibleMinY: session.baselineMetrics.visibleMinY,
-                    currentDistanceToBottom: newMetrics.distanceToBottom,
-                    currentVisibleMinY: newMetrics.visibleMinY
-                ),
-                minimumViewportEscapeDistance: Self.detachDistanceThreshold,
-                suppressGeometryDetach: shouldSuppressGeometryDrivenPinnedDetach(),
-                suppressRepinGraceDetach: shouldSuppressRepinGraceDetach(newMetrics: newMetrics)
-            ) {
-                detachFromLiveBottom(markUserDetached: true)
+            DispatchQueue.main.async {
+                let oldMetrics = applyScrollMetrics(newMetrics)
+                recordRehydrateLayoutSampleIfNeeded(metrics: newMetrics)
+                recordPendingBottomScrollOutcomeLayoutMutationIfNeeded(oldMetrics: oldMetrics, newMetrics: newMetrics)
+                recordUserScrollProgressIfNeeded(oldMetrics: oldMetrics, newMetrics: newMetrics)
+                recordScrollGeometryTransition(proxy: proxy, oldMetrics: oldMetrics, newMetrics: newMetrics)
+                if isRehydrateRestoreActive {
+                    finishRehydrateRestoreIfSettled()
+                    return
+                }
+                if !runInteractionSnapshot.runState.isActive,
+                   resolveIdleBoundaryDetachIfNeeded(currentMetrics: newMetrics)
+                {
+                    return
+                }
+                guard let session = activeUserScrollSession else { return }
+                guard !programmaticScrollGate.isInFlight else { return }
+                guard !isInteractionBlockerVisible else { return }
+                if AgentTranscriptAutoFollowRearmPolicy.shouldDetachFromLiveBottom(
+                    runtime: makeScrollRuntimeState(distanceToBottom: newMetrics.distanceToBottom),
+                    latestManualIntent: session.latestIntent,
+                    progress: makeViewportProgress(
+                        baselineDistanceToBottom: session.baselineMetrics.distanceToBottom,
+                        baselineVisibleMinY: session.baselineMetrics.visibleMinY,
+                        currentDistanceToBottom: newMetrics.distanceToBottom,
+                        currentVisibleMinY: newMetrics.visibleMinY
+                    ),
+                    minimumViewportEscapeDistance: Self.detachDistanceThreshold,
+                    suppressGeometryDetach: shouldSuppressGeometryDrivenPinnedDetach(),
+                    suppressRepinGraceDetach: shouldSuppressRepinGraceDetach(newMetrics: newMetrics)
+                ) {
+                    detachFromLiveBottom(markUserDetached: true)
+                }
             }
         })
         .onScrollPhaseChange { oldPhase, newPhase, context in
@@ -3234,8 +3231,7 @@ struct AgentModeChatDetailView: View {
 
     private var runningIndicator: some View {
         HStack(spacing: 6) {
-            ProgressView()
-                .scaleEffect(0.7)
+            AgentActivityArc(size: 13, lineWidth: 1.4)
             Text(runInteractionSnapshot.runningStatusText ?? "Thinking…")
                 .font(fontPreset.swiftUIFont(sizeAtNormal: 12))
                 .foregroundColor(.secondary)

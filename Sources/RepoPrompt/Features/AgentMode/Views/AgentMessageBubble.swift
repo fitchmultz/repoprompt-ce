@@ -623,9 +623,7 @@ struct AgentMessageBubble: View {
                         askUserQuestionList(summary.questions)
 
                         HStack(spacing: 4) {
-                            ProgressView()
-                                .scaleEffect(0.5)
-                                .frame(width: 12, height: 12)
+                            AgentActivityArc(tint: .blue, size: 12, lineWidth: 1.3)
                             Text("Waiting for response...")
                                 .font(fontPreset.swiftUIFont(sizeAtNormal: 11))
                                 .foregroundColor(.secondary)
@@ -833,8 +831,7 @@ struct AgentMessageBubble: View {
                                 Button(action: startCodexManagedChatgptLogin) {
                                     HStack(spacing: 6) {
                                         if isStartingCodexManagedLogin {
-                                            ProgressView()
-                                                .controlSize(.small)
+                                            AgentActivityArc(size: 13, lineWidth: 1.4)
                                         }
                                         Text(isStartingCodexManagedLogin ? "Opening ChatGPT login…" : CodexManagedAuthRecoveryClassifier.loginActionTitle)
                                     }

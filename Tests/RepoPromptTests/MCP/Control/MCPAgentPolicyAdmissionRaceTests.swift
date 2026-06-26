@@ -1696,6 +1696,49 @@ final class MCPAgentPolicyAdmissionRaceTests: XCTestCase {
         #endif
     }
 
+    @MainActor
+    func testRunRoutingStateCleanupDoesNotFailActiveRoutingWaiter() async throws {
+        #if DEBUG
+            let window = makeWindow()
+            defer { WindowStatesManager.shared.unregisterWindowState(window) }
+            let runID = UUID()
+            let connectionID = UUID()
+
+            await MCPRoutingWaiter.cleanup(runID: runID)
+            await MCPRoutingWaiter.register(runID: runID)
+            addTeardownBlock {
+                await MCPRoutingWaiter.cleanup(runID: runID)
+            }
+            let routeWaiter = Task {
+                await MCPRoutingWaiter.waitUntilRouted(runID: runID, timeoutSeconds: 1)
+            }
+            let didRegisterWaiter = await waitUntil {
+                await MCPRoutingWaiter.debugContinuationCount(runID: runID) == 1
+            }
+            XCTAssertTrue(didRegisterWaiter)
+
+            XCTAssertTrue(window.mcpServer.registerRunIDMapping(
+                connectionID: connectionID,
+                runID: runID,
+                windowID: window.windowID,
+                signalRouting: false
+            ))
+
+            await manager.cleanupRunRoutingState(for: runID, windowID: window.windowID)
+
+            let waiterSurvivedCleanup = await waitUntil {
+                await MCPRoutingWaiter.debugContinuationCount(runID: runID) == 1
+            }
+            XCTAssertTrue(waiterSurvivedCleanup)
+
+            await MCPRoutingWaiter.notifyRouted(runID: runID)
+            let didRoute = await routeWaiter.value
+            XCTAssertTrue(didRoute)
+        #else
+            throw XCTSkip("Run routing cleanup diagnostics require DEBUG helpers.")
+        #endif
+    }
+
     func testPolicyCleanupWhileWaitingRejectsWithoutFallbackBinding() async throws {
         #if DEBUG
             let runID = UUID()

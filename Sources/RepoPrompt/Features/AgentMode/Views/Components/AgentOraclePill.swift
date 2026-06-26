@@ -192,9 +192,7 @@ struct AgentOraclePill: View {
                 } label: {
                     HStack(spacing: 6) {
                         if isStreaming {
-                            ProgressView()
-                                .controlSize(.mini)
-                                .scaleEffect(0.7)
+                            AgentActivityArc(tint: .purple, size: 13, lineWidth: 1.4)
                         } else {
                             Image(systemName: "brain")
                                 .font(fontPreset.swiftUIFont(sizeAtNormal: 12))
@@ -269,9 +267,7 @@ struct AgentOraclePill: View {
                 Text("Oracle")
                     .font(fontPreset.swiftUIFont(sizeAtNormal: 13, weight: .semibold))
                 if isPresentedSessionStreaming {
-                    ProgressView()
-                        .controlSize(.mini)
-                        .scaleEffect(0.7)
+                    AgentActivityArc(tint: .purple, size: 13, lineWidth: 1.4)
                 }
                 Spacer()
                 Text(popoverSubtitle)

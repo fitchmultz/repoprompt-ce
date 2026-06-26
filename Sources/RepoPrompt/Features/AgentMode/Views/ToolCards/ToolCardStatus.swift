@@ -69,9 +69,7 @@ struct StatusDot: View {
 
     var body: some View {
         if status == .running {
-            ProgressView()
-                .scaleEffect(0.4)
-                .frame(width: size, height: size)
+            AgentActivityArc(tint: status.color(colorScheme: colorScheme), size: size, lineWidth: max(1, size * 0.16))
         } else {
             Circle()
                 .fill(status.color(colorScheme: colorScheme))

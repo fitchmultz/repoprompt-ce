@@ -426,9 +426,7 @@ private struct ContextBuilderPlanProgressView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
-                ProgressView()
-                    .controlSize(.mini)
-                    .scaleEffect(0.7)
+                AgentActivityArc(tint: .blue, size: 13, lineWidth: 1.4)
                 Text("Generating \(followUpLabel)...")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.secondary)

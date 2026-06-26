@@ -2798,9 +2798,6 @@ actor ServerNetworkManager {
             return mappedRun == runID && mappedConnection == connectionID
         }
         if alreadyMapped {
-            if signalRouting {
-                await MCPRoutingWaiter.notifyRouted(runID: runID)
-            }
             if persistWindowBinding, connectionWindowMap[connectionID] != windowID {
                 setConnectionWindowMapping(connectionID, windowID: windowID)
             }
@@ -3313,7 +3310,11 @@ actor ServerNetworkManager {
             }
             for window in windows {
                 if let connectionID = window.mcpServer.connectionID(forRunID: runID) {
-                    window.mcpServer.cleanupRunIDMapping(runID: runID, connectionID: connectionID)
+                    window.mcpServer.cleanupRunIDMapping(
+                        runID: runID,
+                        connectionID: connectionID,
+                        signalRoutingFailure: false
+                    )
                     connectionLog("Cleaned up runID mapping for runID \(runID) in window \(window.windowID)")
                 }
             }

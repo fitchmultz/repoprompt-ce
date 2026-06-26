@@ -126,7 +126,7 @@ actor MCPRoutingWaiter {
     @discardableResult
     private func resolve(runID: UUID, routed: Bool) -> Bool {
         guard var state = waitersByRunID[runID] else {
-            log.warning("resolve: unregistered runID \(runID.uuidString) routed=\(routed) - ignoring")
+            log.debug("resolve: late signal for cleaned runID \(runID.uuidString) routed=\(routed) - ignoring")
             return false
         }
 

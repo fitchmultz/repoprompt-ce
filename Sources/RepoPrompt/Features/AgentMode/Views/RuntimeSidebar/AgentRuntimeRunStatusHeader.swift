@@ -78,8 +78,7 @@ struct AgentRuntimeRunStatusHeader: View {
             }
 
             if isAgentBusy, runState == .running {
-                ProgressView()
-                    .controlSize(.small)
+                AgentActivityArc(size: 13, lineWidth: 1.4)
             }
 
             if let lastUpdatedText {

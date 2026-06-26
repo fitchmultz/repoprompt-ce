@@ -227,7 +227,7 @@ struct GitContextBranchSwitchCapsule: View {
                 }
 
                 if isLoading {
-                    ProgressView().controlSize(.small)
+                    AgentActivityArc(size: 13, lineWidth: 1.4)
                 } else if let optionErrorMessage {
                     VStack(alignment: .leading, spacing: 6) {
                         Text(optionErrorMessage)
@@ -346,7 +346,7 @@ struct GitContextBranchSwitchCapsule: View {
                     }
                     Spacer(minLength: 0)
                     if isSwitching {
-                        ProgressView().controlSize(.small)
+                        AgentActivityArc(size: 13, lineWidth: 1.4)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)

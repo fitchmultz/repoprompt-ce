@@ -1402,8 +1402,7 @@ private struct CompactProviderRow: View {
                 .disabled(isLoading)
 
             if isLoading {
-                ProgressView()
-                    .controlSize(.small)
+                AgentActivityArc(size: 13, lineWidth: 1.4)
             }
         }
         .padding(14)

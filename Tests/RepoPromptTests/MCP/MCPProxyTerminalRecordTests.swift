@@ -57,6 +57,19 @@ final class MCPProxyTerminalRecordTests: XCTestCase {
         XCTAssertNoThrow(try validateCLIHostInputReadResult(-1, errno: EINTR))
     }
 
+    func testMissingBootstrapSocketDoesNotRetryForever() {
+        let missingSocket = CLIRuntimeError.connectionFailed(
+            underlying: SocketProxyError.connectFailed(errno: ENOENT)
+        )
+        let refusedSocket = CLIRuntimeError.connectionFailed(
+            underlying: SocketProxyError.connectFailed(errno: ECONNREFUSED)
+        )
+
+        XCTAssertFalse(CLIProxyRuntimePolicy.shouldRetry(after: missingSocket))
+        XCTAssertTrue(CLIProxyRuntimePolicy.shouldRetry(after: refusedSocket))
+        XCTAssertEqual(CLIProxyRuntimePolicy.failureReason(for: missingSocket), "app_socket_connect_failed")
+    }
+
     func testSocketReadFailureRemainsRetryablePeerTransportFailure() async throws {
         let ledger = JSONRPCBridgeLedger(connectionID: "socket-read-test")
         _ = try await ledger.beginConnection()

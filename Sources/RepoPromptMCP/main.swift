@@ -530,6 +530,9 @@ enum CLIProxyRuntimePolicy {
             case let .handshakeRejected(errorCode, _):
                 return MCPBootstrapStartupRetryClassifier.isTransientRejection(errorCode: errorCode)
 
+            case let .connectFailed(errno):
+                return errno != ENOENT
+
             case .connectionRefused,
                  .connectionTimeout,
                  .bootstrapResponseTimeout,
@@ -541,7 +544,6 @@ enum CLIProxyRuntimePolicy {
                  .notConnected,
                  .notListening,
                  .cancelled,
-                 .connectFailed,
                  .terminatedByServer:
                 return true
             }

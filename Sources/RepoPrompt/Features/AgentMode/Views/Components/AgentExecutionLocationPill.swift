@@ -95,7 +95,7 @@ struct AgentExecutionLocationPill: View {
         } label: {
             HStack(spacing: 5) {
                 if props.isOperationInProgress {
-                    ProgressView().controlSize(.small)
+                    AgentActivityArc(tint: accentColor, size: 13, lineWidth: 1.4)
                 } else {
                     Image(systemName: iconName)
                         .font(fontPreset.swiftUIFont(sizeAtNormal: 11))
@@ -146,7 +146,9 @@ struct AgentExecutionLocationPill: View {
                     .padding(.horizontal, 8)
 
                 if isLoadingExistingWorktrees {
-                    ProgressView().controlSize(.small).padding(.horizontal, 8).padding(.vertical, 6)
+                    AgentActivityArc(size: 13, lineWidth: 1.4)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 6)
                 } else if let optionError {
                     Text(optionError)
                         .font(fontPreset.swiftUIFont(sizeAtNormal: 11))

@@ -180,7 +180,7 @@ struct WorkspaceLandingView: View {
     private var restoreWorkspacesChip: some View {
         Toggle(isOn: $windowStatesManager.autoRestoreWorkspacesEnabled) {
             HStack(spacing: 8) {
-                Image(systemName: windowStatesManager.autoRestoreWorkspacesEnabled ? "sparkles.rectangle.stack.fill" : "rectangle.stack.badge.clock")
+                Image(systemName: windowStatesManager.autoRestoreWorkspacesEnabled ? "sparkles.rectangle.stack.fill" : "rectangle.stack")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(.accentColor)
 

@@ -125,9 +125,7 @@ struct AgentRuntimeSidebarView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 if isContextBuilderRunning {
-                    ProgressView()
-                        .controlSize(.mini)
-                        .scaleEffect(0.7)
+                    AgentActivityArc(tint: .blue, size: 13, lineWidth: 1.4)
                 } else {
                     Image(systemName: "checkmark.circle.fill")
                         .font(.system(size: 11))
@@ -160,9 +158,7 @@ struct AgentRuntimeSidebarView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 if isOracleStreaming {
-                    ProgressView()
-                        .controlSize(.mini)
-                        .scaleEffect(0.7)
+                    AgentActivityArc(tint: .purple, size: 13, lineWidth: 1.4)
                 }
                 Text("Oracle")
                     .font(.system(size: 11, weight: .semibold))
@@ -230,9 +226,7 @@ struct AgentRuntimeSidebarView: View {
                     .truncationMode(.tail)
                 Spacer()
                 if oracleViewModel.streamingSessions.contains(session.id) {
-                    ProgressView()
-                        .controlSize(.mini)
-                        .scaleEffect(0.6)
+                    AgentActivityArc(tint: .purple, size: 11, lineWidth: 1.2)
                 } else {
                     Text(session.messageCountLabel)
                         .font(.system(size: 10))
@@ -379,17 +373,13 @@ private struct AgentRuntimeSidebarHeaderStatusView: View {
         HStack(spacing: 6) {
             switch state.mode {
             case .contextBuilder:
-                ProgressView()
-                    .controlSize(.mini)
-                    .scaleEffect(0.7)
+                AgentActivityArc(tint: .blue, size: 13, lineWidth: 1.4)
                 Text("Context Builder")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
             case .oracle:
-                ProgressView()
-                    .controlSize(.mini)
-                    .scaleEffect(0.7)
+                AgentActivityArc(tint: .purple, size: 13, lineWidth: 1.4)
                 Text("Oracle")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.primary)

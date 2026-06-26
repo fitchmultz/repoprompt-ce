@@ -62,17 +62,13 @@ struct AgentRuntimeStatusPill: View {
     private var pillContent: some View {
         switch mode {
         case .contextBuilder:
-            ProgressView()
-                .controlSize(.mini)
-                .scaleEffect(0.7)
+            AgentActivityArc(tint: .blue, size: 13, lineWidth: 1.4)
             Text("Context Builder")
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.primary)
 
         case .oracle:
-            ProgressView()
-                .controlSize(.mini)
-                .scaleEffect(0.7)
+            AgentActivityArc(tint: .purple, size: 13, lineWidth: 1.4)
             Text("Oracle")
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.primary)

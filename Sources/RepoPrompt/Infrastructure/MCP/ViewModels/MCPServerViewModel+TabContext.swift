@@ -2468,9 +2468,6 @@ extension MCPServerViewModel {
         {
             pendingPolicyRunIDMappingTokenIDByRunID.removeValue(forKey: runID)
             windowIDByConnection[connectionID] = windowID
-            if signalRouting {
-                MCPRoutingWaiter.signalRouted(runID)
-            }
             return true
         }
 

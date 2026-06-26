@@ -258,9 +258,7 @@ struct AgentHandoffPopover: View {
                 } label: {
                     HStack(spacing: 4) {
                         if isCopying {
-                            ProgressView()
-                                .scaleEffect(0.6)
-                                .frame(width: 12, height: 12)
+                            AgentActivityArc(size: 12, lineWidth: 1.3)
                         } else {
                             Image(systemName: showCopied ? "checkmark" : "doc.on.doc")
                                 .font(fontPreset.swiftUIFont(sizeAtNormal: 11))
@@ -303,9 +301,7 @@ struct AgentHandoffPopover: View {
                 } label: {
                     HStack(spacing: 4) {
                         if isLoading {
-                            ProgressView()
-                                .scaleEffect(0.6)
-                                .frame(width: 12, height: 12)
+                            AgentActivityArc(tint: .white, size: 12, lineWidth: 1.3)
                         }
                         Text("Handoff")
                             .font(fontPreset.swiftUIFont(sizeAtNormal: 12, weight: .semibold))
