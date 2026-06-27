@@ -1,5 +1,8 @@
 // RepoPrompt CE managed pi bridge extension
 import { createHash } from "node:crypto";
+import { appendFileSync, mkdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, ToolCallEvent, ToolCallEventResult } from "@earendil-works/pi-coding-agent";
 
 const BRIDGE_VERSION = "__REPOPROMPT_BRIDGE_VERSION__";
@@ -15,8 +18,10 @@ const DEFAULT_GLOBAL_SCHEMA_LOAD_TIMEOUT_MS = 10_000;
 const GLOBAL_SCHEMA_LOAD_TIMEOUT_ENV = "REPOPROMPT_PI_GLOBAL_BRIDGE_SCHEMA_TIMEOUT_MS";
 const TOOL_EXEC_TIMEOUT_MS = 600_000;
 const TOOL_APPROVAL_TIMEOUT_MS = 120_000;
+const BRIDGE_DEBUG_LOG_ENV = "REPOPROMPT_PI_BRIDGE_DEBUG_LOG";
 const MAX_RESULT_CHARS = 50 * 1024;
 const MAX_TOOL_INPUT_UI_CHARS = 1_200;
+const MAX_DEBUG_PREVIEW_CHARS = 600;
 type JSONRecord = Record<string, unknown>;
 type PiExecResult = Awaited<ReturnType<ExtensionAPI["exec"]>>;
 type PiBuiltInToolName = "bash" | "read" | "edit" | "write" | "grep" | "find" | "ls";
@@ -100,6 +105,44 @@ function truncate(text: string): { text: string; truncated: boolean } {
     text: text.slice(0, MAX_RESULT_CHARS) + `\n\n[RepoPrompt bridge output truncated to ${MAX_RESULT_CHARS} characters.]`,
     truncated: true,
   };
+}
+
+function bridgeDebugLogPath(): string | undefined {
+  const raw = process.env[BRIDGE_DEBUG_LOG_ENV]?.trim();
+  if (raw === "0" || raw?.toLowerCase() === "false") return undefined;
+  if (raw) return raw;
+  if (process.env[REPOPROMPT_MANAGED_RUN_ENV] === "1") {
+    return join(homedir(), "Library", "Application Support", "RepoPrompt CE", "pi-bridge-debug.log");
+  }
+  return undefined;
+}
+
+function debugPreview(text: string): string {
+  return text.length <= MAX_DEBUG_PREVIEW_CHARS ? text : `${text.slice(0, MAX_DEBUG_PREVIEW_CHARS)}…`;
+}
+
+function safeToolInputSummary(params: JSONRecord): JSONRecord {
+  const json = JSON.stringify(params ?? {});
+  return {
+    keys: Object.keys(params ?? {}).sort(),
+    byteLength: Buffer.byteLength(json),
+    sha256: sha256Hex(json).slice(0, 16),
+  };
+}
+
+function bridgeDebugLog(event: string, fields: JSONRecord = {}) {
+  const logPath = bridgeDebugLogPath();
+  if (!logPath) return;
+  try {
+    mkdirSync(dirname(logPath), { recursive: true });
+    appendFileSync(logPath, `${JSON.stringify({ timestamp: new Date().toISOString(), event, ...fields })}\n`);
+  } catch {
+    // Debug logging must never affect tool execution.
+  }
+}
+
+function toolExecutionTimeoutMS(toolName: string): number {
+  return toolName === "agent_run" ? 0 : TOOL_EXEC_TIMEOUT_MS;
 }
 
 function classifyBridgeFailure(message: string, exitCode?: number): RepoPromptBridgeFailureClass {
@@ -210,16 +253,50 @@ async function callRepoPromptTool(
   params: JSONRecord,
   signal?: AbortSignal,
 ): Promise<{ content: Array<{ type: "text"; text: string }>; details: RepoPromptBridgeDetails }> {
-  const result = await pi.exec(
-    REPOPROMPT_CLI,
-    repoPromptToolArgs(toolName, params),
-    { signal, timeout: TOOL_EXEC_TIMEOUT_MS },
-  );
+  const args = repoPromptToolArgs(toolName, params);
+  const timeout = toolExecutionTimeoutMS(toolName);
+  const startedAt = Date.now();
+  bridgeDebugLog("tool_start", {
+    toolName,
+    timeout,
+    windowID: REPOPROMPT_WINDOW_ID,
+    input: safeToolInputSummary(params),
+  });
+  let result: PiExecResult;
+  try {
+    result = await pi.exec(
+      REPOPROMPT_CLI,
+      args,
+      { signal, timeout },
+    );
+  } catch (error) {
+    bridgeDebugLog("tool_exec_throw", {
+      toolName,
+      timeout,
+      durationMS: Date.now() - startedAt,
+      error: String(error instanceof Error ? error.message : error),
+    });
+    throw error;
+  }
   const stdout = result.stdout.trim();
   const stderr = result.stderr.trim();
+  bridgeDebugLog("tool_exit", {
+    toolName,
+    timeout,
+    durationMS: Date.now() - startedAt,
+    exitCode: result.code,
+    killed: result.killed,
+    stdoutPreview: debugPreview(stdout),
+    stderrPreview: debugPreview(stderr),
+  });
   if (result.code !== 0) {
     const message = stderr || stdout || `RepoPrompt tool ${toolName} failed with exit code ${result.code}`;
     const failureClass = classifyBridgeFailure(message, result.code);
+    bridgeDebugLog("tool_failure_classified", {
+      toolName,
+      exitCode: result.code,
+      failureClass,
+    });
     throw new Error(`RepoPrompt tool ${toolName} failed (class=${failureClass}, exitCode=${result.code}): ${message}`);
   }
   const merged = stdout || stderr || `RepoPrompt tool ${toolName} completed.`;

@@ -207,6 +207,12 @@ final class PiRepoPromptBridgeExtensionInstallerTests: XCTestCase {
         XCTAssertTrue(source.contains("pi.on(\"tool_call\""))
         XCTAssertTrue(source.contains("const PI_BUILT_IN_TOOLS = new Set<string>([\"bash\", \"read\", \"edit\", \"write\", \"grep\", \"find\", \"ls\"])"))
         XCTAssertTrue(source.contains("import { createHash } from \"node:crypto\";"))
+        XCTAssertTrue(source.contains("import { appendFileSync, mkdirSync } from \"node:fs\";"))
+        XCTAssertTrue(source.contains("const BRIDGE_DEBUG_LOG_ENV = \"REPOPROMPT_PI_BRIDGE_DEBUG_LOG\""))
+        XCTAssertTrue(source.contains("function bridgeDebugLog(event: string, fields: JSONRecord = {})"))
+        XCTAssertTrue(source.contains("return toolName === \"agent_run\" ? 0 : TOOL_EXEC_TIMEOUT_MS"))
+        XCTAssertTrue(source.contains("bridgeDebugLog(\"tool_exit\""))
+        XCTAssertTrue(source.contains("safeToolInputSummary(params)"))
         XCTAssertTrue(source.contains("sha256Hex(canonicalJSONString(event.input))"))
         XCTAssertTrue(source.contains("RepoPrompt pi preflight approval"))
         XCTAssertTrue(source.contains("Auto Review is not yet wired for pi built-ins"))
@@ -464,12 +470,19 @@ final class PiRepoPromptBridgeExtensionInstallerTests: XCTestCase {
     private static func nodeExecutableBridgeSource(from rendered: String) -> String {
         let imports = """
         import { createHash } from "node:crypto";
+        import { appendFileSync, mkdirSync } from "node:fs";
+        import { homedir } from "node:os";
+        import { dirname, join } from "node:path";
         import type { ExtensionAPI, ExtensionContext, ToolCallEvent, ToolCallEventResult } from "@earendil-works/pi-coding-agent";
         """
         let harnessPrelude = """
         declare const require: any;
         declare const process: any;
+        declare const Buffer: any;
         const { createHash } = require("node:crypto");
+        const { appendFileSync, mkdirSync } = require("node:fs");
+        const { homedir } = require("node:os");
+        const { dirname, join } = require("node:path");
         type ExtensionAPI = any;
         type ExtensionContext = any;
         type ToolCallEvent = any;
