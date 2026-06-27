@@ -280,6 +280,57 @@ final class MCPAgentPolicyAdmissionRaceTests: XCTestCase {
         #endif
     }
 
+    func testManagedPiBridgeBootstrapIgnoresStaleLiveAffinityWithoutConsumablePolicy() async throws {
+        #if DEBUG
+            let piBridgeClientName = "pi-schema"
+            let runID = UUID()
+            let connectionID = UUID()
+            let bootstrapConnectionID = UUID()
+            let windowID = 61010
+            let sessionKey = "pi-bridge-stale-affinity-\(UUID().uuidString)"
+            await manager.installClientConnectionPolicy(
+                for: piBridgeClientName,
+                windowID: windowID,
+                restrictedTools: AgentModeMCPToolPolicy.restrictedTools,
+                oneShot: true,
+                reason: "Managed pi bridge stale affinity regression",
+                ttl: 10,
+                runID: runID,
+                additionalTools: nil,
+                purpose: .agentModeRun,
+                requiresExpectedAgentPID: true
+            )
+            await manager.registerExpectedAgentPID(getpid(), for: piBridgeClientName, runID: runID)
+            let applied = await manager.debugApplyPendingPolicy(
+                clientName: piBridgeClientName,
+                connectionID: connectionID,
+                clientPid: Int(getpid()),
+                bootstrapClientName: "repoprompt_ce_cli_debug",
+                sessionKey: sessionKey,
+                pidGateTimeout: 0.25,
+                requireRunRouting: false
+            )
+            XCTAssertEqual(applied.outcome, "applied")
+            await manager.clearExpectedAgentPID(getpid(), for: piBridgeClientName, runID: runID)
+
+            let readiness = await manager.debugBootstrapPolicyAdmissionStatus(
+                bootstrapClientName: piBridgeClientName,
+                connectionID: bootstrapConnectionID,
+                sessionKey: sessionKey,
+                clientPid: Int(getpid()),
+                timeout: 0.01
+            )
+
+            XCTAssertEqual(readiness, "notRequired")
+            await manager.clearClientConnectionPolicy(for: piBridgeClientName, windowID: windowID, runID: runID)
+            await manager.removeConnection(connectionID)
+            await manager.removeConnection(bootstrapConnectionID)
+            await manager.cleanupRunRoutingState(for: runID, windowID: windowID)
+        #else
+            throw XCTSkip("Bootstrap admission diagnostics require DEBUG helpers.")
+        #endif
+    }
+
     func testSessionTokenAlreadyBoundToLiveRunCannotConsumeAnotherRunPolicy() async throws {
         #if DEBUG
             let firstRunID = UUID()

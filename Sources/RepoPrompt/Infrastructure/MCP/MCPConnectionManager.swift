@@ -6439,6 +6439,11 @@ actor ServerNetworkManager {
         }
 
         let hasReservedPIDGatedPolicy = hasPIDGatedPendingPolicy(for: clientName)
+        if MCPClientIdentity.isManagedPiBridgeExecutionClient(clientName),
+           !hasReservedPIDGatedPolicy
+        {
+            return .notRequired
+        }
         switch descendantStatus {
         case true:
             return hasReservedPIDGatedPolicy ? nil : .ready
