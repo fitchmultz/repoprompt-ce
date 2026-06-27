@@ -305,7 +305,6 @@ final class PiIntegratedAgentModeRunner {
 
             let images = try PiRPCImageContentBuilder.images(from: attachments)
             didSendPrompt = true
-            _ = try await controller.sendUserMessage(initialMessageForRun, images: images)
             firstEventWatchdogTask = Task { @MainActor in
                 try? await Task.sleep(nanoseconds: PiFirstProviderEventWatchdog.timeoutNanoseconds)
                 guard !Task.isCancelled,
@@ -315,14 +314,15 @@ final class PiIntegratedAgentModeRunner {
                           isCurrentRunAttempt: session.isCurrentRunAttempt(ownership, expectedRunID: runID)
                       )
                 else { return }
-                _ = await controller.interruptTurn(reason: "first provider event timeout")
                 await commitTerminal(
                     .failed,
                     source: PiFirstProviderEventWatchdog.source,
                     errorText: PiFirstProviderEventWatchdog.errorText,
                     notifyTurnComplete: false
                 )
+                _ = await controller.interruptTurn(reason: "first provider event timeout")
             }
+            _ = try await controller.sendUserMessage(initialMessageForRun, images: images)
             await eventTask.value
             firstEventWatchdogTask?.cancel()
         } catch is CancellationError {

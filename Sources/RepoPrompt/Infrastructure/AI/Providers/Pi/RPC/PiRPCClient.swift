@@ -7,6 +7,7 @@ actor PiRPCClient {
         var additionalPathHints: [String]
         var enableDebugLogging: Bool
         var requestTimeout: TimeInterval?
+        var promptRequestTimeout: TimeInterval?
         var workingDirectory: String?
         var launchArguments: [String]
         var environmentOverrides: [String: String]
@@ -17,6 +18,7 @@ actor PiRPCClient {
             additionalPathHints: [String] = CLILaunchProfiles.pi.supplementalSearchPaths,
             enableDebugLogging: Bool = false,
             requestTimeout: TimeInterval? = 30,
+            promptRequestTimeout: TimeInterval? = 300,
             workingDirectory: String? = nil,
             launchArguments: [String] = PiIntegrationConfiguration.managedRPCLaunchArguments(launchPolicy: .defaultPolicy),
             environmentOverrides: [String: String] = PiIntegrationConfiguration.managedRunEnvironment(),
@@ -26,6 +28,7 @@ actor PiRPCClient {
             self.additionalPathHints = additionalPathHints
             self.enableDebugLogging = enableDebugLogging
             self.requestTimeout = requestTimeout
+            self.promptRequestTimeout = promptRequestTimeout
             self.workingDirectory = workingDirectory
             self.launchArguments = launchArguments
             self.environmentOverrides = environmentOverrides
@@ -776,8 +779,11 @@ actor PiRPCClient {
     }
 
     private func installTimeoutIfNeeded(id: String, command: String) {
-        guard let requestTimeout = config.requestTimeout, requestTimeout > 0 else { return }
-        let nanos = UInt64(requestTimeout * 1_000_000_000)
+        let timeout = Self.usesPromptRequestTimeout(command: command)
+            ? config.promptRequestTimeout
+            : config.requestTimeout
+        guard let timeout, timeout > 0 else { return }
+        let nanos = UInt64(timeout * 1_000_000_000)
         timeoutTasks[id] = Task { [weak self] in
             do {
                 try await Task.sleep(nanoseconds: nanos)
@@ -796,6 +802,15 @@ actor PiRPCClient {
             await shutdown()
         }
         pending.continuation.resume(throwing: ClientError.requestTimedOut(id: id, command: command))
+    }
+
+    private static func usesPromptRequestTimeout(command: String) -> Bool {
+        switch command {
+        case "prompt", "steer", "follow_up":
+            true
+        default:
+            false
+        }
     }
 
     private static func invalidatesProcessOnTimeout(command: String) -> Bool {

@@ -33,7 +33,7 @@ enum PiRunDiagnosticPresentation {
 enum PiFirstProviderEventWatchdog {
     static let timeoutNanoseconds: UInt64 = 60 * 1_000_000_000
     static let source = "pi.firstProviderEventTimeout"
-    static let errorText = "pi accepted the prompt but did not produce any response events within 60 seconds."
+    static let errorText = "pi did not produce any response events within 60 seconds after the prompt was sent."
 
     static func countsAsPostPromptProviderEvent(_ event: PiNativeSessionController.Event) -> Bool {
         switch event {

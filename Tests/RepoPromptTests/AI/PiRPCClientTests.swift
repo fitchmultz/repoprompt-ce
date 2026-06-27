@@ -193,6 +193,30 @@ final class PiRPCClientTests: XCTestCase {
         XCTAssertTrue(isRunningAfterRestart)
     }
 
+    func testPromptRequestTimeoutCanBeLongerThanControlRequestTimeout() async throws {
+        let scriptURL = try makeFakePiTimeoutScript(ignoredCommands: ["prompt"])
+        let client = PiRPCClient(config: .init(
+            commandName: scriptURL.path,
+            additionalPathHints: [],
+            requestTimeout: 0.01,
+            promptRequestTimeout: 0.2,
+            launchArguments: [],
+            requiresSupportedVersionCheck: false
+        ))
+        addTeardownBlock { await client.shutdown() }
+
+        let start = Date()
+        do {
+            _ = try await client.prompt("slow compacting prompt")
+            XCTFail("Expected prompt to time out")
+        } catch let error as PiRPCClient.ClientError {
+            XCTAssertEqual(error, .requestTimedOut(id: "rp-pi-prompt-1", command: "prompt"))
+            XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(start), 0.15)
+        }
+        let isRunningAfterTimeout = await client.isRunning
+        XCTAssertFalse(isRunningAfterTimeout)
+    }
+
     func testReadOnlyRequestTimeoutLeavesRPCProcessRunningForSubsequentCommands() async throws {
         let scriptURL = try makeFakePiTimeoutScript(ignoredCommands: ["get_state"])
         let client = PiRPCClient(config: .init(

@@ -89,7 +89,7 @@ final class PiRunEventReducerTests: XCTestCase {
         XCTAssertEqual(PiFirstProviderEventWatchdog.source, "pi.firstProviderEventTimeout")
         XCTAssertEqual(
             PiFirstProviderEventWatchdog.errorText,
-            "pi accepted the prompt but did not produce any response events within 60 seconds."
+            "pi did not produce any response events within 60 seconds after the prompt was sent."
         )
     }
 

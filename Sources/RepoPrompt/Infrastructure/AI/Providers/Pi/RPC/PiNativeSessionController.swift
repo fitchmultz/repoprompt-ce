@@ -35,6 +35,7 @@ actor PiNativeSessionController {
 
         var modelRaw: String?
         var requestTimeout: TimeInterval?
+        var promptRequestTimeout: TimeInterval?
         var enableDebugLogging: Bool
         var launchArguments: [String]
         var environmentOverrides: [String: String]
@@ -44,6 +45,7 @@ actor PiNativeSessionController {
         init(
             modelRaw: String? = nil,
             requestTimeout: TimeInterval? = 30,
+            promptRequestTimeout: TimeInterval? = 300,
             enableDebugLogging: Bool = false,
             launchArguments: [String] = PiIntegrationConfiguration.managedRPCLaunchArguments(launchPolicy: .defaultPolicy),
             environmentOverrides: [String: String] = PiIntegrationConfiguration.managedRunEnvironment(),
@@ -52,6 +54,7 @@ actor PiNativeSessionController {
         ) {
             self.modelRaw = modelRaw
             self.requestTimeout = requestTimeout
+            self.promptRequestTimeout = promptRequestTimeout
             self.enableDebugLogging = enableDebugLogging
             self.launchArguments = launchArguments
             self.environmentOverrides = environmentOverrides
@@ -135,6 +138,7 @@ actor PiNativeSessionController {
         let client = PiRPCClient(config: .init(
             enableDebugLogging: options.enableDebugLogging,
             requestTimeout: options.requestTimeout,
+            promptRequestTimeout: options.promptRequestTimeout,
             workingDirectory: workspacePath,
             launchArguments: options.launchArguments,
             environmentOverrides: options.environmentOverrides
