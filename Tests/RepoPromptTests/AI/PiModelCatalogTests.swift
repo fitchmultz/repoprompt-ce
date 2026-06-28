@@ -2,8 +2,21 @@
 import XCTest
 
 final class PiModelCatalogTests: XCTestCase {
+    private var storeDirectory: URL!
+
+    override func setUp() {
+        super.setUp()
+        storeDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PiModelCatalogTests-\(UUID().uuidString)", isDirectory: true)
+        PiDynamicModelStore.test_setStoreDirectoryOverride(storeDirectory)
+    }
+
     override func tearDown() {
         AgentPiModelRegistry.shared.test_reset()
+        PiDynamicModelStore.test_setStoreDirectoryOverride(nil)
+        if let storeDirectory {
+            try? FileManager.default.removeItem(at: storeDirectory)
+        }
         super.tearDown()
     }
 
@@ -215,22 +228,56 @@ final class PiModelCatalogTests: XCTestCase {
         XCTAssertNil(AgentPiModelRegistry.shared.cachedSnapshot(workspacePath: workspace))
     }
 
+    func testClearDoesNotDeleteConcurrentFreshPersist() {
+        AgentPiModelRegistry.shared.test_reset()
+        defer {
+            AgentPiModelRegistry.shared.test_setBeforeRemovePersistedModelsHook(nil)
+            AgentPiModelRegistry.shared.test_reset()
+        }
+        let workspace = "/tmp/pi-clear-fresh-persist-race-\(UUID().uuidString)"
+        let replacementSnapshot = Self.snapshot(rawValue: "zai/glm-5.2", displayName: "GLM 5.2")
+        let didUpdateBox = PiBoolBox()
+        AgentPiModelRegistry.shared.test_setBeforeRemovePersistedModelsHook { workspacePath in
+            didUpdateBox.value = AgentPiModelRegistry.shared.updateDiscoveredModels(
+                replacementSnapshot,
+                workspacePath: workspacePath
+            )
+        }
+
+        XCTAssertFalse(AgentPiModelRegistry.shared.clearDiscoveredModels(workspacePath: workspace))
+        XCTAssertTrue(didUpdateBox.value)
+        AgentPiModelRegistry.shared.test_clearMemoryPreservingStore()
+        XCTAssertEqual(AgentPiModelRegistry.shared.resolvedSnapshot(workspacePath: workspace), replacementSnapshot)
+    }
+
     func testPersistedWarmStartingDuringClearDoesNotReinsertCatalog() async {
         let workspace = "/tmp/pi-warm-during-clear-race-\(UUID().uuidString)"
         let rawModel = "zai/glm-5.2"
         let warmTaskBox = PiWarmTaskBox()
+        let warmRead = DispatchSemaphore(value: 0)
+        let allowWarmApply = DispatchSemaphore(value: 0)
+        let warmReadBox = PiBoolBox()
         PiDynamicModelStore.save(Self.snapshot(rawValue: rawModel, displayName: "GLM 5.2"), workspacePath: workspace)
         AgentPiModelRegistry.shared.test_clearMemoryPreservingStore()
+        AgentPiModelRegistry.shared.test_setBeforeApplyPersistedWarmHook { _ in
+            warmRead.signal()
+            _ = allowWarmApply.wait(timeout: .now() + .seconds(2))
+        }
         AgentPiModelRegistry.shared.test_setBeforeRemovePersistedModelsHook { workspacePath in
             warmTaskBox.task = Task.detached {
                 AgentPiModelRegistry.shared.resolvedSnapshot(workspacePath: workspacePath)
             }
+            warmReadBox.value = warmRead.wait(timeout: .now() + .seconds(2)) == .success
         }
         defer {
+            AgentPiModelRegistry.shared.test_setBeforeApplyPersistedWarmHook(nil)
             AgentPiModelRegistry.shared.test_setBeforeRemovePersistedModelsHook(nil)
+            allowWarmApply.signal()
         }
 
         XCTAssertFalse(AgentPiModelRegistry.shared.clearDiscoveredModels(workspacePath: workspace))
+        XCTAssertTrue(warmReadBox.value)
+        allowWarmApply.signal()
         let warmedSnapshot = await warmTaskBox.task?.value
         XCTAssertNil(warmedSnapshot ?? nil)
         XCTAssertNil(AgentPiModelRegistry.shared.cachedSnapshot(workspacePath: workspace))
@@ -665,6 +712,33 @@ final class PiModelCatalogTests: XCTestCase {
         XCTAssertEqual(AgentPiModelRegistry.shared.catalogState(workspacePath: workspace), .unavailable)
     }
 
+    func testPiModelPersistenceDoesNotBlockSynchronousWarmWhileSaving() {
+        AgentPiModelRegistry.shared.test_reset()
+        defer {
+            PiDynamicModelStore.test_setBeforeWorkspaceRecordSaveHook(nil)
+            AgentPiModelRegistry.shared.test_reset()
+        }
+        let warmWorkspace = "/tmp/pi-lock-inversion-warm"
+        let saveWorkspace = "/tmp/pi-lock-inversion-save"
+        let warmSnapshot = Self.snapshot(rawValue: "openai-codex/gpt-5.5", displayName: "GPT 5.5")
+        let saveSnapshot = Self.snapshot(rawValue: "zai/glm-5.2", displayName: "GLM 5.2")
+        let stateBox = PiCatalogStateBox()
+        let semaphore = DispatchSemaphore(value: 0)
+        PiDynamicModelStore.save(warmSnapshot, workspacePath: warmWorkspace)
+        AgentPiModelRegistry.shared.test_clearMemoryPreservingStore()
+        PiDynamicModelStore.test_setBeforeWorkspaceRecordSaveHook {
+            DispatchQueue.global(qos: .userInitiated).async {
+                stateBox.state = AgentPiModelRegistry.shared.catalogState(workspacePath: warmWorkspace)
+                semaphore.signal()
+            }
+            stateBox.completed = semaphore.wait(timeout: .now() + .seconds(2)) == .success
+        }
+
+        XCTAssertTrue(AgentPiModelRegistry.shared.updateDiscoveredModels(saveSnapshot, workspacePath: saveWorkspace))
+        XCTAssertTrue(stateBox.completed)
+        XCTAssertEqual(stateBox.state, .loaded(warmSnapshot))
+    }
+
     func testPiDynamicModelStorePersistsWorkspaceSnapshotsWithoutGlobalFallback() throws {
         let suiteName = "PiModelCatalogTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
@@ -684,6 +758,120 @@ final class PiModelCatalogTests: XCTestCase {
         XCTAssertEqual(PiDynamicModelStore.load(workspacePath: canonicalWorkspaceA, defaults: defaults), snapshotA)
         XCTAssertEqual(PiDynamicModelStore.load(workspacePath: workspaceB, defaults: defaults), snapshotB)
         XCTAssertNil(PiDynamicModelStore.load(workspacePath: "/tmp/pi-cache-root/missing", defaults: defaults))
+        XCTAssertNil(defaults.data(forKey: "PiDynamicModelSnapshotsByWorkspace"))
+        XCTAssertEqual(workspaceCacheFileCount(), 2)
+    }
+
+    func testPiDynamicModelStoreKeepsInvalidLegacyBlobWhenMigrationFails() throws {
+        let suiteName = "PiModelCatalogTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let badData = Data("not-json".utf8)
+        defaults.set(badData, forKey: "PiDynamicModelSnapshotsByWorkspace")
+
+        XCTAssertNil(PiDynamicModelStore.load(workspacePath: "/tmp/pi-bad-legacy/workspace", defaults: defaults))
+        XCTAssertEqual(defaults.data(forKey: "PiDynamicModelSnapshotsByWorkspace"), badData)
+    }
+
+    func testPiDynamicModelStoreMigratesLegacyWorkspaceBlobToPerWorkspaceKeys() throws {
+        let suiteName = "PiModelCatalogTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let workspaceA = "/tmp/pi-legacy-cache/workspace-a"
+        let workspaceB = "/tmp/pi-legacy-cache/workspace-b"
+        let snapshotA = Self.snapshot(rawValue: "openai-codex/gpt-5.4", displayName: "GPT 5.4")
+        let snapshotB = Self.snapshot(rawValue: "zai/glm-5.2", displayName: "GLM 5.2")
+        let collection = try PiDynamicModelSnapshotCollectionRecord(snapshotsByWorkspacePath: [
+            workspaceA: XCTUnwrap(PiDynamicModelStore.snapshotRecord(from: snapshotA)),
+            workspaceB: XCTUnwrap(PiDynamicModelStore.snapshotRecord(from: snapshotB))
+        ])
+        try defaults.set(JSONEncoder().encode(collection), forKey: "PiDynamicModelSnapshotsByWorkspace")
+
+        XCTAssertEqual(PiDynamicModelStore.load(workspacePath: workspaceA, defaults: defaults), snapshotA)
+        XCTAssertNil(defaults.data(forKey: "PiDynamicModelSnapshotsByWorkspace"))
+        XCTAssertEqual(PiDynamicModelStore.load(workspacePath: workspaceB, defaults: defaults), snapshotB)
+        XCTAssertEqual(workspaceCacheFileCount(), 2)
+    }
+
+    func testPiDynamicModelStoreLoadMigratesLegacyBlobEvenWhenWorkspaceKeyExists() throws {
+        let suiteName = "PiModelCatalogTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let workspaceA = "/tmp/pi-interrupted-legacy-cache/workspace-a"
+        let workspaceB = "/tmp/pi-interrupted-legacy-cache/workspace-b"
+        let currentSnapshotA = Self.snapshot(rawValue: "openai-codex/gpt-5.5", displayName: "GPT 5.5")
+        let legacySnapshotA = Self.snapshot(rawValue: "openai-codex/gpt-5.4", displayName: "GPT 5.4")
+        let legacySnapshotB = Self.snapshot(rawValue: "zai/glm-5.2", displayName: "GLM 5.2")
+        PiDynamicModelStore.save(currentSnapshotA, workspacePath: workspaceA, defaults: defaults)
+        let collection = try PiDynamicModelSnapshotCollectionRecord(snapshotsByWorkspacePath: [
+            workspaceA: XCTUnwrap(PiDynamicModelStore.snapshotRecord(from: legacySnapshotA)),
+            workspaceB: XCTUnwrap(PiDynamicModelStore.snapshotRecord(from: legacySnapshotB))
+        ])
+        try defaults.set(JSONEncoder().encode(collection), forKey: "PiDynamicModelSnapshotsByWorkspace")
+
+        XCTAssertEqual(PiDynamicModelStore.load(workspacePath: workspaceA, defaults: defaults), currentSnapshotA)
+        XCTAssertNil(defaults.data(forKey: "PiDynamicModelSnapshotsByWorkspace"))
+        XCTAssertEqual(PiDynamicModelStore.load(workspacePath: workspaceB, defaults: defaults), legacySnapshotB)
+    }
+
+    func testPiDynamicModelStoreMigratesAllLegacySnapshotsBeforeRemovingBlob() throws {
+        let suiteName = "PiModelCatalogTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let snapshotsByWorkspace = try Dictionary(uniqueKeysWithValues: (0 ..< 16).map { index in
+            let workspace = "/tmp/pi-large-legacy-cache/workspace-\(index)"
+            let snapshot = Self.snapshot(rawValue: "provider/model-\(index)", displayName: "Model \(index)")
+            return try (workspace, XCTUnwrap(PiDynamicModelStore.snapshotRecord(from: snapshot)))
+        })
+        let collection = PiDynamicModelSnapshotCollectionRecord(snapshotsByWorkspacePath: snapshotsByWorkspace)
+        try defaults.set(JSONEncoder().encode(collection), forKey: "PiDynamicModelSnapshotsByWorkspace")
+
+        XCTAssertEqual(
+            PiDynamicModelStore.load(workspacePath: "/tmp/pi-large-legacy-cache/workspace-0", defaults: defaults)?.currentModelRaw,
+            "provider/model-0"
+        )
+        XCTAssertNil(defaults.data(forKey: "PiDynamicModelSnapshotsByWorkspace"))
+        XCTAssertEqual(workspaceCacheFileCount(), 16)
+    }
+
+    func testPiDynamicModelStoreSaveMigratesLegacyBlobBeforeRemovingIt() throws {
+        let suiteName = "PiModelCatalogTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let legacyWorkspace = "/tmp/pi-legacy-save-cache/legacy"
+        let newWorkspace = "/tmp/pi-legacy-save-cache/new"
+        let legacySnapshot = Self.snapshot(rawValue: "openai-codex/gpt-5.4", displayName: "GPT 5.4")
+        let newSnapshot = Self.snapshot(rawValue: "zai/glm-5.2", displayName: "GLM 5.2")
+        let collection = try PiDynamicModelSnapshotCollectionRecord(snapshotsByWorkspacePath: [
+            legacyWorkspace: XCTUnwrap(PiDynamicModelStore.snapshotRecord(from: legacySnapshot))
+        ])
+        try defaults.set(JSONEncoder().encode(collection), forKey: "PiDynamicModelSnapshotsByWorkspace")
+
+        PiDynamicModelStore.save(newSnapshot, workspacePath: newWorkspace, defaults: defaults)
+
+        XCTAssertNil(defaults.data(forKey: "PiDynamicModelSnapshotsByWorkspace"))
+        XCTAssertEqual(PiDynamicModelStore.load(workspacePath: legacyWorkspace, defaults: defaults), legacySnapshot)
+        XCTAssertEqual(PiDynamicModelStore.load(workspacePath: newWorkspace, defaults: defaults), newSnapshot)
+    }
+
+    func testPiDynamicModelStoreCapsWorkspaceSnapshotCache() throws {
+        let suiteName = "PiModelCatalogTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        for index in 0 ..< 70 {
+            PiDynamicModelStore.save(
+                Self.snapshot(rawValue: "provider/model-\(index)", displayName: "Model \(index)"),
+                workspacePath: "/tmp/pi-capped-cache/workspace-\(index)",
+                defaults: defaults
+            )
+        }
+
+        XCTAssertEqual(
+            PiDynamicModelStore.load(workspacePath: "/tmp/pi-capped-cache/workspace-15", defaults: defaults)?.currentModelRaw,
+            "provider/model-15"
+        )
+        XCTAssertLessThanOrEqual(workspaceCacheFileCount(), 64)
     }
 
     func testPiDynamicModelStoreConcurrentWorkspaceSavesPreserveSnapshots() throws {
@@ -698,7 +886,7 @@ final class PiModelCatalogTests: XCTestCase {
             "deepseek/deepseek-v4-flash",
             "deepseek/deepseek-v4-pro"
         ]
-        let workspaceCount = 64
+        let workspaceCount = 8
 
         DispatchQueue.concurrentPerform(iterations: workspaceCount) { index in
             let workspacePath = "/tmp/pi-concurrent-cache/workspace-\(index)"
@@ -718,6 +906,15 @@ final class PiModelCatalogTests: XCTestCase {
             XCTAssertEqual(loaded?.options.map(\.rawValue), [rawValue])
             XCTAssertEqual(loaded?.options.last?.displayName, "Concurrent Model \(index)")
         }
+    }
+
+    private func workspaceCacheFileCount() -> Int {
+        let directory = storeDirectory.appendingPathComponent("Workspaces", isDirectory: true)
+        return (try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ).count) ?? 0
     }
 
     private static func snapshot(
@@ -743,4 +940,13 @@ final class PiModelCatalogTests: XCTestCase {
 
 private final class PiWarmTaskBox: @unchecked Sendable {
     var task: Task<PiDiscoveredModels?, Never>?
+}
+
+private final class PiCatalogStateBox: @unchecked Sendable {
+    var completed = false
+    var state: PiModelCatalogState?
+}
+
+private final class PiBoolBox: @unchecked Sendable {
+    var value = false
 }

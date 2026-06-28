@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 struct PiDiscoveredModels: Equatable {
@@ -125,6 +126,12 @@ struct PiDynamicModelSnapshotCollectionRecord: Codable, Hashable {
     var snapshotsByWorkspacePath: [String: PiDynamicModelSnapshotRecord]
 }
 
+struct PiWorkspaceDynamicModelSnapshotRecord: Codable, Hashable {
+    var workspacePath: String
+    var savedAt: Date
+    var snapshot: PiDynamicModelSnapshotRecord
+}
+
 enum PiModelWorkspaceScope: Hashable {
     case global
     case workspace(String)
@@ -167,9 +174,22 @@ enum PiModelCatalogState: Equatable {
 }
 
 enum PiDynamicModelStore {
-    private static let storageKey = "PiDynamicModelSnapshot"
-    private static let workspaceStorageKey = "PiDynamicModelSnapshotsByWorkspace"
-    private static let lock = NSLock()
+    private static let legacyStorageKey = "PiDynamicModelSnapshot"
+    private static let legacyWorkspaceStorageKey = "PiDynamicModelSnapshotsByWorkspace"
+    private static let legacyWorkspaceIndexKey = "PiDynamicModelSnapshotWorkspaceIndex"
+    private static let legacyWorkspaceRecordKeyPrefix = "PiDynamicModelSnapshotWorkspace."
+    private static let legacyWorkspaceFallbackRecordKeyPrefix = "PiDynamicModelSnapshotWorkspaceLegacy."
+    private static let appSupportDirectoryName = "RepoPrompt CE"
+    private static let cacheDirectoryName = "PiModelSnapshots"
+    private static let workspacesDirectoryName = "Workspaces"
+    private static let globalFileName = "global.json"
+    private static let maxWorkspaceSnapshots = 64
+    private static let legacyMigrationLock = NSLock()
+    private static var didMigrateStandardDefaults = false
+    #if DEBUG
+        private static var beforeWorkspaceRecordSaveHook: (() -> Void)?
+        private static var storeDirectoryOverride: URL?
+    #endif
 
     static func save(
         _ snapshot: PiDiscoveredModels,
@@ -177,61 +197,50 @@ enum PiDynamicModelStore {
         defaults: UserDefaults = .standard
     ) {
         let scope = PiModelWorkspaceScope(workspacePath: workspacePath)
-        lock.lock()
-        defer { lock.unlock() }
         guard let record = snapshotRecord(from: snapshot) else {
             remove(scope: scope, defaults: defaults)
             return
         }
+        migrateLegacyDefaultsIfNeeded(defaults: defaults)
         switch scope {
         case .global:
-            guard let data = try? JSONEncoder().encode(record) else { return }
-            defaults.set(data, forKey: storageKey)
+            writeRecord(record, to: globalRecordURL())
         case let .workspace(path):
-            var collection = loadCollection(defaults: defaults)
-            collection.snapshotsByWorkspacePath[path] = record
-            saveCollection(collection, defaults: defaults)
+            writeWorkspaceRecord(record, workspacePath: path)
+            pruneWorkspaceFiles(keeping: workspaceRecordURL(for: path))
         }
     }
 
     static func load(workspacePath: String? = nil, defaults: UserDefaults = .standard) -> PiDiscoveredModels? {
-        lock.lock()
-        defer { lock.unlock() }
+        migrateLegacyDefaultsIfNeeded(defaults: defaults)
         switch PiModelWorkspaceScope(workspacePath: workspacePath) {
         case .global:
-            guard let data = defaults.data(forKey: storageKey),
-                  let record = try? JSONDecoder().decode(PiDynamicModelSnapshotRecord.self, from: data)
-            else {
-                return nil
-            }
+            guard let record: PiDynamicModelSnapshotRecord = readRecord(from: globalRecordURL()) else { return nil }
             return snapshot(from: record)
         case let .workspace(path):
-            guard let record = loadCollection(defaults: defaults).snapshotsByWorkspacePath[path] else { return nil }
+            guard let record = readWorkspaceRecord(workspacePath: path) else { return nil }
             return snapshot(from: record)
         }
     }
 
     static func remove(defaults: UserDefaults = .standard) {
-        lock.lock()
-        defer { lock.unlock() }
-        defaults.removeObject(forKey: storageKey)
-        defaults.removeObject(forKey: workspaceStorageKey)
+        removeFile(globalRecordURL())
+        removeFile(workspaceRecordsDirectory())
+        removeLegacyDefaults(defaults: defaults)
     }
 
     static func remove(workspacePath: String?, defaults: UserDefaults = .standard) {
-        lock.lock()
-        defer { lock.unlock() }
+        migrateLegacyDefaultsIfNeeded(defaults: defaults)
         remove(scope: PiModelWorkspaceScope(workspacePath: workspacePath), defaults: defaults)
     }
 
     private static func remove(scope: PiModelWorkspaceScope, defaults: UserDefaults) {
         switch scope {
         case .global:
-            defaults.removeObject(forKey: storageKey)
+            removeFile(globalRecordURL())
+            defaults.removeObject(forKey: legacyStorageKey)
         case let .workspace(path):
-            var collection = loadCollection(defaults: defaults)
-            collection.snapshotsByWorkspacePath.removeValue(forKey: path)
-            saveCollection(collection, defaults: defaults)
+            removeFile(workspaceRecordURL(for: path))
         }
     }
 
@@ -378,23 +387,183 @@ enum PiDynamicModelStore {
         return trimmed
     }
 
-    private static func loadCollection(defaults: UserDefaults) -> PiDynamicModelSnapshotCollectionRecord {
-        guard let data = defaults.data(forKey: workspaceStorageKey),
-              let collection = try? JSONDecoder().decode(PiDynamicModelSnapshotCollectionRecord.self, from: data)
+    private static func readWorkspaceRecord(workspacePath: String) -> PiDynamicModelSnapshotRecord? {
+        guard let wrapper = readRecord(from: workspaceRecordURL(for: workspacePath), as: PiWorkspaceDynamicModelSnapshotRecord.self),
+              wrapper.workspacePath == workspacePath
         else {
-            return PiDynamicModelSnapshotCollectionRecord(snapshotsByWorkspacePath: [:])
+            return nil
         }
-        return collection
+        return wrapper.snapshot
     }
 
-    private static func saveCollection(_ collection: PiDynamicModelSnapshotCollectionRecord, defaults: UserDefaults) {
-        guard !collection.snapshotsByWorkspacePath.isEmpty else {
-            defaults.removeObject(forKey: workspaceStorageKey)
-            return
-        }
-        guard let data = try? JSONEncoder().encode(collection) else { return }
-        defaults.set(data, forKey: workspaceStorageKey)
+    @discardableResult
+    private static func writeWorkspaceRecord(_ record: PiDynamicModelSnapshotRecord, workspacePath: String) -> Bool {
+        let wrapper = PiWorkspaceDynamicModelSnapshotRecord(
+            workspacePath: workspacePath,
+            savedAt: Date(),
+            snapshot: record
+        )
+        #if DEBUG
+            beforeWorkspaceRecordSaveHook?()
+        #endif
+        return writeRecord(wrapper, to: workspaceRecordURL(for: workspacePath))
     }
+
+    private static func migrateLegacyDefaultsIfNeeded(defaults: UserDefaults) {
+        if defaults === UserDefaults.standard {
+            legacyMigrationLock.lock()
+            let alreadyMigrated = didMigrateStandardDefaults
+            legacyMigrationLock.unlock()
+            guard !alreadyMigrated else { return }
+        }
+
+        let migrated = migrateLegacyDefaults(defaults: defaults)
+        guard defaults === UserDefaults.standard, migrated else { return }
+        legacyMigrationLock.lock()
+        didMigrateStandardDefaults = true
+        legacyMigrationLock.unlock()
+    }
+
+    @discardableResult
+    private static func migrateLegacyDefaults(defaults: UserDefaults) -> Bool {
+        var didFail = false
+        if let data = defaults.data(forKey: legacyStorageKey) {
+            if let record = try? JSONDecoder().decode(PiDynamicModelSnapshotRecord.self, from: data) {
+                if readRecord(from: globalRecordURL(), as: PiDynamicModelSnapshotRecord.self) == nil {
+                    didFail = !writeRecord(record, to: globalRecordURL()) || didFail
+                }
+            } else {
+                didFail = true
+            }
+        }
+        if let data = defaults.data(forKey: legacyWorkspaceStorageKey) {
+            if let collection = try? JSONDecoder().decode(PiDynamicModelSnapshotCollectionRecord.self, from: data) {
+                for (workspacePath, record) in collection.snapshotsByWorkspacePath where readWorkspaceRecord(workspacePath: workspacePath) == nil {
+                    didFail = !writeWorkspaceRecord(record, workspacePath: workspacePath) || didFail
+                }
+            } else {
+                didFail = true
+            }
+        }
+        for key in defaults.dictionaryRepresentation().keys {
+            didFail = !migrateLegacyPerWorkspaceKey(key, defaults: defaults) || didFail
+        }
+        guard !didFail else { return false }
+        removeLegacyDefaults(defaults: defaults)
+        return true
+    }
+
+    @discardableResult
+    private static func migrateLegacyPerWorkspaceKey(_ key: String, defaults: UserDefaults) -> Bool {
+        guard key.hasPrefix(legacyWorkspaceRecordKeyPrefix) || key.hasPrefix(legacyWorkspaceFallbackRecordKeyPrefix),
+              let data = defaults.data(forKey: key)
+        else {
+            return true
+        }
+        guard let wrapper = try? JSONDecoder().decode(PiWorkspaceDynamicModelSnapshotRecord.self, from: data) else {
+            return false
+        }
+        guard readWorkspaceRecord(workspacePath: wrapper.workspacePath) == nil else { return true }
+        return writeWorkspaceRecord(wrapper.snapshot, workspacePath: wrapper.workspacePath)
+    }
+
+    private static func removeLegacyDefaults(defaults: UserDefaults) {
+        defaults.removeObject(forKey: legacyStorageKey)
+        defaults.removeObject(forKey: legacyWorkspaceStorageKey)
+        defaults.removeObject(forKey: legacyWorkspaceIndexKey)
+        for key in defaults.dictionaryRepresentation().keys where key.hasPrefix(legacyWorkspaceRecordKeyPrefix) || key.hasPrefix(legacyWorkspaceFallbackRecordKeyPrefix) {
+            defaults.removeObject(forKey: key)
+        }
+    }
+
+    private static func pruneWorkspaceFiles(keeping keptURL: URL?) {
+        let directory = workspaceRecordsDirectory()
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ), files.count > maxWorkspaceSnapshots else { return }
+        let keptPath = keptURL?.standardizedFileURL.path
+        let sorted = files.sorted { lhs, rhs in
+            let leftDate = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            let rightDate = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            return leftDate > rightDate
+        }
+        var retained: Set<String> = []
+        if let keptPath {
+            retained.insert(keptPath)
+        }
+        for file in sorted where retained.count < maxWorkspaceSnapshots {
+            retained.insert(file.standardizedFileURL.path)
+        }
+        for file in files where !retained.contains(file.standardizedFileURL.path) {
+            removeFile(file)
+        }
+    }
+
+    private static func readRecord<T: Decodable>(from url: URL, as type: T.Type = T.self) -> T? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(type, from: data)
+    }
+
+    @discardableResult
+    private static func writeRecord(_ record: some Encodable, to url: URL) -> Bool {
+        do {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            let data = try JSONEncoder().encode(record)
+            try data.write(to: url, options: [.atomic])
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private static func removeFile(_ url: URL) {
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    private static func globalRecordURL() -> URL {
+        storeDirectory().appendingPathComponent(globalFileName, isDirectory: false)
+    }
+
+    private static func workspaceRecordURL(for path: String) -> URL {
+        workspaceRecordsDirectory()
+            .appendingPathComponent(workspaceRecordKeyDigest(for: path), isDirectory: false)
+            .appendingPathExtension("json")
+    }
+
+    private static func workspaceRecordsDirectory() -> URL {
+        storeDirectory().appendingPathComponent(workspacesDirectoryName, isDirectory: true)
+    }
+
+    private static func storeDirectory() -> URL {
+        #if DEBUG
+            if let storeDirectoryOverride { return storeDirectoryOverride }
+        #endif
+        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent(appSupportDirectoryName, isDirectory: true)
+            .appendingPathComponent(cacheDirectoryName, isDirectory: true)
+    }
+
+    private static func workspaceRecordKeyDigest(for path: String) -> String {
+        SHA256.hash(data: Data(path.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    #if DEBUG
+        static func test_setBeforeWorkspaceRecordSaveHook(_ hook: (() -> Void)?) {
+            beforeWorkspaceRecordSaveHook = hook
+        }
+
+        static func test_setStoreDirectoryOverride(_ directory: URL?) {
+            storeDirectoryOverride = directory
+            legacyMigrationLock.lock()
+            didMigrateStandardDefaults = false
+            legacyMigrationLock.unlock()
+        }
+    #endif
 
     private static func providerID(from rawValue: String) -> String? {
         let parts = rawValue.split(separator: "/", maxSplits: 1).map(String.init)
@@ -407,7 +576,6 @@ final class AgentPiModelRegistry {
     static let shared = AgentPiModelRegistry()
 
     private let lock = NSLock()
-    private let persistenceLock = NSLock()
     private var liveSnapshots: [PiModelWorkspaceScope: PiDiscoveredModels] = [:]
     private var liveSignatures: [PiModelWorkspaceScope: PiDynamicModelSnapshotRecord] = [:]
     private var persistedSnapshots: [PiModelWorkspaceScope: PiDiscoveredModels] = [:]
@@ -466,7 +634,6 @@ final class AgentPiModelRegistry {
     @discardableResult
     func clearDiscoveredModels(workspacePath: String? = nil) -> Bool {
         let scope = PiModelWorkspaceScope(workspacePath: workspacePath)
-        persistenceLock.lock()
         lock.lock()
         let removedLiveSnapshot = liveSnapshots.removeValue(forKey: scope) != nil
         let removedPersistedSnapshot = persistedSnapshots.removeValue(forKey: scope) != nil
@@ -486,7 +653,8 @@ final class AgentPiModelRegistry {
             beforeRemoveHook?(scope.workspacePath)
         #endif
         PiDynamicModelStore.remove(workspacePath: scope.workspacePath)
-        persistenceLock.unlock()
+        finishPersistentRemove(scope: scope)
+        restorePersistedSnapshotFromMemory(scope: scope)
         return hadSnapshot
     }
 
@@ -681,9 +849,7 @@ final class AgentPiModelRegistry {
     }
 
     private func loadPersistedSnapshot(workspacePath: String?) -> PiDiscoveredModels? {
-        persistenceLock.lock()
-        defer { persistenceLock.unlock() }
-        return PiDynamicModelStore.load(workspacePath: workspacePath)
+        PiDynamicModelStore.load(workspacePath: workspacePath)
     }
 
     private func persistSnapshotIfCurrent(
@@ -692,9 +858,6 @@ final class AgentPiModelRegistry {
         scope: PiModelWorkspaceScope,
         generation: UInt64
     ) {
-        persistenceLock.lock()
-        defer { persistenceLock.unlock() }
-
         lock.lock()
         let currentRecordBeforeSave = liveSignatures[scope]
         let generationBeforeSave = persistenceGeneration
@@ -725,12 +888,22 @@ final class AgentPiModelRegistry {
         guard currentGeneration == savedGeneration,
               currentRecord == savedRecord
         else {
-            if currentRecord != nil,
+            if let currentRecord,
                let currentSnapshot
             {
                 PiDynamicModelStore.save(currentSnapshot, workspacePath: scope.workspacePath)
+                lock.lock()
+                let isStillCurrent = liveSignatures[scope] == currentRecord
+                    && liveSnapshots[scope] == currentSnapshot
+                    && persistenceGeneration == currentGeneration
+                lock.unlock()
+                if !isStillCurrent {
+                    PiDynamicModelStore.remove(workspacePath: scope.workspacePath)
+                    restorePersistedSnapshotFromMemory(scope: scope)
+                }
             } else {
                 PiDynamicModelStore.remove(workspacePath: scope.workspacePath)
+                restorePersistedSnapshotFromMemory(scope: scope)
             }
             return
         }
@@ -778,7 +951,6 @@ final class AgentPiModelRegistry {
     }
 
     func clearAllDiscoveredModels() {
-        persistenceLock.lock()
         lock.lock()
         liveSnapshots.removeAll()
         liveSignatures.removeAll()
@@ -794,7 +966,34 @@ final class AgentPiModelRegistry {
         persistenceGeneration &+= 1
         lock.unlock()
         PiDynamicModelStore.remove()
-        persistenceLock.unlock()
+        restorePersistedSnapshotsFromMemory()
+    }
+
+    private func finishPersistentRemove(scope: PiModelWorkspaceScope) {
+        lock.lock()
+        standardStoreWarmGeneration &+= 1
+        if liveSignatures[scope] == nil {
+            persistedSnapshots.removeValue(forKey: scope)
+        }
+        lock.unlock()
+    }
+
+    private func restorePersistedSnapshotFromMemory(scope: PiModelWorkspaceScope) {
+        lock.lock()
+        let snapshot = liveSnapshots[scope]
+        let signature = liveSignatures[scope]
+        lock.unlock()
+        guard let snapshot, signature != nil else { return }
+        PiDynamicModelStore.save(snapshot, workspacePath: scope.workspacePath)
+    }
+
+    private func restorePersistedSnapshotsFromMemory() {
+        lock.lock()
+        let snapshots = liveSnapshots
+        lock.unlock()
+        for (scope, snapshot) in snapshots {
+            PiDynamicModelStore.save(snapshot, workspacePath: scope.workspacePath)
+        }
     }
 
     private static func normalizedOptionalString(_ value: String?) -> String? {
@@ -806,7 +1005,6 @@ final class AgentPiModelRegistry {
 
     #if DEBUG
         func test_reset() {
-            persistenceLock.lock()
             lock.lock()
             liveSnapshots.removeAll()
             liveSignatures.removeAll()
@@ -825,7 +1023,6 @@ final class AgentPiModelRegistry {
             beforeRemovePersistedModelsHook = nil
             lock.unlock()
             PiDynamicModelStore.remove()
-            persistenceLock.unlock()
         }
 
         func test_clearMemoryPreservingStore() {
