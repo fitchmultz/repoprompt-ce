@@ -21,7 +21,6 @@ const TOOL_APPROVAL_TIMEOUT_MS = 120_000;
 const BRIDGE_DEBUG_LOG_ENV = "REPOPROMPT_PI_BRIDGE_DEBUG_LOG";
 const MAX_RESULT_CHARS = 50 * 1024;
 const MAX_TOOL_INPUT_UI_CHARS = 1_200;
-const MAX_DEBUG_PREVIEW_CHARS = 600;
 type JSONRecord = Record<string, unknown>;
 type PiExecResult = Awaited<ReturnType<ExtensionAPI["exec"]>>;
 type PiBuiltInToolName = "bash" | "read" | "edit" | "write" | "grep" | "find" | "ls";
@@ -117,8 +116,11 @@ function bridgeDebugLogPath(): string | undefined {
   return undefined;
 }
 
-function debugPreview(text: string): string {
-  return text.length <= MAX_DEBUG_PREVIEW_CHARS ? text : `${text.slice(0, MAX_DEBUG_PREVIEW_CHARS)}…`;
+function safeTextSummary(text: string): JSONRecord {
+  return {
+    byteLength: Buffer.byteLength(text),
+    sha256: sha256Hex(text).slice(0, 16),
+  };
 }
 
 function safeToolInputSummary(params: JSONRecord): JSONRecord {
@@ -286,8 +288,8 @@ async function callRepoPromptTool(
     durationMS: Date.now() - startedAt,
     exitCode: result.code,
     killed: result.killed,
-    stdoutPreview: debugPreview(stdout),
-    stderrPreview: debugPreview(stderr),
+    stdout: safeTextSummary(stdout),
+    stderr: safeTextSummary(stderr),
   });
   if (result.code !== 0) {
     const message = stderr || stdout || `RepoPrompt tool ${toolName} failed with exit code ${result.code}`;

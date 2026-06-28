@@ -217,12 +217,15 @@ actor PiNativeSessionController {
     }
 
     func applyModelAndThinking(model: String?, thinkingLevel: String?) async throws {
-        let knownModelIDs = await AgentPiModelRegistry.shared
-            .resolvedSnapshotAfterWarmingStandardStore(workspacePath: workspacePath)?.knownModelIDs ?? []
-        let specifier = PiModelSpecifier(raw: model, knownModelIDs: knownModelIDs)
+        await AgentPiModelRegistry.shared.warmStandardStoreIfNeeded(workspacePath: workspacePath)
+        let requestedModelRaw = normalized(model)
+        let specifier = AgentModelCatalog.piModelSpecifier(raw: requestedModelRaw, workspacePath: workspacePath)
+        if requestedModelRaw != nil, specifier == nil {
+            throw ControllerError.modelProviderMissing(requestedModelRaw ?? "")
+        }
         if let requestedModel = specifier?.modelID {
             guard let provider = specifier?.provider else {
-                throw ControllerError.modelProviderMissing(model ?? requestedModel)
+                throw ControllerError.modelProviderMissing(requestedModelRaw ?? requestedModel)
             }
             _ = try await client.setModel(provider: provider, modelID: requestedModel)
         }

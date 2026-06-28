@@ -144,10 +144,8 @@ enum AgentMCPSelectionResolver {
         modelRaw: String,
         availability: AgentModelCatalog.AvailabilityContext
     ) -> (modelRaw: String, reasoningEffortRaw: String?) {
-        let knownModelIDs = AgentPiModelRegistry.shared
-            .resolvedSnapshot(workspacePath: availability.piWorkspacePath)?.knownModelIDs ?? []
         guard agent == .pi,
-              let specifier = PiModelSpecifier(raw: modelRaw, knownModelIDs: knownModelIDs),
+              let specifier = AgentModelCatalog.piModelSpecifier(raw: modelRaw, workspacePath: availability.piWorkspacePath),
               let thinkingLevel = specifier.thinkingLevel
         else {
             return (modelRaw, nil)

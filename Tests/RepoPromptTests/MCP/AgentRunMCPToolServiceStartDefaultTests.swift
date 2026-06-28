@@ -375,6 +375,131 @@ final class AgentRunMCPToolServiceStartDefaultTests: XCTestCase {
         XCTAssertEqual(resolved.reasoningEffortRaw, "low")
     }
 
+    func testPiRoleDefaultModelSurvivesWorkspaceScopedCatalogMismatch() throws {
+        let cursorModel = "cursor/opus-latest@300k"
+        let codexModel = "openai-codex/gpt-5.5"
+        let workspace = "/tmp/repoprompt-role-default-\(UUID().uuidString)"
+        XCTAssertTrue(AgentPiModelRegistry.shared.updateDiscoveredModels(PiDiscoveredModels(
+            options: [
+                AgentModelOption(
+                    rawValue: cursorModel,
+                    displayName: "Opus 4.8 (opus-latest) @ 300k",
+                    description: nil,
+                    isDefault: false,
+                    supportedPiThinkingLevels: [.off, .low, .medium, .high, .xhigh]
+                ),
+                AgentModelOption(
+                    rawValue: codexModel,
+                    displayName: "GPT 5.5",
+                    description: nil,
+                    isDefault: true,
+                    supportedPiThinkingLevels: [.off, .low, .medium, .high, .xhigh]
+                )
+            ],
+            currentModelRaw: codexModel
+        )))
+        XCTAssertTrue(AgentPiModelRegistry.shared.updateDiscoveredModels(PiDiscoveredModels(
+            options: [
+                AgentModelOption(
+                    rawValue: codexModel,
+                    displayName: "GPT 5.5",
+                    description: nil,
+                    isDefault: true,
+                    supportedPiThinkingLevels: [.off, .low, .medium, .high, .xhigh]
+                )
+            ],
+            currentModelRaw: codexModel
+        ), workspacePath: workspace))
+
+        let store = InMemoryRoleDefaultsStore()
+        let globalAvailability = AgentModelCatalog.AvailabilityContext(piAvailable: true)
+        XCTAssertTrue(MCPAgentRoleDefaultsService.setSelection(
+            AgentModelCatalog.NormalizedAgentSelection(agent: .pi, modelRaw: "\(cursorModel):xhigh"),
+            for: .design,
+            availability: globalAvailability,
+            settingsStore: store
+        ))
+
+        let workspaceAvailability = AgentModelCatalog.AvailabilityContext(piAvailable: true, piWorkspacePath: workspace)
+        let resolved = try AgentMCPSelectionResolver.resolve(
+            modelID: "design",
+            availability: workspaceAvailability,
+            roleSelectionProvider: { role, availability in
+                MCPAgentRoleDefaultsService.effectiveNormalizedSelection(
+                    for: role,
+                    availability: availability,
+                    settingsStore: store
+                )
+            }
+        )
+        XCTAssertEqual(resolved.agentRaw, AgentProviderKind.pi.rawValue)
+        XCTAssertEqual(resolved.modelRaw, cursorModel)
+        XCTAssertEqual(resolved.reasoningEffortRaw, "xhigh")
+
+        let normalized = AgentModelCatalog.normalizeSelection(
+            agentRaw: resolved.agentRaw,
+            modelRaw: resolved.modelRaw,
+            availability: workspaceAvailability,
+            preserveUnavailableAgent: true
+        )
+        XCTAssertEqual(normalized.agent, .pi)
+        XCTAssertEqual(normalized.modelRaw, cursorModel)
+    }
+
+    func testPiRoleDefaultExactModelEndingInThinkingWordIsNotReparsedByWorkspaceCatalog() throws {
+        let exactCursorModel = "cursor/opus-latest@300k:high"
+        let codexModel = "openai-codex/gpt-5.5"
+        let workspace = "/tmp/repoprompt-role-default-\(UUID().uuidString)"
+        XCTAssertTrue(AgentPiModelRegistry.shared.updateDiscoveredModels(PiDiscoveredModels(
+            options: [
+                AgentModelOption(
+                    rawValue: exactCursorModel,
+                    displayName: "Opus 4.8 High Variant",
+                    description: nil,
+                    isDefault: false,
+                    supportedPiThinkingLevels: [.off, .low, .medium, .high, .xhigh]
+                )
+            ],
+            currentModelRaw: exactCursorModel
+        )))
+        XCTAssertTrue(AgentPiModelRegistry.shared.updateDiscoveredModels(PiDiscoveredModels(
+            options: [
+                AgentModelOption(
+                    rawValue: codexModel,
+                    displayName: "GPT 5.5",
+                    description: nil,
+                    isDefault: true,
+                    supportedPiThinkingLevels: [.off, .low, .medium, .high, .xhigh]
+                )
+            ],
+            currentModelRaw: codexModel
+        ), workspacePath: workspace))
+
+        let store = InMemoryRoleDefaultsStore()
+        XCTAssertTrue(MCPAgentRoleDefaultsService.setSelection(
+            AgentModelCatalog.NormalizedAgentSelection(agent: .pi, modelRaw: "\(exactCursorModel):xhigh"),
+            for: .design,
+            availability: AgentModelCatalog.AvailabilityContext(piAvailable: true),
+            settingsStore: store
+        ))
+
+        let resolved = try AgentMCPSelectionResolver.resolve(
+            modelID: "design",
+            availability: AgentModelCatalog.AvailabilityContext(piAvailable: true, piWorkspacePath: workspace),
+            roleSelectionProvider: { role, availability in
+                MCPAgentRoleDefaultsService.effectiveNormalizedSelection(
+                    for: role,
+                    availability: availability,
+                    settingsStore: store
+                )
+            }
+        )
+
+        XCTAssertEqual(resolved.agentRaw, AgentProviderKind.pi.rawValue)
+        XCTAssertEqual(resolved.modelRaw, exactCursorModel)
+        XCTAssertEqual(resolved.reasoningEffortRaw, "xhigh")
+    }
+
     private func installPiSnapshot() {
         let snapshot = PiDiscoveredModels(
             options: [

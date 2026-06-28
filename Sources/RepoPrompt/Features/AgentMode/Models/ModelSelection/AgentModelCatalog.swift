@@ -360,14 +360,21 @@ enum AgentModelCatalog {
             codexDynamicModels: codexDynamicModels
         )
         let resolvedModelRaw = canonicalModelRaw(candidateModelRaw ?? fallbackModelRaw, for: agent)
-        let finalModelRaw = isValid(
-            rawModel: resolvedModelRaw,
-            for: agent,
-            availability: effectiveAvailability,
-            codexDynamicModels: codexDynamicModels
-        )
-            ? resolvedModelRaw
-            : fallbackModelRaw
+        let modelIsValid = if agent == .pi {
+            isPiModelValid(
+                rawModel: resolvedModelRaw,
+                workspacePath: effectiveAvailability.piWorkspacePath,
+                includeGlobalFallback: true
+            )
+        } else {
+            isValid(
+                rawModel: resolvedModelRaw,
+                for: agent,
+                availability: effectiveAvailability,
+                codexDynamicModels: codexDynamicModels
+            )
+        }
+        let finalModelRaw = modelIsValid ? resolvedModelRaw : fallbackModelRaw
 
         return NormalizedAgentSelection(agent: agent, modelRaw: finalModelRaw)
     }
@@ -460,16 +467,11 @@ enum AgentModelCatalog {
             return true
         }
         if agentKind == .pi {
-            guard let discoveredModels = resolvedPiDiscoveredModels(workspacePath: availability.piWorkspacePath) else {
-                return false
-            }
-            if let specifier = PiModelSpecifier(raw: normalized, knownModelIDs: discoveredModels.knownModelIDs),
-               let rawThinking = specifier.thinkingLevel
-            {
-                guard let level = PiThinkingLevel.parse(rawThinking) else { return false }
-                return discoveredModels.supportsThinkingLevel(level, for: specifier.providerQualifiedModelRaw)
-            }
-            return discoveredModels.contains(rawModel: normalized)
+            return isPiModelValid(
+                rawModel: normalized,
+                workspacePath: availability.piWorkspacePath,
+                includeGlobalFallback: false
+            )
         }
         if let discoveredModels = resolvedACPDiscoveredModels(for: agentKind) {
             if agentKind == .cursor {
@@ -742,7 +744,11 @@ enum AgentModelCatalog {
         return OpenCodeMenu(providerGroups: providerGroups, groups: groups)
     }
 
-    static func piThinkingLevelOptions(for rawModel: String?, workspacePath: String? = nil) -> [PiThinkingLevel] {
+    static func piThinkingLevelOptions(
+        for rawModel: String?,
+        workspacePath: String? = nil,
+        includeGlobalFallback: Bool = false
+    ) -> [PiThinkingLevel] {
         let trimmed = rawModel?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if trimmed.isEmpty || trimmed.caseInsensitiveCompare(AgentModel.defaultModel.rawValue) == .orderedSame {
             if let discoveredModels = resolvedPiDiscoveredModels(workspacePath: workspacePath),
@@ -752,14 +758,20 @@ enum AgentModelCatalog {
             }
             return PiThinkingLevel.standardModelOrder
         }
-        let discoveredModels = resolvedPiDiscoveredModels(workspacePath: workspacePath)
+        let snapshots = includeGlobalFallback
+            ? piDiscoveredModelsForValidation(workspacePath: workspacePath)
+            : resolvedPiDiscoveredModels(workspacePath: workspacePath).map { [$0] } ?? []
+        let knownModelIDs = includeGlobalFallback
+            ? piSelectionKnownModelIDs(workspacePath: workspacePath)
+            : piKnownModelIDs(workspacePath: workspacePath)
         guard let specifier = PiModelSpecifier(
             raw: trimmed,
-            knownModelIDs: discoveredModels?.knownModelIDs ?? []
+            knownModelIDs: knownModelIDs
         ) else { return [] }
-        if let discoveredModels {
-            return discoveredModels.supportedThinkingLevels(for: specifier.providerQualifiedModelRaw)
+        if let levels = snapshots.lazy.map({ $0.supportedThinkingLevels(for: specifier.providerQualifiedModelRaw) }).first(where: { !$0.isEmpty }) {
+            return levels
         }
+        guard snapshots.isEmpty else { return [] }
         return fallbackPiThinkingLevelOptions(for: specifier.providerQualifiedModelRaw)
     }
 
@@ -1853,13 +1865,20 @@ enum AgentModelCatalog {
         workspacePath: String? = nil,
         fallbackKnownModelIDs: Set<String> = []
     ) -> PiModelSpecifier? {
-        let workspaceKnownModelIDs = piKnownModelIDs(workspacePath: workspacePath)
-        let knownModelIDs = workspaceKnownModelIDs.isEmpty ? fallbackKnownModelIDs : workspaceKnownModelIDs
+        var knownModelIDs = piSelectionKnownModelIDs(workspacePath: workspacePath)
+        knownModelIDs.formUnion(fallbackKnownModelIDs)
         return PiModelSpecifier(raw: raw, knownModelIDs: knownModelIDs)
     }
 
     static func piKnownModelIDs(workspacePath: String? = nil) -> Set<String> {
         resolvedPiDiscoveredModels(workspacePath: workspacePath)?.knownModelIDs ?? []
+    }
+
+    static func piSelectionKnownModelIDs(workspacePath: String? = nil) -> Set<String> {
+        piDiscoveredModelsForValidation(workspacePath: workspacePath)
+            .reduce(into: Set<String>()) { ids, snapshot in
+                ids.formUnion(snapshot.knownModelIDs)
+            }
     }
 
     static func piCatalogState(workspacePath: String? = nil) -> PiModelCatalogState {
@@ -1881,6 +1900,40 @@ enum AgentModelCatalog {
             return nil
         }
         return snapshot
+    }
+
+    private static func isPiModelValid(
+        rawModel: String,
+        workspacePath: String?,
+        includeGlobalFallback: Bool
+    ) -> Bool {
+        let snapshots = includeGlobalFallback
+            ? piDiscoveredModelsForValidation(workspacePath: workspacePath)
+            : resolvedPiDiscoveredModels(workspacePath: workspacePath).map { [$0] } ?? []
+        guard !snapshots.isEmpty else { return false }
+        return snapshots.contains { discoveredModels in
+            if let specifier = PiModelSpecifier(raw: rawModel, knownModelIDs: discoveredModels.knownModelIDs),
+               let rawThinking = specifier.thinkingLevel
+            {
+                guard let level = PiThinkingLevel.parse(rawThinking) else { return false }
+                return discoveredModels.supportsThinkingLevel(level, for: specifier.providerQualifiedModelRaw)
+            }
+            return discoveredModels.contains(rawModel: rawModel)
+        }
+    }
+
+    private static func piDiscoveredModelsForValidation(workspacePath: String?) -> [PiDiscoveredModels] {
+        var snapshots: [PiDiscoveredModels] = []
+        if let scoped = resolvedPiDiscoveredModels(workspacePath: workspacePath) {
+            snapshots.append(scoped)
+        }
+        if workspacePath != nil,
+           let global = resolvedPiDiscoveredModels(),
+           !snapshots.contains(global)
+        {
+            snapshots.append(global)
+        }
+        return snapshots
     }
 
     private static func resolvedACPDiscoveredModels(

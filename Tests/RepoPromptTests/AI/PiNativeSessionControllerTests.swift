@@ -2147,6 +2147,10 @@ final class PiNativeSessionControllerTests: XCTestCase {
             PiModelSpecifier(provider: "deepseek", modelID: "deepseek-v4-flash", thinkingLevel: "high")
         )
         XCTAssertEqual(
+            PiModelSpecifier(raw: "cursor/opus-latest@300k:slow:xhigh", knownModelIDs: ["cursor/opus-latest@300k:slow"]),
+            PiModelSpecifier(provider: "cursor", modelID: "opus-latest@300k:slow", thinkingLevel: "xhigh")
+        )
+        XCTAssertEqual(
             PiModelSpecifier(raw: "deepseek/deepseek-v4-flash", knownModelIDs: ["deepseek/deepseek-v4-flash"]),
             PiModelSpecifier(provider: "deepseek", modelID: "deepseek-v4-flash", thinkingLevel: nil)
         )

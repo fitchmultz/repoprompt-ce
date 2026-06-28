@@ -976,7 +976,8 @@ final class AgentModeViewModel: ObservableObject {
         else { return }
         let supportedLevels = AgentModelCatalog.piThinkingLevelOptions(
             for: session.selectedModelRaw,
-            workspacePath: piWorkspacePath(for: session)
+            workspacePath: piWorkspacePath(for: session),
+            includeGlobalFallback: true
         )
         guard !supportedLevels.contains(selectedLevel) else { return }
         session.selectedReasoningEffortRaw = nil

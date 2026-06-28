@@ -1,7 +1,7 @@
 import Foundation
 
 private enum PiAgentModeMCPRouting {
-    static let timeoutMilliseconds = 10000
+    static let timeoutMilliseconds = 60000
 
     static func errorText(timeoutMilliseconds: Int) -> String {
         let seconds = Double(timeoutMilliseconds) / 1000
@@ -213,7 +213,7 @@ final class PiIntegratedAgentModeRunner {
                 model: session.selectedModelRaw,
                 thinkingLevel: session.selectedReasoningEffortRaw
             )
-            let shouldResume = session.providerSessionID != nil || session.piSessionFile != nil
+            let shouldResume = session.piSessionFile != nil
             let ref = try await controller.startOrResume(
                 existing: shouldResume ? existingRef : nil,
                 model: session.selectedModelRaw,
