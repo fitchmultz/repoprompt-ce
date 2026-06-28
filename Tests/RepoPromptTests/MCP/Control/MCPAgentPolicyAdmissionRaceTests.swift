@@ -331,6 +331,262 @@ final class MCPAgentPolicyAdmissionRaceTests: XCTestCase {
         #endif
     }
 
+    func testManagedPiBridgeIgnoresStaleLiveAffinityWithUnconsumablePendingPiPolicy() async throws {
+        #if DEBUG
+            let piBridgeClientName = "pi-schema"
+            let piClientName = "pi"
+            let liveRunID = UUID()
+            let pendingRunID = UUID()
+            let connectionID = UUID()
+            let bootstrapConnectionID = UUID()
+            let helperConnectionID = UUID()
+            let liveWindowID = 61011
+            let pendingWindowID = 61012
+            let sessionKey = "pi-bridge-stale-affinity-pending-policy-\(UUID().uuidString)"
+            await manager.installClientConnectionPolicy(
+                for: piBridgeClientName,
+                windowID: liveWindowID,
+                restrictedTools: AgentModeMCPToolPolicy.restrictedTools,
+                oneShot: true,
+                reason: "Managed pi bridge stale affinity live policy",
+                ttl: 10,
+                runID: liveRunID,
+                additionalTools: nil,
+                purpose: .agentModeRun,
+                requiresExpectedAgentPID: true
+            )
+            await manager.registerExpectedAgentPID(getpid(), for: piBridgeClientName, runID: liveRunID)
+            let applied = await manager.debugApplyPendingPolicy(
+                clientName: piBridgeClientName,
+                connectionID: connectionID,
+                clientPid: Int(getpid()),
+                bootstrapClientName: "repoprompt_ce_cli_debug",
+                sessionKey: sessionKey,
+                pidGateTimeout: 0.25,
+                requireRunRouting: false
+            )
+            XCTAssertEqual(applied.outcome, "applied")
+            await manager.clearExpectedAgentPID(getpid(), for: piBridgeClientName, runID: liveRunID)
+
+            await manager.installClientConnectionPolicy(
+                for: piClientName,
+                windowID: pendingWindowID,
+                restrictedTools: AgentModeMCPToolPolicy.restrictedTools,
+                oneShot: true,
+                reason: "Unrelated real pi pending policy",
+                ttl: 10,
+                runID: pendingRunID,
+                additionalTools: nil,
+                purpose: .agentModeRun,
+                requiresExpectedAgentPID: true
+            )
+
+            let readiness = await manager.debugBootstrapPolicyAdmissionStatus(
+                bootstrapClientName: piBridgeClientName,
+                connectionID: bootstrapConnectionID,
+                sessionKey: sessionKey,
+                clientPid: Int(getpid()),
+                isReplacementForSession: true,
+                timeout: 0.01
+            )
+            XCTAssertEqual(readiness, "notRequired")
+
+            let initializeFallback = await manager.debugApplyPendingPolicy(
+                clientName: piBridgeClientName,
+                connectionID: helperConnectionID,
+                clientPid: Int(getpid()),
+                bootstrapClientName: piBridgeClientName,
+                sessionKey: sessionKey,
+                pidGateTimeout: 0.01,
+                requireRunRouting: false
+            )
+            XCTAssertEqual(initializeFallback.outcome, "fallback")
+            let mappedRunID = await manager.runIDForConnection(helperConnectionID)
+            XCTAssertEqual(mappedRunID, liveRunID)
+
+            await manager.clearClientConnectionPolicy(for: piBridgeClientName, windowID: liveWindowID, runID: liveRunID)
+            await manager.clearClientConnectionPolicy(for: piClientName, windowID: pendingWindowID, runID: pendingRunID)
+            await manager.removeConnection(connectionID)
+            await manager.removeConnection(bootstrapConnectionID)
+            await manager.removeConnection(helperConnectionID)
+            await manager.cleanupRunRoutingState(for: liveRunID, windowID: liveWindowID)
+            await manager.cleanupRunRoutingState(for: pendingRunID, windowID: pendingWindowID)
+        #else
+            throw XCTSkip("Bootstrap admission diagnostics require DEBUG helpers.")
+        #endif
+    }
+
+    func testManagedPiBridgeUsesExpectedPIDParentAffinityInsteadOfWaitingOnUnregisteredChildPolicy() async throws {
+        #if DEBUG
+            let piBridgeClientName = "pi-schema"
+            let piClientName = "pi"
+            let parentRunID = UUID()
+            let pendingChildRunID = UUID()
+            let parentConnectionID = UUID()
+            let helperConnectionID = UUID()
+            let parentWindowID = 61013
+            let childWindowID = 61014
+            await manager.installClientConnectionPolicy(
+                for: piClientName,
+                windowID: parentWindowID,
+                restrictedTools: AgentModeMCPToolPolicy.restrictedTools,
+                oneShot: true,
+                reason: "Managed pi parent route",
+                ttl: 10,
+                runID: parentRunID,
+                additionalTools: nil,
+                purpose: .agentModeRun,
+                requiresExpectedAgentPID: true
+            )
+            await manager.registerExpectedAgentPID(getpid(), for: piClientName, runID: parentRunID)
+            let parentApplied = await manager.debugApplyPendingPolicy(
+                clientName: piBridgeClientName,
+                connectionID: parentConnectionID,
+                clientPid: Int(getpid()),
+                bootstrapClientName: piBridgeClientName,
+                pidGateTimeout: 0.25,
+                requireRunRouting: false
+            )
+            XCTAssertEqual(parentApplied.outcome, "applied")
+            XCTAssertEqual(parentApplied.runID, parentRunID)
+
+            await manager.installClientConnectionPolicy(
+                for: piClientName,
+                windowID: childWindowID,
+                restrictedTools: AgentModeMCPToolPolicy.restrictedTools,
+                oneShot: true,
+                reason: "Pending child pi route without registered PID yet",
+                ttl: 10,
+                runID: pendingChildRunID,
+                additionalTools: nil,
+                purpose: .agentModeRun,
+                requiresExpectedAgentPID: true
+            )
+
+            let helperResult = await manager.debugApplyPendingPolicy(
+                clientName: piBridgeClientName,
+                connectionID: helperConnectionID,
+                clientPid: Int(getpid()),
+                bootstrapClientName: piBridgeClientName,
+                sessionKey: "parent-helper-\(UUID().uuidString)",
+                pidGateTimeout: 0.01,
+                requireRunRouting: false
+            )
+            XCTAssertEqual(helperResult.outcome, "fallback")
+            let mappedRunID = await manager.runIDForConnection(helperConnectionID)
+            XCTAssertEqual(mappedRunID, parentRunID)
+            let pending = await manager.debugPendingPolicySnapshot(for: piClientName)
+            XCTAssertTrue(pending.contains { $0.runID == pendingChildRunID })
+
+            await manager.clearExpectedAgentPID(getpid(), for: piClientName, runID: parentRunID)
+            await manager.clearClientConnectionPolicy(for: piClientName, windowID: parentWindowID, runID: parentRunID)
+            await manager.clearClientConnectionPolicy(for: piClientName, windowID: childWindowID, runID: pendingChildRunID)
+            await manager.removeConnection(parentConnectionID)
+            await manager.removeConnection(helperConnectionID)
+            await manager.cleanupRunRoutingState(for: parentRunID, windowID: parentWindowID)
+            await manager.cleanupRunRoutingState(for: pendingChildRunID, windowID: childWindowID)
+        #else
+            throw XCTSkip("Pi managed bridge admission diagnostics require DEBUG helpers.")
+        #endif
+    }
+
+    func testManagedPiBridgeDoesNotFallbackOverReservedConsumablePolicy() async throws {
+        #if DEBUG
+            let piBridgeClientName = "pi-schema"
+            let piClientName = "pi"
+            let parentRunID = UUID()
+            let childRunID = UUID()
+            let parentConnectionID = UUID()
+            let firstChildConnectionID = UUID()
+            let competingConnectionID = UUID()
+            let parentWindowID = 61015
+            let childWindowID = 61016
+            let parentSessionKey = "pi-bridge-reserved-parent-\(UUID().uuidString)"
+            await manager.installClientConnectionPolicy(
+                for: piClientName,
+                windowID: parentWindowID,
+                restrictedTools: AgentModeMCPToolPolicy.restrictedTools,
+                oneShot: true,
+                reason: "Managed pi parent route for reservation race",
+                ttl: 10,
+                runID: parentRunID,
+                additionalTools: nil,
+                purpose: .agentModeRun,
+                requiresExpectedAgentPID: true
+            )
+            await manager.registerExpectedAgentPID(getpid(), for: piClientName, runID: parentRunID)
+            let parentApplied = await manager.debugApplyPendingPolicy(
+                clientName: piBridgeClientName,
+                connectionID: parentConnectionID,
+                clientPid: Int(getpid()),
+                bootstrapClientName: piBridgeClientName,
+                sessionKey: parentSessionKey,
+                pidGateTimeout: 0.25,
+                requireRunRouting: false
+            )
+            XCTAssertEqual(parentApplied.outcome, "applied")
+            XCTAssertEqual(parentApplied.runID, parentRunID)
+
+            await manager.installClientConnectionPolicy(
+                for: piClientName,
+                windowID: childWindowID,
+                restrictedTools: AgentModeMCPToolPolicy.restrictedTools,
+                oneShot: true,
+                reason: "Reserved child pi route",
+                ttl: 10,
+                runID: childRunID,
+                additionalTools: nil,
+                purpose: .agentModeRun,
+                requiresExpectedAgentPID: true
+            )
+            await manager.registerExpectedAgentPID(getpid(), for: piClientName, runID: childRunID)
+            await manager.debugSuspendNextPendingPolicyRouteInstallation()
+
+            let firstApplication = Task {
+                await manager.debugApplyPendingPolicy(
+                    clientName: piBridgeClientName,
+                    connectionID: firstChildConnectionID,
+                    clientPid: Int(getpid()),
+                    bootstrapClientName: piBridgeClientName,
+                    pidGateTimeout: 0.25,
+                    requireRunRouting: true
+                )
+            }
+
+            let suspended = await waitUntil {
+                await self.manager.debugIsPendingPolicyRouteInstallationSuspended()
+            }
+            XCTAssertTrue(suspended)
+
+            let competingResult = await manager.debugApplyPendingPolicy(
+                clientName: piBridgeClientName,
+                connectionID: competingConnectionID,
+                clientPid: Int(getpid()),
+                bootstrapClientName: piBridgeClientName,
+                sessionKey: parentSessionKey,
+                pidGateTimeout: 0.01,
+                requireRunRouting: false
+            )
+            XCTAssertEqual(competingResult.outcome, "rejected:policy_reserved")
+            let competingRunID = await manager.runIDForConnection(competingConnectionID)
+            XCTAssertNil(competingRunID)
+
+            await manager.debugResumePendingPolicyRouteInstallation()
+            _ = await firstApplication.value
+            await manager.clearExpectedAgentPID(getpid(), for: piClientName, runID: parentRunID)
+            await manager.clearExpectedAgentPID(getpid(), for: piClientName, runID: childRunID)
+            await manager.clearClientConnectionPolicy(for: piClientName, windowID: parentWindowID, runID: parentRunID)
+            await manager.clearClientConnectionPolicy(for: piClientName, windowID: childWindowID, runID: childRunID)
+            await manager.removeConnection(parentConnectionID)
+            await manager.removeConnection(firstChildConnectionID)
+            await manager.removeConnection(competingConnectionID)
+            await manager.cleanupRunRoutingState(for: parentRunID, windowID: parentWindowID)
+            await manager.cleanupRunRoutingState(for: childRunID, windowID: childWindowID)
+        #else
+            throw XCTSkip("Pi managed bridge reservation diagnostics require DEBUG helpers.")
+        #endif
+    }
+
     func testSessionTokenAlreadyBoundToLiveRunCannotConsumeAnotherRunPolicy() async throws {
         #if DEBUG
             let firstRunID = UUID()

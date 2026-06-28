@@ -6426,8 +6426,13 @@ actor ServerNetworkManager {
         clientPid: Int,
         isReplacementForSession: Bool
     ) -> AgentPolicyAdmissionReadiness? {
-        if oldestPIDGatedPendingPolicyEntry(for: clientName, matching: clientPid) != nil {
+        let hasConsumablePIDGatedPolicy = oldestPIDGatedPendingPolicyEntry(for: clientName, matching: clientPid) != nil
+        if hasConsumablePIDGatedPolicy {
             return .ready
+        }
+
+        if MCPClientIdentity.isManagedPiBridgeExecutionClient(clientName) {
+            return .notRequired
         }
 
         let descendantStatus = isExpectedAgentDescendant(clientName: clientName, clientPid: clientPid)
@@ -6439,11 +6444,6 @@ actor ServerNetworkManager {
         }
 
         let hasReservedPIDGatedPolicy = hasPIDGatedPendingPolicy(for: clientName)
-        if MCPClientIdentity.isManagedPiBridgeExecutionClient(clientName),
-           !hasReservedPIDGatedPolicy
-        {
-            return .notRequired
-        }
         switch descendantStatus {
         case true:
             return hasReservedPIDGatedPolicy ? nil : .ready
@@ -9302,16 +9302,7 @@ actor ServerNetworkManager {
         requireRunRouting: Bool = true,
         expectedLifecycleGeneration: UInt64? = nil
     ) async -> PendingPolicyApplicationOutcome {
-        if oldestPendingPolicyEntry(for: clientName, where: {
-            $0.reservationConnectionID == nil && canConsumePendingPolicy($0, clientName: clientName, clientPid: clientPid)
-        }) == nil,
-            let pidGatedEntry = oldestPendingPolicyEntry(for: clientName, where: { $0.requiresExpectedAgentPID }),
-            pidGatedPolicyBelongsToDifferentPID(pidGatedEntry.policy, clientName: clientName, clientPid: clientPid)
-        {
-            await applyRoutingFallback(clientName: clientName, connectionID: connectionID, clientPid: clientPid)
-            return .fallback
-        }
-
+        let sessionKey = connections[connectionID]?.capabilityToken ?? capabilityTokenByConnection[connectionID]
         if let reservedEntry = oldestReservedPendingPolicyEntry(for: clientName),
            canConsumePendingPolicy(reservedEntry.policy, clientName: clientName, clientPid: clientPid)
         {
@@ -9319,6 +9310,24 @@ actor ServerNetworkManager {
                 "pending policy route installation already reserved client=\(clientName) connection=\(connectionID) reservedConnection=\(reservedEntry.policy.reservationConnectionID?.uuidString ?? "nil") runID=\(reservedEntry.policy.runID?.uuidString ?? "nil")"
             )
             return .rejected(runID: reservedEntry.policy.runID, reason: "policy_reserved")
+        }
+
+        if oldestPendingPolicyEntry(for: clientName, where: {
+            $0.reservationConnectionID == nil && canConsumePendingPolicy($0, clientName: clientName, clientPid: clientPid)
+        }) == nil {
+            if let pidGatedEntry = oldestPendingPolicyEntry(for: clientName, where: { $0.requiresExpectedAgentPID }),
+               pidGatedPolicyBelongsToDifferentPID(pidGatedEntry.policy, clientName: clientName, clientPid: clientPid)
+            {
+                await applyRoutingFallback(clientName: clientName, connectionID: connectionID, clientPid: clientPid)
+                return .fallback
+            }
+            if MCPClientIdentity.isManagedPiBridgeExecutionClient(clientName),
+               preferredLiveRunAffinity(for: clientName, sessionKey: sessionKey) != nil
+               || preferredExpectedPIDRunAffinity(for: clientName, clientPid: clientPid) != nil
+            {
+                await applyRoutingFallback(clientName: clientName, connectionID: connectionID, clientPid: clientPid)
+                return .fallback
+            }
         }
 
         if let reservedEntry = oldestPendingPolicyEntry(for: clientName, where: {
@@ -9473,7 +9482,6 @@ actor ServerNetworkManager {
             await applyRoutingFallback(clientName: clientName, connectionID: connectionID, clientPid: clientPid)
             return .fallback
         }
-        let sessionKey = connections[connectionID]?.capabilityToken ?? capabilityTokenByConnection[connectionID]
         let liveAffinity = preferredLiveRunAffinity(for: clientName, sessionKey: sessionKey)
         var queue = pendingPoliciesByClient[matchedQueueEntry.key] ?? []
         mcpRoutingLog("Applying FIFO policy client=\(clientName) matchedKey=\(matchedQueueEntry.key) connectionID=\(connectionID) queueLength=\(queue.count) policyWindow=\(matchedQueueEntry.policy.windowID)")
