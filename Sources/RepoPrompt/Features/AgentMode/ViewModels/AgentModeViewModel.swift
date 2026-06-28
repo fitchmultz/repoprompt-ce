@@ -37,6 +37,7 @@ final class AgentModeViewModel: ObservableObject {
     private static let taggedFileContentsMaxFiles = 5
     private static let slashSkillNameScalars = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
     private static let slashSkillSuggestionLimit = 6
+    private static let piSlashCommandDiscoveryCacheTTL: TimeInterval = 10
 
     typealias CodexControllerFactory = (
         _ runID: UUID,
@@ -586,6 +587,8 @@ final class AgentModeViewModel: ObservableObject {
     private var cursorModelsSubscriptionTask: Task<Void, Never>?
     private var piModelsSubscriptionTask: Task<Void, Never>?
     private var piModelsSubscribedWorkspacePath: String?
+    private var piSlashCommandDiscoveryCache: [String: (cachedAt: Date, commands: [PiRPCClient.SlashCommand])] = [:]
+    private var piSlashCommandDiscoveryTasks: [String: Task<[PiRPCClient.SlashCommand], Never>] = [:]
     private var skillCatalogDeltaObservationTask: Task<Void, Never>?
     private var skillCatalogRefreshDebounceTask: Task<Void, Never>?
     private var sessionListCacheTask: Task<Void, Never>?
@@ -1827,7 +1830,7 @@ final class AgentModeViewModel: ObservableObject {
             if let activeSession {
                 return activeSession
             }
-            guard selectedAgent == .codexExec,
+            guard [AgentProviderKind.codexExec, .pi].contains(selectedAgent),
                   let tabID = currentTabID
             else {
                 return nil
@@ -1842,13 +1845,11 @@ final class AgentModeViewModel: ObservableObject {
         let skillQuery = isExplicitSkillNamespaceQuery
             ? String(query.dropFirst("skill:".count))
             : query
-        let nativeSuggestions = isExplicitSkillNamespaceQuery ? [] : (slashSession.map {
-            codexCoordinator.nativeSlashCommandSuggestions(
-                for: $0,
-                query: query,
-                limit: Self.slashSkillSuggestionLimit
-            )
-        } ?? [])
+        let nativeSuggestions = isExplicitSkillNamespaceQuery ? [] : await nativeSlashCommandSuggestions(
+            for: slashSession,
+            query: query,
+            limit: Self.slashSkillSuggestionLimit
+        )
         let nativeNames: Set<String> = slashSession?.selectedAgent == .codexExec
             ? Set(CodexAgentModeCoordinator.NativeSlashCommand.allCases.map { $0.rawValue.lowercased() })
             : []
@@ -1874,6 +1875,80 @@ final class AgentModeViewModel: ObservableObject {
                 )
             }
         return nativeSuggestions + skillSuggestions
+    }
+
+    private func nativeSlashCommandSuggestions(
+        for session: TabSession?,
+        query: String,
+        limit: Int
+    ) async -> [MentionSuggestion] {
+        guard let session else { return [] }
+        switch session.selectedAgent {
+        case .codexExec:
+            return codexCoordinator.nativeSlashCommandSuggestions(for: session, query: query, limit: limit)
+        case .pi:
+            let commands = await piSlashCommands(for: session)
+            return Self.piSlashCommandSuggestions(from: commands, query: query, limit: limit)
+        default:
+            return []
+        }
+    }
+
+    private func piSlashCommands(for session: TabSession) async -> [PiRPCClient.SlashCommand] {
+        if let controller = session.piController {
+            return await (try? controller.getCommands()) ?? []
+        }
+        guard !session.runState.isActive else { return [] }
+
+        let workspacePath = piWorkspacePath(for: session)
+        let launchPolicy = PiManagedRunExtensionDiscoverySettings.launchPolicy()
+        let cacheKey = "\(workspacePath ?? "")\n\(launchPolicy.allowsDiscoveredExtensions)"
+        if let cached = piSlashCommandDiscoveryCache[cacheKey],
+           Date().timeIntervalSince(cached.cachedAt) < Self.piSlashCommandDiscoveryCacheTTL
+        {
+            return cached.commands
+        }
+        if let task = piSlashCommandDiscoveryTasks[cacheKey] {
+            return await task.value
+        }
+
+        let task = Task<[PiRPCClient.SlashCommand], Never> {
+            let controller = PiNativeSessionController(
+                workspacePath: workspacePath,
+                options: .init(
+                    requestTimeout: 5,
+                    launchArguments: PiIntegrationConfiguration.managedRPCPromptOnlyLaunchArguments(launchPolicy: launchPolicy)
+                )
+            )
+            let commands = await (try? controller.getCommands()) ?? []
+            await controller.shutdown()
+            return commands
+        }
+        piSlashCommandDiscoveryTasks[cacheKey] = task
+        let commands = await task.value
+        piSlashCommandDiscoveryTasks[cacheKey] = nil
+        piSlashCommandDiscoveryCache[cacheKey] = (Date(), commands)
+        return commands
+    }
+
+    static func piSlashCommandSuggestions(
+        from commands: [PiRPCClient.SlashCommand],
+        query: String,
+        limit: Int
+    ) -> [MentionSuggestion] {
+        let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return commands
+            .filter { $0.source?.lowercased() != "skill" }
+            .filter { normalizedQuery.isEmpty || $0.name.lowercased().hasPrefix(normalizedQuery) }
+            .prefix(limit)
+            .map { command in
+                MentionSuggestion(
+                    displayName: "/\(command.name)",
+                    relativePath: command.name,
+                    kind: .skill,
+                    subtitle: command.description
+                )
+            }
     }
 
     func effectiveWorkspacePath(for session: TabSession) throws -> String? {

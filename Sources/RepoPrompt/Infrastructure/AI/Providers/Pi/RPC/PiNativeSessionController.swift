@@ -208,6 +208,10 @@ actor PiNativeSessionController {
         currentRef
     }
 
+    func getCommands() async throws -> [PiRPCClient.SlashCommand] {
+        try await client.getCommands()
+    }
+
     func setExpectedAgentPIDRegistration(clientName: String?, runID: UUID?) async {
         guard let clientName, let runID else {
             await client.clearExpectedAgentPIDRegistration()

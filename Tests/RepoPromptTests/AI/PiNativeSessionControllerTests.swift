@@ -177,6 +177,57 @@ final class PiNativeSessionControllerTests: XCTestCase {
         XCTAssertEqual(commands.dropFirst().first?.level, "low")
     }
 
+    func testGetCommandsReturnsPiSlashCommands() async throws {
+        let directory = try makeTemporaryDirectory()
+        let scriptURL = try makeFakePiControllerScript(recordURL: directory.appendingPathComponent("commands.jsonl"))
+        let client = PiRPCClient(config: .init(
+            commandName: scriptURL.path,
+            additionalPathHints: [],
+            requestTimeout: 2,
+            launchArguments: [],
+            requiresSupportedVersionCheck: false
+        ))
+        let controller = PiNativeSessionController(client: client, options: .init(requestTimeout: 2))
+        addTeardownBlock { await controller.shutdown() }
+
+        let commands = try await controller.getCommands()
+
+        XCTAssertEqual(commands.map(\.name), ["create-goal", "goal", "skill:root-cause-triage"])
+        XCTAssertEqual(commands.first?.source, "prompt")
+        XCTAssertEqual(commands.first?.description, "Convert a plain task into a strict evidence-backed goal")
+    }
+
+    @MainActor
+    func testPiSlashCommandSuggestionsIncludePromptCommandsAndExcludeSkills() {
+        let suggestions = AgentModeViewModel.piSlashCommandSuggestions(
+            from: [
+                PiRPCClient.SlashCommand(
+                    name: "create-goal",
+                    description: "Convert a plain task into a strict evidence-based pi-codex goal and create it",
+                    source: "prompt",
+                    raw: [:]
+                ),
+                PiRPCClient.SlashCommand(
+                    name: "goal",
+                    description: "Show or manage the current Codex-style goal.",
+                    source: "extension",
+                    raw: [:]
+                ),
+                PiRPCClient.SlashCommand(
+                    name: "skill:root-cause-triage",
+                    description: "Debug bugs",
+                    source: "skill",
+                    raw: [:]
+                )
+            ],
+            query: "create",
+            limit: 6
+        )
+
+        XCTAssertEqual(suggestions.map(\.displayName), ["/create-goal"])
+        XCTAssertEqual(suggestions.first?.subtitle, "Convert a plain task into a strict evidence-based pi-codex goal and create it")
+    }
+
     func testStartRefreshesModelRegistryInWorkspaceScopeNotGlobal() async throws {
         AgentPiModelRegistry.shared.test_reset()
         let directory = try makeTemporaryDirectory()
@@ -2378,6 +2429,18 @@ final class PiNativeSessionControllerTests: XCTestCase {
                         {"provider": "zai", "id": "glm-5.2", "displayName": "GLM 5.2", "description": "Strong GLM", "reasoning": True},
                         {"provider": "anthropic", "id": "claude-opus-4-6", "displayName": "Claude Opus 4.6"},
                         {"provider": "deepseek", "id": "deepseek-v4-flash", "displayName": "DeepSeek V4 Flash", "reasoning": True}
+                    ]}
+                })
+            elif command == "get_commands":
+                emit({
+                    "type": "response",
+                    "id": request_id,
+                    "command": "get_commands",
+                    "success": True,
+                    "data": {"commands": [
+                        {"name": "create-goal", "description": "Convert a plain task into a strict evidence-backed goal", "source": "prompt"},
+                        {"name": "goal", "description": "Track a long-running objective", "source": "extension"},
+                        {"name": "skill:root-cause-triage", "description": "Debug bugs", "source": "skill"}
                     ]}
                 })
             elif command == "prompt":

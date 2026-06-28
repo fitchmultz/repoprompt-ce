@@ -17,6 +17,17 @@ Stage only the intended changes, then use `commit` mode before creating a commit
 
 Local `docs/investigations/*.md` reports are intentionally left unignored so RepoPrompt tooling can read them. Do not stage or merge these local investigation artifacts unless intentionally requested.
 
+## No guessing policy
+
+Do not guess. Before changing code, docs, tests, config, scripts, or workflows, prove the relevant contract from source-of-truth evidence.
+
+- If behavior depends on an external tool, CLI, SDK, framework, app, runtime, protocol, generated surface, or documented workflow, read the installed/current docs, help, types, or source before editing.
+- If a UI screenshot, user report, failing test, or symptom suggests a cause, treat it as evidence to investigate, not proof of the implementation path.
+- If the source of truth is unknown, find it first. If it cannot be found, stop and report that instead of inventing behavior.
+- Before editing a shared path, inspect the relevant callers and data flow. Fix the proven root cause, not the nearest symptom.
+- Do not add speculative fallbacks, background initialization, lifecycle changes, compatibility shims, or new sources of truth without evidence they are required.
+- In final status, cite the docs/source/tests/runtime evidence that justified the change. If evidence is incomplete, say what remains unverified.
+
 ## Run
 
 ```bash

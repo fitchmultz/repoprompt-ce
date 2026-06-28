@@ -293,6 +293,19 @@ actor PiRPCClient {
         }
     }
 
+    func getCommands() async throws -> [SlashCommand] {
+        let response = try await sendCommand(["type": .string("get_commands")])
+        guard let data = response["data"]?.objectValue,
+              let commands = data["commands"]?.arrayValue
+        else {
+            throw ClientError.invalidResponse("pi get_commands response did not include a commands array.")
+        }
+        return commands.compactMap { value in
+            guard let object = value.objectValue else { return nil }
+            return Self.parseSlashCommand(object)
+        }
+    }
+
     @discardableResult
     func prompt(
         _ message: String,
@@ -832,6 +845,18 @@ actor PiRPCClient {
             id: id,
             displayName: displayName,
             description: object["description"]?.stringValue,
+            raw: object
+        )
+    }
+
+    private static func parseSlashCommand(_ object: [String: PiJSONValue]) -> SlashCommand? {
+        guard let name = object["name"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !name.isEmpty
+        else { return nil }
+        return SlashCommand(
+            name: name,
+            description: object["description"]?.stringValue,
+            source: object["source"]?.stringValue,
             raw: object
         )
     }

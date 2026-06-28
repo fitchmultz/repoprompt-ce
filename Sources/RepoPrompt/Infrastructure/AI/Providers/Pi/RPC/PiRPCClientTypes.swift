@@ -60,6 +60,13 @@ extension PiRPCClient {
         var raw: [String: PiJSONValue]
     }
 
+    struct SlashCommand: Hashable {
+        var name: String
+        var description: String?
+        var source: String?
+        var raw: [String: PiJSONValue]
+    }
+
     struct ImageContent: Equatable, Hashable {
         var data: String
         var mimeType: String
