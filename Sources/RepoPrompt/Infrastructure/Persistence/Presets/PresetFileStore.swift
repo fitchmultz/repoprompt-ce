@@ -3,12 +3,15 @@ import Foundation
 /// File-backed store for copy/chat/model presets.
 ///
 /// Primary location:
-/// `~/Library/Application Support/RepoPrompt CE/Presets/workflowPresets.json`
-/// `~/Library/Application Support/RepoPrompt CE/Presets/modelPresets.json`
+/// `~/Library/Application Support/<app namespace>/Presets/workflowPresets.json`
+/// `~/Library/Application Support/<app namespace>/Presets/modelPresets.json`
 final class PresetFileStore {
     static let shared = PresetFileStore()
 
-    static let appSupportDirectoryName = "RepoPrompt CE"
+    static var appSupportDirectoryName: String {
+        MCPFilesystemConstants.identity.applicationSupportDirectoryName
+    }
+
     static let presetsDirectoryName = "Presets"
     static let workflowFilename = "workflowPresets.json"
     static let modelFilename = "modelPresets.json"
@@ -47,10 +50,7 @@ final class PresetFileStore {
     }
 
     static func presetsDirectoryURL(fileManager: FileManager = .default) -> URL {
-        let supportDirectory = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)
-            .first!
-        return supportDirectory
-            .appendingPathComponent(appSupportDirectoryName, isDirectory: true)
+        MCPFilesystemConstants.identity.applicationSupportRootURL(fileManager: fileManager)
             .appendingPathComponent(presetsDirectoryName, isDirectory: true)
     }
 

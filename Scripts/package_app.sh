@@ -71,6 +71,7 @@ DISPLAY_NAME_OVERRIDE="${DISPLAY_NAME:-}"
 BUNDLE_ID_OVERRIDE="${BUNDLE_ID:-}"
 SIGNING_TEAM_ID_OVERRIDE="${SIGNING_TEAM_ID:-}"
 URL_SCHEME_OVERRIDE="${REPOPROMPT_URL_SCHEME:-${URL_SCHEME:-}}"
+APPLICATION_SUPPORT_DIRECTORY_NAME_OVERRIDE="${REPOPROMPT_APPLICATION_SUPPORT_DIRECTORY_NAME:-${APP_SUPPORT_DIRECTORY_NAME:-}}"
 # Invalidate public-release manifests before metadata parsing, checks, or builds
 # so failed non-public packaging cannot leave stale release metadata behind.
 remove_stale_artifact_manifests
@@ -103,7 +104,9 @@ else
     URL_SCHEME="$(url_scheme_from_bundle_id "$BUNDLE_ID")"
 fi
 
+APPLICATION_SUPPORT_DIRECTORY_NAME="${APPLICATION_SUPPORT_DIRECTORY_NAME_OVERRIDE:-$DISPLAY_NAME}"
 TRIMMED_DISPLAY_NAME="$(sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' <<< "$DISPLAY_NAME")"
+TRIMMED_APPLICATION_SUPPORT_DIRECTORY_NAME="$(sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' <<< "$APPLICATION_SUPPORT_DIRECTORY_NAME")"
 NORMALIZED_BUNDLE_ID="$(tr '[:upper:]' '[:lower:]' <<< "$BUNDLE_ID")"
 NORMALIZED_BASE_BUNDLE_ID="$(tr '[:upper:]' '[:lower:]' <<< "$BASE_BUNDLE_ID")"
 NORMALIZED_URL_SCHEME="$(tr '[:upper:]' '[:lower:]' <<< "$URL_SCHEME")"
@@ -112,6 +115,7 @@ NORMALIZED_BASE_DISPLAY_NAME="$(tr '[:upper:]' '[:lower:]' <<< "$BASE_DISPLAY_NA
 
 [[ "$APP_NAME" =~ ^[A-Za-z0-9._\ -]+$ ]] || fail "APP_NAME contains unsupported characters: $APP_NAME"
 [[ -n "$DISPLAY_NAME" && "$DISPLAY_NAME" == "$TRIMMED_DISPLAY_NAME" && "$DISPLAY_NAME" != */* ]] || fail "DISPLAY_NAME must be non-empty, trimmed, and must not contain '/'."
+[[ -n "$APPLICATION_SUPPORT_DIRECTORY_NAME" && "$APPLICATION_SUPPORT_DIRECTORY_NAME" == "$TRIMMED_APPLICATION_SUPPORT_DIRECTORY_NAME" && "$APPLICATION_SUPPORT_DIRECTORY_NAME" != */* ]] || fail "REPOPROMPT_APPLICATION_SUPPORT_DIRECTORY_NAME must be non-empty, trimmed, and must not contain '/'."
 [[ "$BUNDLE_ID" =~ ^[A-Za-z0-9]+([.-][A-Za-z0-9]+)*$ ]] || fail "BUNDLE_ID is not a valid bundle identifier: $BUNDLE_ID"
 [[ "$SIGNING_TEAM_ID" =~ ^[A-Z0-9]+$ ]] || fail "SIGNING_TEAM_ID must contain only uppercase letters and digits: $SIGNING_TEAM_ID"
 [[ "$URL_SCHEME" =~ ^[A-Za-z][A-Za-z0-9+.-]*$ ]] || fail "URL scheme is invalid: $URL_SCHEME"
@@ -307,6 +311,7 @@ run env \
     DISPLAY_NAME="$DISPLAY_NAME" \
     BUNDLE_ID="$BUNDLE_ID" \
     URL_SCHEME="$URL_SCHEME" \
+    APPLICATION_SUPPORT_DIRECTORY_NAME="$APPLICATION_SUPPORT_DIRECTORY_NAME" \
     MARKETING_VERSION="$MARKETING_VERSION" \
     BUILD_NUMBER="$BUILD_NUMBER" \
     SIGNING_TEAM_ID="$SIGNING_TEAM_ID" \
@@ -324,6 +329,7 @@ replacements = {
     "__DISPLAY_NAME__": os.environ["DISPLAY_NAME"],
     "__BUNDLE_ID__": os.environ["BUNDLE_ID"],
     "__URL_SCHEME__": os.environ["URL_SCHEME"],
+    "__APPLICATION_SUPPORT_DIRECTORY_NAME__": os.environ["APPLICATION_SUPPORT_DIRECTORY_NAME"],
     "__MARKETING_VERSION__": os.environ["MARKETING_VERSION"],
     "__BUILD_NUMBER__": os.environ["BUILD_NUMBER"],
     "__SIGNING_TEAM_ID__": os.environ["SIGNING_TEAM_ID"],

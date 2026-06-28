@@ -292,6 +292,7 @@ allowed_tracked_docs=(
   "docs/architecture/pi-integration.md"
   "docs/architecture/provider-plugins.md"
   "docs/architecture/source-layout.md"
+  "docs/architecture/local-production-isolation.md"
   "docs/open-source-readiness.md"
   "docs/releasing.md"
   "docs/worktrees.md"

@@ -15,118 +15,200 @@ public struct MCPFilesystemIdentity: Equatable, Sendable {
         case release
     }
 
+    public struct FilesystemNamespace: Equatable, Sendable {
+        public static let infoPlistKey = "RepoPromptApplicationSupportDirectoryName"
+        public static let canonical = FilesystemNamespace(applicationSupportDirectoryName: "RepoPrompt CE")
+
+        public let applicationSupportDirectoryName: String
+
+        public init(applicationSupportDirectoryName: String) {
+            let trimmed = applicationSupportDirectoryName.trimmingCharacters(in: .whitespacesAndNewlines)
+            self.applicationSupportDirectoryName = trimmed.isEmpty || trimmed.contains("/") ? Self.canonical.applicationSupportDirectoryName : trimmed
+        }
+
+        public static func fromInfoPlist(bundle: Bundle = .main) -> Self {
+            if let value = bundle.object(forInfoDictionaryKey: infoPlistKey) as? String {
+                return FilesystemNamespace(applicationSupportDirectoryName: value)
+            }
+            if let value = containingAppInfoValue(forKey: infoPlistKey) {
+                return FilesystemNamespace(applicationSupportDirectoryName: value)
+            }
+            return .canonical
+        }
+
+        var isCanonical: Bool {
+            applicationSupportDirectoryName == Self.canonical.applicationSupportDirectoryName
+        }
+
+        var slug: String {
+            var output = ""
+            var lastWasDash = false
+            for scalar in applicationSupportDirectoryName.lowercased().unicodeScalars {
+                switch scalar.value {
+                case 48 ... 57, 97 ... 122:
+                    output.unicodeScalars.append(scalar)
+                    lastWasDash = false
+                default:
+                    if !lastWasDash {
+                        output.append("-")
+                        lastWasDash = true
+                    }
+                }
+            }
+            let trimmed = output.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+            return trimmed.isEmpty ? "repoprompt-ce" : trimmed
+        }
+
+        var underscoreSlug: String {
+            slug.replacingOccurrences(of: "-", with: "_")
+        }
+
+        private static func containingAppInfoValue(forKey key: String) -> String? {
+            let argumentURL = CommandLine.arguments.first.map { URL(fileURLWithPath: $0) }
+            for candidate in [Bundle.main.bundleURL, Bundle.main.executableURL, argumentURL].compactMap(\.self) {
+                if let value = containingAppInfoValue(forKey: key, startingAt: candidate) {
+                    return value
+                }
+            }
+            return nil
+        }
+
+        private static func containingAppInfoValue(forKey key: String, startingAt url: URL) -> String? {
+            var current = url.resolvingSymlinksInPath()
+            for _ in 0 ..< 10 {
+                if current.pathExtension == "app" {
+                    let infoURL = current.appendingPathComponent("Contents/Info.plist", isDirectory: false)
+                    if let dictionary = NSDictionary(contentsOf: infoURL), let value = dictionary[key] as? String {
+                        return value
+                    }
+                }
+                let parent = current.deletingLastPathComponent()
+                if parent.path == current.path { break }
+                current = parent
+            }
+            return nil
+        }
+    }
+
     public static let currentProtocolVersion = 7
 
     public let product: Product
     public let buildFlavor: BuildFlavor
     public let protocolVersion: Int
+    public let filesystemNamespace: FilesystemNamespace
 
     public init(
         product: Product,
         buildFlavor: BuildFlavor,
-        protocolVersion: Int = Self.currentProtocolVersion
+        protocolVersion: Int = Self.currentProtocolVersion,
+        filesystemNamespace: FilesystemNamespace = .canonical
     ) {
         self.product = product
         self.buildFlavor = buildFlavor
         self.protocolVersion = protocolVersion
+        self.filesystemNamespace = filesystemNamespace
     }
 
-    public static func repoPromptCE(_ buildFlavor: BuildFlavor) -> Self {
-        Self(product: .repoPromptCE, buildFlavor: buildFlavor)
+    public static func repoPromptCE(
+        _ buildFlavor: BuildFlavor,
+        filesystemNamespace: FilesystemNamespace = .canonical
+    ) -> Self {
+        Self(product: .repoPromptCE, buildFlavor: buildFlavor, filesystemNamespace: filesystemNamespace)
+    }
+
+    public static func currentRepoPromptCE(_ buildFlavor: BuildFlavor, bundle: Bundle = .main) -> Self {
+        repoPromptCE(buildFlavor, filesystemNamespace: .fromInfoPlist(bundle: bundle))
     }
 
     public var socketDirectoryName: String {
         switch product {
         case .repoPromptCE:
-            "repoprompt-ce-mcp"
+            filesystemNamespace.isCanonical ? "repoprompt-ce-mcp" : "\(filesystemNamespace.slug)-mcp"
         }
     }
 
     public var bootstrapSocketName: String {
         switch (product, buildFlavor) {
         case (.repoPromptCE, .debug):
-            "repoprompt-ce-D-\(protocolVersion).sock"
+            filesystemNamespace.isCanonical ? "repoprompt-ce-D-\(protocolVersion).sock" : "\(filesystemNamespace.slug)-D-\(protocolVersion).sock"
         case (.repoPromptCE, .release):
-            "repoprompt-ce-\(protocolVersion).sock"
+            filesystemNamespace.isCanonical ? "repoprompt-ce-\(protocolVersion).sock" : "\(filesystemNamespace.slug)-\(protocolVersion).sock"
         }
     }
 
     public var externalEventsDirectoryName: String {
         switch (product, buildFlavor) {
         case (.repoPromptCE, .debug):
-            "MCPEvents-CE-D-\(protocolVersion)"
+            filesystemNamespace.isCanonical ? "MCPEvents-CE-D-\(protocolVersion)" : "MCPEvents-\(filesystemNamespace.slug)-D-\(protocolVersion)"
         case (.repoPromptCE, .release):
-            "MCPEvents-CE-\(protocolVersion)"
+            filesystemNamespace.isCanonical ? "MCPEvents-CE-\(protocolVersion)" : "MCPEvents-\(filesystemNamespace.slug)-\(protocolVersion)"
         }
     }
 
     public var applicationSupportDirectoryName: String {
         switch product {
         case .repoPromptCE:
-            "RepoPrompt CE"
+            filesystemNamespace.applicationSupportDirectoryName
         }
     }
 
     public var killSignalsDirectoryName: String {
         switch (product, buildFlavor) {
         case (.repoPromptCE, .debug):
-            "MCPKillSignals-CE-D-\(protocolVersion)"
+            filesystemNamespace.isCanonical ? "MCPKillSignals-CE-D-\(protocolVersion)" : "MCPKillSignals-\(filesystemNamespace.slug)-D-\(protocolVersion)"
         case (.repoPromptCE, .release):
-            "MCPKillSignals-CE-\(protocolVersion)"
+            filesystemNamespace.isCanonical ? "MCPKillSignals-CE-\(protocolVersion)" : "MCPKillSignals-\(filesystemNamespace.slug)-\(protocolVersion)"
         }
     }
 
     public var stableWrapperConfigFileName: String {
         switch buildFlavor {
-        case .debug:
-            "discovery_debug.json"
-        case .release:
-            "discovery.json"
+        case .debug: "discovery_debug.json"
+        case .release: "discovery.json"
         }
     }
 
     public var networkConfigFileName: String {
         switch buildFlavor {
-        case .debug:
-            "mcp-config_debug.json"
-        case .release:
-            "mcp-config.json"
+        case .debug: "mcp-config_debug.json"
+        case .release: "mcp-config.json"
         }
     }
 
     public var routingStateFileName: String {
         switch buildFlavor {
-        case .debug:
-            "mcp-routing_debug.json"
-        case .release:
-            "mcp-routing.json"
+        case .debug: "mcp-routing_debug.json"
+        case .release: "mcp-routing.json"
         }
     }
 
     public var userSpaceCLIFileName: String {
+        if !filesystemNamespace.isCanonical {
+            return buildFlavor == .debug ? "\(filesystemNamespace.underscoreSlug)_cli_debug" : "\(filesystemNamespace.underscoreSlug)_cli"
+        }
         switch buildFlavor {
-        case .debug:
-            "repoprompt_ce_cli_debug"
-        case .release:
-            "repoprompt_ce_cli"
+        case .debug: return "repoprompt_ce_cli_debug"
+        case .release: return "repoprompt_ce_cli"
         }
     }
 
     public var pathCLICommandName: String {
+        if !filesystemNamespace.isCanonical {
+            return buildFlavor == .debug ? "\(filesystemNamespace.slug)-cli-debug" : "\(filesystemNamespace.slug)-cli"
+        }
         switch buildFlavor {
-        case .debug:
-            "rpce-cli-debug"
-        case .release:
-            "rpce-cli"
+        case .debug: return "rpce-cli-debug"
+        case .release: return "rpce-cli"
         }
     }
 
     public var claudeWrapperCommandName: String {
+        if !filesystemNamespace.isCanonical {
+            return buildFlavor == .debug ? "claude-\(filesystemNamespace.slug)-debug" : "claude-\(filesystemNamespace.slug)"
+        }
         switch buildFlavor {
-        case .debug:
-            "claude-rpce-debug"
-        case .release:
-            "claude-rpce"
+        case .debug: return "claude-rpce-debug"
+        case .release: return "claude-rpce"
         }
     }
 

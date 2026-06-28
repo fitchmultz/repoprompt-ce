@@ -20,11 +20,14 @@ enum LocalSigningIdentityRegistryError: Error, Equatable {
 }
 
 enum LocalSigningIdentityRegistry {
-    static let relativePath = "RepoPrompt CE/local-signing-identity-v1.json"
+    static var relativePath: String {
+        "\(MCPFilesystemConstants.identity.applicationSupportDirectoryName)/local-signing-identity-v1.json"
+    }
 
     static func defaultURL(fileManager: FileManager = .default) -> URL? {
-        fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
-            .appendingPathComponent(relativePath)
+        guard !fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).isEmpty else { return nil }
+        return MCPFilesystemConstants.identity.applicationSupportRootURL(fileManager: fileManager)
+            .appendingPathComponent("local-signing-identity-v1.json", isDirectory: false)
     }
 
     static func load(

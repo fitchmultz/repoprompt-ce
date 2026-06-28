@@ -67,18 +67,19 @@ class ContextBuilderPromptStorage: ObservableObject {
     }
 
     private var fileURL: URL {
-        let supportDir = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first!
-
-        let appSupportFolder = supportDir.appendingPathComponent("com.pvncher.repoprompt", isDirectory: true)
+        let appSupportFolder = MCPFilesystemConstants.identity.applicationSupportRootURL()
         try? FileManager.default.createDirectory(
             at: appSupportFolder,
             withIntermediateDirectories: true
         )
 
         return appSupportFolder.appendingPathComponent(filename)
+    }
+
+    private var legacyFileURL: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("com.pvncher.repoprompt", isDirectory: true)
+            .appendingPathComponent(filename)
     }
 
     private init() {
@@ -89,7 +90,9 @@ class ContextBuilderPromptStorage: ObservableObject {
     /// Load prompts from disk
     func loadPrompts() {
         Self.queue.sync {
-            if !FileManager.default.fileExists(atPath: fileURL.path) {
+            let activeURL = fileURL
+            let readURL = FileManager.default.fileExists(atPath: activeURL.path) ? activeURL : legacyFileURL
+            if !FileManager.default.fileExists(atPath: readURL.path) {
                 DispatchQueue.main.async {
                     self.prompts = []
                 }
@@ -97,7 +100,10 @@ class ContextBuilderPromptStorage: ObservableObject {
             }
 
             do {
-                let data = try Data(contentsOf: fileURL)
+                let data = try Data(contentsOf: readURL)
+                if readURL != activeURL, !FileManager.default.fileExists(atPath: activeURL.path) {
+                    try? data.write(to: activeURL, options: .atomic)
+                }
                 let loaded = try JSONDecoder().decode([ContextBuilderPrompt].self, from: data)
                 DispatchQueue.main.async {
                     self.prompts = loaded

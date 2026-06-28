@@ -11,9 +11,12 @@ protocol GlobalSettingsFileStoring {
 /// File-backed store for the versioned global settings document.
 ///
 /// Primary location:
-/// `~/Library/Application Support/RepoPrompt CE/Settings/globalSettings.json`
+/// `~/Library/Application Support/<app namespace>/Settings/globalSettings.json`
 final class GlobalSettingsFileStore: GlobalSettingsFileStoring {
-    static let appSupportDirectoryName = "RepoPrompt CE"
+    static var appSupportDirectoryName: String {
+        MCPFilesystemConstants.identity.applicationSupportDirectoryName
+    }
+
     static let settingsDirectoryName = "Settings"
     static let filename = "globalSettings.json"
 
@@ -39,10 +42,7 @@ final class GlobalSettingsFileStore: GlobalSettingsFileStoring {
     }
 
     static func settingsDirectoryURL(fileManager: FileManager = .default) -> URL {
-        let supportDirectory = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)
-            .first!
-        return supportDirectory
-            .appendingPathComponent(appSupportDirectoryName, isDirectory: true)
+        MCPFilesystemConstants.identity.applicationSupportRootURL(fileManager: fileManager)
             .appendingPathComponent(settingsDirectoryName, isDirectory: true)
     }
 

@@ -8,7 +8,7 @@ ARTIFACT_MANIFEST="${3:-}"
 EXPECTED_ARCHITECTURES="${REPOPROMPT_EXPECTED_ARCHITECTURES:-arm64,x86_64}"
 ROUNDTRIP_TIMEOUT="${REPOPROMPT_PACKAGED_SMOKE_TIMEOUT:-60}"
 SOCKET_OWNER_HELPER="$SCRIPT_DIR/verify_packaged_mcp_socket_owner.py"
-MCP_SOCKET_DIR="${REPOPROMPT_PACKAGED_SMOKE_SOCKET_DIR:-/tmp/repoprompt-ce-mcp-$(id -u)}"
+MCP_SOCKET_DIR="${REPOPROMPT_PACKAGED_SMOKE_SOCKET_DIR:-}"
 APP_PID=""
 APP_COMMAND=""
 APP_START=""
@@ -55,6 +55,24 @@ trap cleanup EXIT
 trap 'exit 130' INT TERM
 
 [[ -n "$APP_BUNDLE" ]] || fail "usage: $0 <app-bundle> [label] [artifact-manifest]"
+if [[ -z "$MCP_SOCKET_DIR" ]]; then
+    MCP_SOCKET_DIR="$(python3 - "$APP_BUNDLE" "$(id -u)" <<'PYTHON'
+import plistlib
+import re
+import sys
+from pathlib import Path
+app = Path(sys.argv[1])
+uid = sys.argv[2]
+info = plistlib.loads((app / "Contents" / "Info.plist").read_bytes())
+namespace = str(info.get("RepoPromptApplicationSupportDirectoryName") or "RepoPrompt CE").strip()
+if namespace == "RepoPrompt CE":
+    slug = "repoprompt-ce"
+else:
+    slug = re.sub(r"[^a-z0-9]+", "-", namespace.lower()).strip("-") or "repoprompt-ce"
+print(f"/tmp/{slug}-mcp-{uid}")
+PYTHON
+)"
+fi
 [[ -x "$SOCKET_OWNER_HELPER" ]] || fail "missing packaged MCP socket ownership verifier: $SOCKET_OWNER_HELPER"
 "$SCRIPT_DIR/validate_embedded_mcp_helper_layout.sh" "$APP_BUNDLE" "$SMOKE_LABEL layout"
 "$SCRIPT_DIR/validate_app_architectures.sh" "$APP_BUNDLE" "$EXPECTED_ARCHITECTURES" "$SMOKE_LABEL architectures"

@@ -7,7 +7,7 @@ enum ClaudeReasoningExtractionFeature {
 #if DEBUG
     enum ClaudeReasoningDebugLog {
         static let fileURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("RepoPrompt CE", isDirectory: true)
+            .appendingPathComponent(ProcessInfo.processInfo.environment["REPOPROMPT_APPLICATION_SUPPORT_DIRECTORY_NAME"] ?? "RepoPrompt CE", isDirectory: true)
             .appendingPathComponent("claude-reasoning-debug.log", isDirectory: false)
         private static let lock = NSLock()
 

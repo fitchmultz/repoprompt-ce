@@ -428,9 +428,7 @@ actor ChatDataService {
         if let customURL = workspace.customStoragePath {
             return customURL
         } else {
-            let supportDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            let root = supportDir
-                .appendingPathComponent("RepoPrompt CE", isDirectory: true)
+            let root = MCPFilesystemConstants.identity.applicationSupportRootURL()
                 .appendingPathComponent("Workspaces", isDirectory: true)
             if !FileManager.default.fileExists(atPath: root.path) {
                 try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

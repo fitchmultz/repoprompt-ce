@@ -39,6 +39,24 @@ final class MCPFilesystemIdentityTests: XCTestCase {
         XCTAssertEqual(release.claudeWrapperCommandName, "claude-rpce")
     }
 
+    func testCustomNamespaceIsolatesApplicationSupportSocketEventsAndCLI() {
+        let namespace = MCPFilesystemIdentity.FilesystemNamespace(applicationSupportDirectoryName: "MitchPrompt CE")
+        let debug = MCPFilesystemIdentity.repoPromptCE(.debug, filesystemNamespace: namespace)
+        let release = MCPFilesystemIdentity.repoPromptCE(.release, filesystemNamespace: namespace)
+
+        XCTAssertEqual(release.applicationSupportDirectoryName, "MitchPrompt CE")
+        XCTAssertEqual(release.socketDirectoryName, "mitchprompt-ce-mcp")
+        XCTAssertEqual(release.bootstrapSocketName, "mitchprompt-ce-7.sock")
+        XCTAssertEqual(debug.bootstrapSocketName, "mitchprompt-ce-D-7.sock")
+        XCTAssertEqual(release.externalEventsDirectoryName, "MCPEvents-mitchprompt-ce-7")
+        XCTAssertEqual(debug.externalEventsDirectoryName, "MCPEvents-mitchprompt-ce-D-7")
+        XCTAssertEqual(release.killSignalsDirectoryName, "MCPKillSignals-mitchprompt-ce-7")
+        XCTAssertEqual(release.userSpaceCLIFileName, "mitchprompt_ce_cli")
+        XCTAssertEqual(release.pathCLICommandName, "mitchprompt-ce-cli")
+        XCTAssertEqual(release.claudeWrapperCommandName, "claude-mitchprompt-ce")
+        XCTAssertNotEqual(release.bootstrapSocketName, MCPFilesystemIdentity.repoPromptCE(.release).bootstrapSocketName)
+    }
+
     func testCETemporaryRootUsesCanonicalProductDirectoryForBothBuildFlavors() {
         let fileManager = FileManager.default
         let expected = fileManager.temporaryDirectory
@@ -75,7 +93,7 @@ final class MCPFilesystemIdentityTests: XCTestCase {
 
         for path in paths {
             let source = try String(contentsOf: root.appendingPathComponent(path), encoding: .utf8)
-            XCTAssertTrue(source.contains("MCPFilesystemIdentity.repoPromptCE"), path)
+            XCTAssertTrue(source.contains("MCPFilesystemIdentity.currentRepoPromptCE"), path)
             XCTAssertFalse(source.contains("socketVersion = 6"), path)
         }
     }

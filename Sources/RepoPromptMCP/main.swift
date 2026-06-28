@@ -29,8 +29,8 @@ private let enableSocketDebugLog: Bool = ProcessInfo.processInfo.environment["MC
     UserDefaults.standard.bool(forKey: "enableSocketDebugLog")
 
 private let debugLogURL: URL = {
-    let url = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Application Support/RepoPrompt CE/socket-proxy-debug.log")
+    let url = MCPFilesystemConstants.identity.applicationSupportRootURL()
+        .appendingPathComponent("socket-proxy-debug.log", isDirectory: false)
     guard enableSocketDebugLog else { return url }
     // Create directory if needed
     try? FileManager.default.createDirectory(
@@ -2480,11 +2480,7 @@ private func stdinHasImmediateDisconnect() -> Bool {
 func cliDisplayCommand() -> String {
     let invokedName = URL(fileURLWithPath: CommandLine.arguments.first ?? "").lastPathComponent
     if invokedName == "repoprompt-mcp" || invokedName.isEmpty {
-        #if DEBUG
-            return "rpce-cli-debug"
-        #else
-            return "rpce-cli"
-        #endif
+        return MCPFilesystemConstants.identity.pathCLICommandName
     }
     return invokedName
 }
@@ -2974,15 +2970,10 @@ func printVersion() {
     print("\(cliDisplayCommand()) (repoprompt-mcp) \(CLI_VERSION)")
 }
 
-private let repoPromptCEReleaseBundleIdentifier = "com.pvncher.repoprompt.ce"
-private let repoPromptCEDebugBundleIdentifier = "com.pvncher.repoprompt.ce.debug"
-private let repoPromptCEBundleIdentifier: String = {
-    #if DEBUG
-        return repoPromptCEDebugBundleIdentifier
-    #else
-        return repoPromptCEReleaseBundleIdentifier
-    #endif
-}()
+private func containingAppBundleIdentifier(for appURL: URL) -> String? {
+    let infoURL = appURL.appendingPathComponent("Contents/Info.plist", isDirectory: false)
+    return (NSDictionary(contentsOf: infoURL) as? [String: Any])?["CFBundleIdentifier"] as? String
+}
 
 /// Launches the RepoPrompt app that contains this CLI, falling back to Launch Services.
 func launchRepoPromptApp() {
@@ -2994,8 +2985,10 @@ func launchRepoPromptApp() {
 
     let targetPath: String = if appURL.pathExtension == "app" && FileManager.default.fileExists(atPath: appURL.path) {
         appURL.path
+    } else if let bundleIdentifier = containingAppBundleIdentifier(for: appURL) ?? Bundle.main.bundleIdentifier {
+        "-b \(bundleIdentifier)"
     } else {
-        "-b \(repoPromptCEBundleIdentifier)"
+        "-b com.pvncher.repoprompt.ce"
     }
 
     let process = Process()

@@ -13,7 +13,7 @@ import stat
 import sys
 from pathlib import Path
 
-RELEASE_SOCKET_PATTERN = re.compile(r"^repoprompt-ce-[0-9]+\.sock$")
+DEFAULT_RELEASE_SOCKET_PATTERN = re.compile(r"^repoprompt-ce-[0-9]+\.sock$")
 SOL_LOCAL = 0
 LOCAL_PEERPID = 0x002
 TEMPORARY_UNAVAILABLE = 75
@@ -66,17 +66,32 @@ def validate_socket_directory(directory: Path, *, allow_missing: bool) -> bool:
     return True
 
 
+def release_socket_pattern(directory: Path) -> re.Pattern[str]:
+    name = directory.name
+    if "-mcp-" in name:
+        slug = name.rsplit("-mcp-", 1)[0]
+    elif name.endswith("-mcp"):
+        slug = name[:-4]
+    else:
+        return DEFAULT_RELEASE_SOCKET_PATTERN
+    slug = slug.strip()
+    if not slug:
+        return DEFAULT_RELEASE_SOCKET_PATTERN
+    return re.compile(rf"^{re.escape(slug)}-[0-9]+\.sock$")
+
+
 def release_socket_paths(directory: Path, *, allow_missing: bool) -> list[Path]:
     if not validate_socket_directory(directory, allow_missing=allow_missing):
         return []
+    pattern = release_socket_pattern(directory)
     return sorted(
-        (Path(entry.path) for entry in os.scandir(directory) if RELEASE_SOCKET_PATTERN.fullmatch(entry.name)),
+        (Path(entry.path) for entry in os.scandir(directory) if pattern.fullmatch(entry.name)),
         key=lambda path: path.name,
     )
 
 
 def validate_socket_path(path: Path) -> os.stat_result:
-    if not RELEASE_SOCKET_PATTERN.fullmatch(path.name):
+    if not release_socket_pattern(path.parent).fullmatch(path.name):
         raise OwnershipError(f"unexpected release socket name: {path}")
     metadata = path.lstat()
     if not stat.S_ISSOCK(metadata.st_mode):

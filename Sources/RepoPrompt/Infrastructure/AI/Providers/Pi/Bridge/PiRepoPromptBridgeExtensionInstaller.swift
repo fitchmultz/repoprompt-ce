@@ -62,15 +62,14 @@ enum PiRepoPromptBridgeExtensionInstaller {
         fileManager: FileManager = .default,
         cliPath: String? = Bundle.main.url(forAuxiliaryExecutable: "repoprompt-mcp")?.path
     ) throws -> URL {
-        guard let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+        guard !fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).isEmpty else {
             throw InstallerError.applicationSupportUnavailable
         }
         guard let cliPath, !cliPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw InstallerError.cliHelperUnavailable
         }
 
-        let directory = appSupport
-            .appendingPathComponent("RepoPrompt CE", isDirectory: true)
+        let directory = MCPFilesystemConstants.identity.applicationSupportRootURL(fileManager: fileManager)
             .appendingPathComponent("PiBridge", isDirectory: true)
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         try repairStaleManagedWindowExtensions(directory: directory, fileManager: fileManager, cliPath: cliPath)
@@ -257,7 +256,8 @@ enum PiRepoPromptBridgeExtensionInstaller {
             "\"__REPOPROMPT_MANAGED_RUN_ENV__\"": jsonStringLiteral(PiIntegrationConfiguration.managedRunEnvironmentKey),
             "\"__REPOPROMPT_PI_PERMISSION_LEVEL_ENV__\"": jsonStringLiteral(PiIntegrationConfiguration.permissionLevelEnvironmentKey),
             "\"__REPOPROMPT_SCHEMA_ARGS_JSON__\"": jsonStringLiteral(jsonStringArray(schemaArgs(windowID: windowID))),
-            "\"__REPOPROMPT_TOOL_ARGS_PREFIX_JSON__\"": jsonStringLiteral(jsonStringArray(toolArgsPrefix(windowID: windowID)))
+            "\"__REPOPROMPT_TOOL_ARGS_PREFIX_JSON__\"": jsonStringLiteral(jsonStringArray(toolArgsPrefix(windowID: windowID))),
+            "\"__REPOPROMPT_APPLICATION_SUPPORT_DIRECTORY_NAME__\"": jsonStringLiteral(MCPFilesystemConstants.identity.applicationSupportDirectoryName)
         ]
         return replacements.reduce(template) { rendered, replacement in
             rendered.replacingOccurrences(of: replacement.key, with: replacement.value)

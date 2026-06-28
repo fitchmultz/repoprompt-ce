@@ -32,7 +32,10 @@ enum MCPIntegrationHelper {
         ClaudeCodeIntegrationConfiguration.mcpAddEnvironmentFlagArguments
     }
 
-    static let repoPromptMCPServerName = RepoPromptMCPServerConfiguration.defaultServerName
+    static var repoPromptMCPServerName: String {
+        RepoPromptMCPServerConfiguration.defaultServerName
+    }
+
     static let repoPromptToolNames: Set<String> = [
         "ask_user",
         "ask_user_question",

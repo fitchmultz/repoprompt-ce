@@ -20,6 +20,7 @@ const TOOL_EXEC_TIMEOUT_MS = 600_000;
 const TOOL_APPROVAL_TIMEOUT_MS = 300_000;
 const TOOL_APPROVAL_TIMEOUT_ENV = "REPOPROMPT_PI_APPROVAL_TIMEOUT_MS";
 const BRIDGE_DEBUG_LOG_ENV = "REPOPROMPT_PI_BRIDGE_DEBUG_LOG";
+const APPLICATION_SUPPORT_DIRECTORY_NAME = "__REPOPROMPT_APPLICATION_SUPPORT_DIRECTORY_NAME__";
 const MAX_RESULT_CHARS = 50 * 1024;
 const MAX_TOOL_INPUT_UI_CHARS = 1_200;
 type JSONRecord = Record<string, unknown>;
@@ -112,7 +113,7 @@ function bridgeDebugLogPath(): string | undefined {
   if (raw === "0" || raw?.toLowerCase() === "false") return undefined;
   if (raw) return raw;
   if (process.env[REPOPROMPT_MANAGED_RUN_ENV] === "1") {
-    return join(homedir(), "Library", "Application Support", "RepoPrompt CE", "pi-bridge-debug.log");
+    return join(homedir(), "Library", "Application Support", APPLICATION_SUPPORT_DIRECTORY_NAME, "pi-bridge-debug.log");
   }
   return undefined;
 }

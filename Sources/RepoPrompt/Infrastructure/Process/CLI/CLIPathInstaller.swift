@@ -15,9 +15,9 @@ enum CLIPathInstaller {
     private static let logger = Logger(subsystem: "CLI.PathInstaller", category: "install")
 
     #if DEBUG
-        nonisolated static let identity = MCPFilesystemIdentity.repoPromptCE(.debug)
+        nonisolated static let identity = MCPFilesystemIdentity.currentRepoPromptCE(.debug)
     #else
-        nonisolated static let identity = MCPFilesystemIdentity.repoPromptCE(.release)
+        nonisolated static let identity = MCPFilesystemIdentity.currentRepoPromptCE(.release)
     #endif
 
     nonisolated static var cliCommandName: String {

@@ -118,7 +118,10 @@ enum PiDynamicModelStore {
     private static let legacyWorkspaceIndexKey = "PiDynamicModelSnapshotWorkspaceIndex"
     private static let legacyWorkspaceRecordKeyPrefix = "PiDynamicModelSnapshotWorkspace."
     private static let legacyWorkspaceFallbackRecordKeyPrefix = "PiDynamicModelSnapshotWorkspaceLegacy."
-    private static let appSupportDirectoryName = "RepoPrompt CE"
+    private static var appSupportDirectoryName: String {
+        MCPFilesystemConstants.identity.applicationSupportDirectoryName
+    }
+
     private static let cacheDirectoryName = "PiModelSnapshots"
     private static let workspacesDirectoryName = "Workspaces"
     private static let globalFileName = "global.json"
@@ -488,8 +491,7 @@ enum PiDynamicModelStore {
         #if DEBUG
             if let storeDirectoryOverride { return storeDirectoryOverride }
         #endif
-        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent(appSupportDirectoryName, isDirectory: true)
+        return MCPFilesystemConstants.identity.applicationSupportRootURL()
             .appendingPathComponent(cacheDirectoryName, isDirectory: true)
     }
 

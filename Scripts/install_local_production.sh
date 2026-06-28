@@ -7,6 +7,7 @@ cd "$ROOT_DIR"
 DISPLAY_NAME_OVERRIDE="${DISPLAY_NAME:-}"
 BUNDLE_ID_OVERRIDE="${BUNDLE_ID:-}"
 SIGNING_TEAM_ID_OVERRIDE="${SIGNING_TEAM_ID:-}"
+APPLICATION_SUPPORT_DIRECTORY_NAME_OVERRIDE="${REPOPROMPT_APPLICATION_SUPPORT_DIRECTORY_NAME:-${APP_SUPPORT_DIRECTORY_NAME:-}}"
 
 set -a
 source "$ROOT_DIR/version.env"
@@ -17,13 +18,14 @@ DEFAULT_BUNDLE_ID="$BUNDLE_ID"
 DISPLAY_NAME="${DISPLAY_NAME_OVERRIDE:-$DISPLAY_NAME}"
 BUNDLE_ID="${BUNDLE_ID_OVERRIDE:-$BUNDLE_ID}"
 SIGNING_TEAM_ID="${SIGNING_TEAM_ID_OVERRIDE:-$SIGNING_TEAM_ID}"
+APPLICATION_SUPPORT_DIRECTORY_NAME="${APPLICATION_SUPPORT_DIRECTORY_NAME_OVERRIDE:-$DISPLAY_NAME}"
 LOCAL_PRODUCTION_SIGNING_MODE="${LOCAL_PRODUCTION_SIGNING_MODE:-self-signed}"
 
 LOCAL_SELF_SIGNED_CERTIFICATE_NAME="RepoPrompt CE Local Self-Signed Code Signing"
 LOCAL_PRODUCTION_INSTALL_DIR="${LOCAL_PRODUCTION_INSTALL_DIR:-/Applications}"
 LOCAL_PRODUCTION_APP="$LOCAL_PRODUCTION_INSTALL_DIR/$DISPLAY_NAME.app"
 LOCAL_CERTIFICATE_DAYS="${LOCAL_CERTIFICATE_DAYS:-3650}"
-LOCAL_SIGNING_IDENTITY_REGISTRY_PATH="${LOCAL_SIGNING_IDENTITY_REGISTRY_PATH:-$HOME/Library/Application Support/RepoPrompt CE/local-signing-identity-v1.json}"
+LOCAL_SIGNING_IDENTITY_REGISTRY_PATH="${LOCAL_SIGNING_IDENTITY_REGISTRY_PATH:-$HOME/Library/Application Support/$APPLICATION_SUPPORT_DIRECTORY_NAME/local-signing-identity-v1.json}"
 LOCAL_SIGNING_IDENTITY_SHA256="${LOCAL_SIGNING_IDENTITY_SHA256:-}"
 ROTATE_LOCAL_SIGNING_IDENTITY="${ROTATE_LOCAL_SIGNING_IDENTITY:-0}"
 LOCAL_SIGNING_IDENTITY_TOOL="$ROOT_DIR/Scripts/local_signing_identity.py"
@@ -234,7 +236,9 @@ NORMALIZED_DISPLAY_NAME="$(tr '[:upper:]' '[:lower:]' <<< "$TRIMMED_DISPLAY_NAME
 NORMALIZED_DEFAULT_DISPLAY_NAME="$(tr '[:upper:]' '[:lower:]' <<< "$DEFAULT_DISPLAY_NAME")"
 
 [[ "$APP_NAME" =~ ^[A-Za-z0-9._\ -]+$ ]] || fail "APP_NAME contains unsupported characters: $APP_NAME"
+TRIMMED_APPLICATION_SUPPORT_DIRECTORY_NAME="$(sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' <<< "$APPLICATION_SUPPORT_DIRECTORY_NAME")"
 [[ -n "$DISPLAY_NAME" && "$DISPLAY_NAME" == "$TRIMMED_DISPLAY_NAME" && "$DISPLAY_NAME" != */* ]] || fail "DISPLAY_NAME must be non-empty, trimmed, and must not contain '/'."
+[[ -n "$APPLICATION_SUPPORT_DIRECTORY_NAME" && "$APPLICATION_SUPPORT_DIRECTORY_NAME" == "$TRIMMED_APPLICATION_SUPPORT_DIRECTORY_NAME" && "$APPLICATION_SUPPORT_DIRECTORY_NAME" != */* ]] || fail "REPOPROMPT_APPLICATION_SUPPORT_DIRECTORY_NAME must be non-empty, trimmed, and must not contain '/'."
 [[ "$BUNDLE_ID" =~ ^[A-Za-z0-9]+([.-][A-Za-z0-9]+)*$ ]] || fail "BUNDLE_ID is not a valid bundle identifier: $BUNDLE_ID"
 [[ "$SIGNING_TEAM_ID" =~ ^[A-Z0-9]+$ ]] || fail "SIGNING_TEAM_ID must contain only uppercase letters and digits: $SIGNING_TEAM_ID"
 
@@ -266,6 +270,7 @@ if [[ "$LOCAL_PRODUCTION_SIGNING_MODE" == "developer-id" ]]; then
     LOCAL_DEVELOPER_ID_RELEASE=1 \
         DISPLAY_NAME="$DISPLAY_NAME" \
         BUNDLE_ID="$BUNDLE_ID" \
+        REPOPROMPT_APPLICATION_SUPPORT_DIRECTORY_NAME="$APPLICATION_SUPPORT_DIRECTORY_NAME" \
         SIGNING_TEAM_ID="$SIGNING_TEAM_ID" \
         SIGN_IDENTITY="$SIGN_IDENTITY" \
         "$ROOT_DIR/Scripts/package_app.sh" release
@@ -277,6 +282,8 @@ if [[ "$LOCAL_PRODUCTION_SIGNING_MODE" == "developer-id" ]]; then
         fail "Packaged app bundle identifier mismatch."
     [[ "$(plutil -extract RepoPromptSigningMode raw "$SOURCE_APP/Contents/Info.plist")" == "local-developer-id" ]] ||
         fail "Packaged app is missing the local Developer ID signing-mode marker."
+    [[ "$(plutil -extract RepoPromptApplicationSupportDirectoryName raw "$SOURCE_APP/Contents/Info.plist")" == "$APPLICATION_SUPPORT_DIRECTORY_NAME" ]] ||
+        fail "Packaged app application-support namespace mismatch."
     LOCAL_DEVELOPER_ID_REQUIREMENT="anchor apple generic and identifier \"$BUNDLE_ID\" and certificate leaf[subject.OU] = \"$SIGNING_TEAM_ID\" and certificate leaf[field.1.2.840.113635.100.6.1.13] exists"
     codesign --verify --deep --strict --verbose=2 "$SOURCE_APP"
     codesign --verify --deep --strict --verbose=2 -R="$LOCAL_DEVELOPER_ID_REQUIREMENT" "$SOURCE_APP"
@@ -387,6 +394,7 @@ LOCAL_SELF_SIGNED_RELEASE=1 \
     LOCAL_SIGNING_CERTIFICATE_SHA1="$SIGN_IDENTITY" \
     LOCAL_SIGNING_CERTIFICATE_SHA256="$SELECTED_CERTIFICATE_SHA256" \
     LOCAL_SIGNING_SERVICE_GENERATION="$LOCAL_SIGNING_SERVICE_GENERATION" \
+    REPOPROMPT_APPLICATION_SUPPORT_DIRECTORY_NAME="$APPLICATION_SUPPORT_DIRECTORY_NAME" \
     SIGN_IDENTITY="$SIGN_IDENTITY" \
     "$ROOT_DIR/Scripts/package_app.sh" release
 
@@ -399,6 +407,8 @@ SOURCE_APP="$BUILD_DIR/$APP_NAME.app"
     fail "Packaged app local signing fingerprint metadata does not match the selected identity."
 [[ "$(plutil -extract RepoPromptLocalSecureStorageGeneration raw "$SOURCE_APP/Contents/Info.plist")" == "$LOCAL_SIGNING_SERVICE_GENERATION" ]] ||
     fail "Packaged app local secure-storage generation metadata does not match the registry plan."
+[[ "$(plutil -extract RepoPromptApplicationSupportDirectoryName raw "$SOURCE_APP/Contents/Info.plist")" == "$APPLICATION_SUPPORT_DIRECTORY_NAME" ]] ||
+    fail "Packaged app application-support namespace mismatch."
 codesign --verify --deep --strict --verbose=2 "$SOURCE_APP"
 codesign --verify --deep --strict --verbose=2 -R="$LOCAL_SIGNING_REQUIREMENT" "$SOURCE_APP"
 DESIGNATED_REQUIREMENT="$(codesign -d -r- "$SOURCE_APP" 2>&1 | sed -n 's/^designated => //p')"

@@ -256,6 +256,7 @@ class LocalProductionInstallerTests(unittest.TestCase):
         self.assertEqual(
             entitlements,
             {
+                "com.apple.security.automation.apple-events": True,
                 "com.apple.security.cs.allow-jit": True,
                 "com.apple.security.cs.disable-library-validation": True,
                 "com.apple.security.files.bookmarks.app-scope": True,
@@ -270,6 +271,7 @@ class LocalProductionInstallerTests(unittest.TestCase):
         info_template = (ROOT_DIR / "AppBundle" / "Info.plist.template").read_text(encoding="utf-8")
         self.assertIn("RepoPromptLocalSigningCertificateSHA256", info_template)
         self.assertIn("RepoPromptLocalSecureStorageGeneration", info_template)
+        self.assertIn("RepoPromptApplicationSupportDirectoryName", info_template)
         self.assertIn("--extract-certificates=\"$certificate_prefix\"", package_script)
         self.assertIn("Extracted designated requirement", package_script)
 
@@ -292,13 +294,14 @@ class LocalProductionInstallerTests(unittest.TestCase):
                     set -euo pipefail
                     app="$FAKE_BUILD_DIR/RepoPrompt.app"
                     mkdir -p "$app/Contents/MacOS"
-                    printf '%s|%s|%s|%s|%s\n' "$LOCAL_DEVELOPER_ID_RELEASE" "$DISPLAY_NAME" "$BUNDLE_ID" "$SIGNING_TEAM_ID" "$SIGN_IDENTITY" > "$PACKAGE_CAPTURE"
+                    printf '%s|%s|%s|%s|%s|%s\n' "$LOCAL_DEVELOPER_ID_RELEASE" "$DISPLAY_NAME" "$BUNDLE_ID" "$REPOPROMPT_APPLICATION_SUPPORT_DIRECTORY_NAME" "$SIGNING_TEAM_ID" "$SIGN_IDENTITY" > "$PACKAGE_CAPTURE"
                     cat > "$app/Contents/Info.plist" <<EOF
                     <?xml version="1.0" encoding="UTF-8"?>
                     <plist version="1.0"><dict>
                       <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
                       <key>CFBundleDisplayName</key><string>$DISPLAY_NAME</string>
                       <key>RepoPromptSigningMode</key><string>local-developer-id</string>
+                      <key>RepoPromptApplicationSupportDirectoryName</key><string>$REPOPROMPT_APPLICATION_SUPPORT_DIRECTORY_NAME</string>
                     </dict></plist>
                     EOF
                     """
@@ -398,7 +401,7 @@ class LocalProductionInstallerTests(unittest.TestCase):
             self.assertTrue(installed_app.exists())
             self.assertEqual(
                 package_capture.read_text(encoding="utf-8").strip(),
-                "1|My RepoPrompt CE (Local)|com.example.repoprompt.ce|TEAM123456|Developer ID Application: Person (TEAM123456)",
+                "1|My RepoPrompt CE (Local)|com.example.repoprompt.ce|My RepoPrompt CE (Local)|TEAM123456|Developer ID Application: Person (TEAM123456)",
             )
             self.assertFalse(registry_path.exists())
             self.assertIn("Installed local Developer ID production app", result.stdout)
@@ -730,6 +733,7 @@ class LocalProductionInstallerTests(unittest.TestCase):
                   <key>RepoPromptSigningMode</key><string>local-self-signed</string>
                   <key>RepoPromptLocalSigningCertificateSHA256</key><string>$LOCAL_SIGNING_CERTIFICATE_SHA256</string>
                   <key>RepoPromptLocalSecureStorageGeneration</key><string>$LOCAL_SIGNING_SERVICE_GENERATION</string>
+                  <key>RepoPromptApplicationSupportDirectoryName</key><string>$REPOPROMPT_APPLICATION_SUPPORT_DIRECTORY_NAME</string>
                 </dict></plist>
                 EOF
                 """

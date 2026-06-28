@@ -981,6 +981,8 @@ class OperationRegistry:
         "BUNDLE_ID",
         "URL_SCHEME",
         "REPOPROMPT_URL_SCHEME",
+        "REPOPROMPT_APPLICATION_SUPPORT_DIRECTORY_NAME",
+        "APP_SUPPORT_DIRECTORY_NAME",
     ]
     DEBUG_ENV_KEYS = [
         "REPOPROMPT_DEBUG_APP_ROOT",

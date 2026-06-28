@@ -1920,6 +1920,7 @@ SIGNING_TEAM_ID=648A27MST5
             "__DISPLAY_NAME__": "RepoPrompt CE",
             "__BUNDLE_ID__": "com.pvncher.repoprompt.ce",
             "__URL_SCHEME__": "repoprompt-ce",
+            "__APPLICATION_SUPPORT_DIRECTORY_NAME__": "RepoPrompt CE",
             "__MARKETING_VERSION__": "1.0.0",
             "__BUILD_NUMBER__": "1",
             "__DEBUG_SECURE_STORAGE_BACKEND__": "alternate-in-memory",

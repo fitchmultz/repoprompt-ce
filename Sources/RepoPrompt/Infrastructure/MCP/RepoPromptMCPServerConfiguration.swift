@@ -13,7 +13,15 @@ struct RepoPromptMCPServerConfiguration: Equatable, Hashable {
         }
     }
 
-    static let defaultServerName = "RepoPromptCE"
+    static var defaultServerName: String {
+        let namespace = MCPFilesystemConstants.identity.applicationSupportDirectoryName
+        guard namespace != "RepoPrompt CE" else { return "RepoPromptCE" }
+        let scalars = namespace.unicodeScalars.filter { scalar in
+            CharacterSet.alphanumerics.contains(scalar)
+        }
+        let name = String(String.UnicodeScalarView(scalars))
+        return name.isEmpty ? "RepoPromptCE" : name
+    }
 
     let name: String
     let command: String

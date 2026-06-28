@@ -18,7 +18,7 @@ struct PromptExport: Codable, Equatable {
 
 /// <summary>
 /// Manages reading and writing the user's saved prompts as JSON
-/// in the app's Application Support/com.pvncher.repoprompt directory,
+/// in the app's namespaced Application Support directory,
 /// using a static dispatch queue for safe, atomic operations.
 /// </summary>
 class PromptStorage {
@@ -29,21 +29,21 @@ class PromptStorage {
     /// This serial queue ensures file reads/writes are never interleaved.
     private static let queue = DispatchQueue(label: "com.pvncher.repoprompt.PromptStorageQueue")
 
-    /// Compute the file URL in Application Support under com.pvncher.repoprompt
+    /// Compute the file URL in the app's namespaced Application Support root.
     private var fileURL: URL {
-        let supportDir = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first!
-
-        // Create a subfolder "com.pvncher.repoprompt" if it doesn't exist
-        let appSupportFolder = supportDir.appendingPathComponent("com.pvncher.repoprompt", isDirectory: true)
+        let appSupportFolder = MCPFilesystemConstants.identity.applicationSupportRootURL()
         try? FileManager.default.createDirectory(
             at: appSupportFolder,
             withIntermediateDirectories: true
         )
 
         return appSupportFolder.appendingPathComponent(filename)
+    }
+
+    private var legacyFileURL: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("com.pvncher.repoprompt", isDirectory: true)
+            .appendingPathComponent(filename)
     }
 
     /// <summary>
@@ -57,20 +57,23 @@ class PromptStorage {
 
         // Use a synchronous block so we can return the result directly
         Self.queue.sync {
-            // Check if the file exists first
-            if !FileManager.default.fileExists(atPath: fileURL.path) {
-                // First run - no prompts file exists yet, return empty array
+            let activeURL = fileURL
+            let readURL = FileManager.default.fileExists(atPath: activeURL.path) ? activeURL : legacyFileURL
+            if !FileManager.default.fileExists(atPath: readURL.path) {
                 result = .success([])
                 return
             }
 
             do {
-                let data = try Data(contentsOf: fileURL)
+                let data = try Data(contentsOf: readURL)
+                if readURL != activeURL, !FileManager.default.fileExists(atPath: activeURL.path) {
+                    try? data.write(to: activeURL, options: .atomic)
+                }
                 let prompts = try JSONDecoder().decode([PromptViewModel.StoredPrompt].self, from: data)
                 result = .success(prompts)
             } catch {
                 // File exists but can't be read or decoded - this is an error!
-                print("⚠️ ERROR: Failed to load prompts from \(fileURL.path): \(error)")
+                print("⚠️ ERROR: Failed to load prompts from \(readURL.path): \(error)")
                 print("⚠️ This could indicate file corruption or permissions issues.")
                 print("⚠️ User prompts will NOT be overwritten to prevent data loss.")
                 result = .failure(error)
