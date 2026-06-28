@@ -1,4 +1,5 @@
 @testable import RepoPrompt
+import RepoPromptShared
 import XCTest
 
 final class PiIntegrationConfigurationTests: XCTestCase {
@@ -123,6 +124,10 @@ final class PiIntegrationConfigurationTests: XCTestCase {
 
         XCTAssertEqual(environment[PiIntegrationConfiguration.managedRunEnvironmentKey], PiIntegrationConfiguration.managedRunEnvironmentValue)
         XCTAssertEqual(environment[PiIntegrationConfiguration.permissionLevelEnvironmentKey], PiAgentToolPreferences.PermissionLevel.fullAccess.rawValue)
+        XCTAssertEqual(
+            environment[PiIntegrationConfiguration.approvalTimeoutMillisecondsEnvironmentKey],
+            String(Int(MCPTimeoutPolicy.askUserDefaultTimeoutSeconds * 1000))
+        )
         let rawInheritedExtensions = try XCTUnwrap(environment[PiIntegrationConfiguration.inheritedSubagentExtensionsEnvironmentKey])
         let decoded = try JSONDecoder().decode([String].self, from: Data(rawInheritedExtensions.utf8))
         XCTAssertEqual(decoded, ["/tmp/repoprompt-bridge.ts"])

@@ -626,6 +626,42 @@ final class PiModelCatalogTests: XCTestCase {
         )
     }
 
+    func testPiThinkingFallbackUsesGlobalRoleDefaultModelWhenWorkspaceCatalogDiffers() {
+        let workspace = "/tmp/pi-thinking-global-fallback-\(UUID().uuidString)"
+        XCTAssertTrue(AgentPiModelRegistry.shared.updateDiscoveredModels(Self.snapshot(
+            rawValue: "openai-codex/gpt-5.5",
+            displayName: "GPT 5.5",
+            thinkingLevels: [.off, .low, .medium, .high, .xhigh]
+        )))
+        XCTAssertTrue(AgentPiModelRegistry.shared.updateDiscoveredModels(Self.snapshot(
+            rawValue: "zai/glm-5.2",
+            displayName: "GLM 5.2",
+            thinkingLevels: [.off, .low]
+        ), workspacePath: workspace))
+
+        XCTAssertEqual(
+            AgentModelCatalog.piThinkingLevelOptions(
+                for: "openai-codex/gpt-5.5",
+                workspacePath: workspace,
+                includeGlobalFallback: true
+            ),
+            [.off, .low, .medium, .high, .xhigh]
+        )
+    }
+
+    func testPiWorkspaceCacheCanonicalizesSymlinkAliases() throws {
+        let tmpWorkspace = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pi-cache-alias-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmpWorkspace, withIntermediateDirectories: true)
+        let privateTmpWorkspace = URL(fileURLWithPath: tmpWorkspace.path.replacingOccurrences(of: "/var/", with: "/private/var/"), isDirectory: true)
+        let snapshot = Self.snapshot(rawValue: "zai/glm-5.2", displayName: "GLM 5.2")
+
+        PiDynamicModelStore.save(snapshot, workspacePath: tmpWorkspace.path)
+        let loaded = PiDynamicModelStore.load(workspacePath: privateTmpWorkspace.path)
+
+        XCTAssertEqual(loaded?.options.map(\.rawValue), ["zai/glm-5.2"])
+    }
+
     func testPiDynamicModelStorePersistsSnapshot() throws {
         let suiteName = "PiModelCatalogTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
@@ -791,6 +827,25 @@ final class PiModelCatalogTests: XCTestCase {
         XCTAssertNil(defaults.data(forKey: "PiDynamicModelSnapshotsByWorkspace"))
         XCTAssertEqual(PiDynamicModelStore.load(workspacePath: workspaceB, defaults: defaults), snapshotB)
         XCTAssertEqual(workspaceCacheFileCount(), 2)
+    }
+
+    func testPiDynamicModelStoreMigratesLegacyWorkspaceBlobToCanonicalAliasKey() throws {
+        let suiteName = "PiModelCatalogTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let tmpWorkspace = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pi-legacy-alias-cache-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmpWorkspace, withIntermediateDirectories: true)
+        let privateTmpWorkspace = URL(fileURLWithPath: tmpWorkspace.path.replacingOccurrences(of: "/var/", with: "/private/var/"), isDirectory: true)
+        let snapshot = Self.snapshot(rawValue: "zai/glm-5.2", displayName: "GLM 5.2")
+        let collection = try PiDynamicModelSnapshotCollectionRecord(snapshotsByWorkspacePath: [
+            tmpWorkspace.path: XCTUnwrap(PiDynamicModelStore.snapshotRecord(from: snapshot))
+        ])
+        try defaults.set(JSONEncoder().encode(collection), forKey: "PiDynamicModelSnapshotsByWorkspace")
+
+        XCTAssertEqual(PiDynamicModelStore.load(workspacePath: privateTmpWorkspace.path, defaults: defaults), snapshot)
+        XCTAssertNil(defaults.data(forKey: "PiDynamicModelSnapshotsByWorkspace"))
+        XCTAssertEqual(PiDynamicModelStore.load(workspacePath: tmpWorkspace.path, defaults: defaults), snapshot)
     }
 
     func testPiDynamicModelStoreLoadMigratesLegacyBlobEvenWhenWorkspaceKeyExists() throws {

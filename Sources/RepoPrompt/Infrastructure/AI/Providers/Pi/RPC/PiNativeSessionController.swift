@@ -407,6 +407,10 @@ actor PiNativeSessionController {
             emit(.extensionUIRequest(request))
         case let .extensionError(message):
             emit(.error(message))
+            if hasTurnInFlight {
+                emitPendingMessageStopIfNeeded(stopReasonOverride: "failed")
+                completeAllTurns(status: .failed)
+            }
         case let .customMessage(message):
             if let status = PiRunProgressPresentation.customMessageStatus(message) {
                 emit(.stream(AIStreamResult(type: "status", text: status)))

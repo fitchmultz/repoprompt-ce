@@ -1,4 +1,5 @@
 import Foundation
+import RepoPromptShared
 
 enum PiModelSelectionContract {
     static func selectableRawValue(provider rawProvider: String?, id rawID: String) -> String? {
@@ -114,6 +115,7 @@ enum PiIntegrationConfiguration {
     static let managedRunEnvironmentKey = "REPOPROMPT_PI_MANAGED_RUN"
     static let managedRunEnvironmentValue = "1"
     static let permissionLevelEnvironmentKey = "REPOPROMPT_PI_PERMISSION_LEVEL"
+    static let approvalTimeoutMillisecondsEnvironmentKey = "REPOPROMPT_PI_APPROVAL_TIMEOUT_MS"
     static let inheritedSubagentExtensionsEnvironmentKey = "PI_SUBAGENT_INHERITED_EXTENSIONS_JSON"
     static let agentDirectoryEnvironmentKey = "PI_CODING_AGENT_DIR"
 
@@ -159,7 +161,10 @@ enum PiIntegrationConfiguration {
         permissionLevel: PiAgentToolPreferences.PermissionLevel? = nil,
         bridgeExtensionPath: String? = nil
     ) -> [String: String] {
-        var environment = [managedRunEnvironmentKey: managedRunEnvironmentValue]
+        var environment = [
+            managedRunEnvironmentKey: managedRunEnvironmentValue,
+            approvalTimeoutMillisecondsEnvironmentKey: String(Int(MCPTimeoutPolicy.askUserDefaultTimeoutSeconds * 1000))
+        ]
         if let permissionLevel {
             environment[permissionLevelEnvironmentKey] = permissionLevel.rawValue
         }

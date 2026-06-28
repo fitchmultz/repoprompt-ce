@@ -210,7 +210,9 @@ final class PiRepoPromptBridgeExtensionInstallerTests: XCTestCase {
         XCTAssertTrue(source.contains("import { appendFileSync, mkdirSync } from \"node:fs\";"))
         XCTAssertTrue(source.contains("const BRIDGE_DEBUG_LOG_ENV = \"REPOPROMPT_PI_BRIDGE_DEBUG_LOG\""))
         XCTAssertTrue(source.contains("function bridgeDebugLog(event: string, fields: JSONRecord = {})"))
-        XCTAssertTrue(source.contains("return toolName === \"agent_run\" ? 0 : TOOL_EXEC_TIMEOUT_MS"))
+        XCTAssertTrue(source.contains("[\"agent_run\", \"context_builder\", \"ask_oracle\"].includes(toolName) ? 0 : TOOL_EXEC_TIMEOUT_MS"))
+        XCTAssertTrue(source.contains("const TOOL_APPROVAL_TIMEOUT_ENV = \"REPOPROMPT_PI_APPROVAL_TIMEOUT_MS\""))
+        XCTAssertTrue(source.contains("normalized === \"command\""))
         XCTAssertTrue(source.contains("bridgeDebugLog(\"tool_exit\""))
         XCTAssertTrue(source.contains("stdout: safeTextSummary(stdout)"))
         XCTAssertTrue(source.contains("stderr: safeTextSummary(stderr)"))
@@ -537,8 +539,16 @@ final class PiRepoPromptBridgeExtensionInstallerTests: XCTestCase {
       }
     }
 
-    function schemaResponse(): ExecResponse {
-      return { code: 0, stdout: JSON.stringify({ tools: [] }), stderr: "" };
+    function schemaResponse(tools: any[] = []): ExecResponse {
+      return { code: 0, stdout: JSON.stringify({ tools }), stderr: "" };
+    }
+
+    function toolSchema(name: string): any {
+      return {
+        name,
+        description: `${name} tool`,
+        inputSchema: { type: "object", properties: {}, additionalProperties: false },
+      };
     }
 
     function approvalResponse(choice: string): ExecResponse {
@@ -555,6 +565,7 @@ final class PiRepoPromptBridgeExtensionInstallerTests: XCTestCase {
       } else {
         process.env.REPOPROMPT_PI_PERMISSION_LEVEL = permissionLevel;
       }
+      delete process.env.REPOPROMPT_PI_APPROVAL_TIMEOUT_MS;
       const pi = new FakePi(responses);
       await repoPromptBridge(pi);
       assert.ok(pi.handlers.has("tool_call"), "managed window bridge should register a tool_call policy handler");
@@ -581,10 +592,17 @@ final class PiRepoPromptBridgeExtensionInstallerTests: XCTestCase {
       assert.equal(result, undefined, "RepoPrompt dynamic tools should stay governed by RepoPrompt MCP policy, not the built-in preflight hook");
 
       pi = await loadBridge("askBeforeWrite", [schemaResponse(), approvalResponse("Allow once")]);
-      result = await pi.trigger("tool_call", bashEvent, ctx);
+      process.env.REPOPROMPT_PI_APPROVAL_TIMEOUT_MS = "300000";
+      result = await pi.trigger("tool_call", { toolName: "bash", input: { command: "printf SENTINEL_SHOULD_NOT_LEAK" } }, ctx);
       assert.equal(result, undefined);
       assert.equal(pi.execCalls.length, 2);
       assert.ok(pi.execCalls[1].args.includes("ask_user"));
+      assert.equal(pi.execCalls[1].options.timeout, 305000);
+      const approvalPayload = JSON.parse(pi.execCalls[1].args.at(-1));
+      assert.equal(approvalPayload.timeout_seconds, 300);
+      assert.doesNotMatch(approvalPayload.context, /SENTINEL_SHOULD_NOT_LEAK/);
+      assert.match(approvalPayload.context, /\[REDACTED\]/);
+      delete process.env.REPOPROMPT_PI_APPROVAL_TIMEOUT_MS;
 
       pi = await loadBridge("askBeforeWrite", [schemaResponse(), approvalResponse("Allow for session"), approvalResponse("Deny")]);
       result = await pi.trigger("tool_call", bashEvent, ctx);
@@ -598,6 +616,16 @@ final class PiRepoPromptBridgeExtensionInstallerTests: XCTestCase {
       assert.equal(result.block, true);
       assert.match(result.reason, /denied/);
       assert.equal(pi.execCalls.length, 3, "session_shutdown should clear the grant and require approval again");
+
+      pi = await loadBridge("fullAccess", [
+        schemaResponse([toolSchema("context_builder"), toolSchema("ask_oracle")]),
+        { code: 0, stdout: "ok", stderr: "" },
+        { code: 0, stdout: "ok", stderr: "" },
+      ]);
+      await pi.registeredTools.find((entry) => entry.name === "context_builder").execute({});
+      assert.equal(pi.execCalls.at(-1).options.timeout, 0);
+      await pi.registeredTools.find((entry) => entry.name === "ask_oracle").execute({});
+      assert.equal(pi.execCalls.at(-1).options.timeout, 0);
 
       pi = await loadBridge("autoReview", [schemaResponse(), { code: 0, stdout: "not json", stderr: "" }]);
       result = await pi.trigger("tool_call", bashEvent, ctx);

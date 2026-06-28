@@ -561,7 +561,10 @@ enum AgentModelCatalog {
                 return compatibleDisplayName
             }
             if agentKind == .pi,
-               let discoveredOption = resolvedPiDiscoveredModels(workspacePath: availability.piWorkspacePath)?.option(matching: raw)
+               let discoveredOption = piDiscoveredModelsForValidation(workspacePath: availability.piWorkspacePath)
+               .lazy
+               .compactMap({ $0.option(matching: raw) })
+               .first
             {
                 return discoveredOption.displayName
             }
@@ -771,7 +774,7 @@ enum AgentModelCatalog {
         if let levels = snapshots.lazy.map({ $0.supportedThinkingLevels(for: specifier.providerQualifiedModelRaw) }).first(where: { !$0.isEmpty }) {
             return levels
         }
-        guard snapshots.isEmpty else { return [] }
+        guard includeGlobalFallback || snapshots.isEmpty else { return [] }
         return fallbackPiThinkingLevelOptions(for: specifier.providerQualifiedModelRaw)
     }
 

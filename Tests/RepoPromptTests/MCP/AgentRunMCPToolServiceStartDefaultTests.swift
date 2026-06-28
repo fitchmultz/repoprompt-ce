@@ -444,6 +444,10 @@ final class AgentRunMCPToolServiceStartDefaultTests: XCTestCase {
         )
         XCTAssertEqual(normalized.agent, .pi)
         XCTAssertEqual(normalized.modelRaw, cursorModel)
+        XCTAssertEqual(
+            AgentModelCatalog.displayName(for: cursorModel, agentKind: .pi, availability: workspaceAvailability),
+            "Opus 4.8 (opus-latest) @ 300k"
+        )
     }
 
     func testPiRoleDefaultExactModelEndingInThinkingWordIsNotReparsedByWorkspaceCatalog() throws {

@@ -3122,7 +3122,7 @@ actor ServerNetworkManager {
                 clientPid: clientPid,
                 runID: policy.runID
             )
-            return descendantStatus != false || !MCPClientIdentity.isManagedPiBridgeExecutionClient(clientName)
+            return descendantStatus == true
         }) != nil {
             return true
         }
@@ -6531,6 +6531,18 @@ actor ServerNetworkManager {
         // to an authoritative provider identity before the ACP parent PID is registered.
         if hasAgentPolicyAdmissionTarget(clientName: clientName, sessionKey: sessionKey, clientPid: clientPid) {
             return .ready
+        }
+        if !MCPClientIdentity.isManagedPiBridgeExecutionClient(clientName),
+           oldestPendingPolicyEntry(for: clientName, where: { $0.requiresExpectedAgentPID }) != nil
+        {
+            return await waitForAgentPolicyAdmission(
+                clientName: clientName,
+                connectionID: connectionID,
+                sessionKey: sessionKey,
+                clientPid: clientPid,
+                timeout: timeout,
+                holdReason: "pid_gated_policy_pending_expected_pid"
+            )
         }
 
         switch isExpectedAgentDescendant(clientName: clientName, clientPid: clientPid) {

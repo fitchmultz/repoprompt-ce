@@ -17,7 +17,8 @@ const MANAGED_SCHEMA_LOAD_TIMEOUT_MS = 60_000;
 const DEFAULT_GLOBAL_SCHEMA_LOAD_TIMEOUT_MS = 10_000;
 const GLOBAL_SCHEMA_LOAD_TIMEOUT_ENV = "REPOPROMPT_PI_GLOBAL_BRIDGE_SCHEMA_TIMEOUT_MS";
 const TOOL_EXEC_TIMEOUT_MS = 600_000;
-const TOOL_APPROVAL_TIMEOUT_MS = 120_000;
+const TOOL_APPROVAL_TIMEOUT_MS = 300_000;
+const TOOL_APPROVAL_TIMEOUT_ENV = "REPOPROMPT_PI_APPROVAL_TIMEOUT_MS";
 const BRIDGE_DEBUG_LOG_ENV = "REPOPROMPT_PI_BRIDGE_DEBUG_LOG";
 const MAX_RESULT_CHARS = 50 * 1024;
 const MAX_TOOL_INPUT_UI_CHARS = 1_200;
@@ -144,7 +145,14 @@ function bridgeDebugLog(event: string, fields: JSONRecord = {}) {
 }
 
 function toolExecutionTimeoutMS(toolName: string): number {
-  return toolName === "agent_run" ? 0 : TOOL_EXEC_TIMEOUT_MS;
+  return ["agent_run", "context_builder", "ask_oracle"].includes(toolName) ? 0 : TOOL_EXEC_TIMEOUT_MS;
+}
+
+function toolApprovalTimeoutMS(): number {
+  const raw = process.env[TOOL_APPROVAL_TIMEOUT_ENV]?.trim();
+  if (!raw) return TOOL_APPROVAL_TIMEOUT_MS;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : TOOL_APPROVAL_TIMEOUT_MS;
 }
 
 function classifyBridgeFailure(message: string, exitCode?: number): RepoPromptBridgeFailureClass {
@@ -345,6 +353,9 @@ function redactValue(key: string, value: unknown): unknown {
     || normalized.includes("api_key")
     || normalized.includes("apikey")
     || normalized.includes("authorization")
+    || normalized === "command"
+    || normalized === "script"
+    || normalized === "code"
   ) {
     return "[REDACTED]";
   }
@@ -445,6 +456,7 @@ async function requestRepoPromptPiToolApproval(
   const modeCopy = permissionLevel === "autoReview"
     ? "Auto Review is not yet wired for pi built-ins, so RepoPrompt is routing this request to explicit app approval."
     : "RepoPrompt asks before pi mutating built-ins run.";
+  const timeoutMS = toolApprovalTimeoutMS();
   const payload: JSONRecord = {
     title: `RepoPrompt pi preflight approval: ${event.toolName}`,
     context: [
@@ -454,7 +466,7 @@ async function requestRepoPromptPiToolApproval(
       "Input:",
       inputSummary,
     ].join("\n"),
-    timeout_seconds: Math.ceil(TOOL_APPROVAL_TIMEOUT_MS / 1000),
+    timeout_seconds: Math.ceil(timeoutMS / 1000),
     questions: [
       {
         id: "pi_tool_approval",
@@ -475,7 +487,7 @@ async function requestRepoPromptPiToolApproval(
     result = await pi.exec(
       REPOPROMPT_CLI,
       repoPromptToolArgs("ask_user", payload),
-      { signal: ctx.signal, timeout: TOOL_APPROVAL_TIMEOUT_MS + 5_000 },
+      { signal: ctx.signal, timeout: timeoutMS + 5_000 },
     );
   } catch (error) {
     return blockPiTool(`RepoPrompt failed closed while requesting app approval for pi ${event.toolName}: ${String(error)}`);

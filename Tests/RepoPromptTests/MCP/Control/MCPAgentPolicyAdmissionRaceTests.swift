@@ -280,6 +280,44 @@ final class MCPAgentPolicyAdmissionRaceTests: XCTestCase {
         #endif
     }
 
+    func testManagedPiBridgePidGatedPolicyWaitsUntilExpectedPidIsRegistered() async throws {
+        #if DEBUG
+            let piBridgeClientName = "pi"
+            let runID = UUID()
+            let bootstrapConnectionID = UUID()
+            let windowID = 61013
+            let sessionKey = "pi-pid-registration-wait-\(UUID().uuidString)"
+            await manager.installClientConnectionPolicy(
+                for: piBridgeClientName,
+                windowID: windowID,
+                restrictedTools: AgentModeMCPToolPolicy.restrictedTools,
+                oneShot: true,
+                reason: "Managed pi bridge PID registration wait regression",
+                ttl: 10,
+                runID: runID,
+                additionalTools: nil,
+                purpose: .agentModeRun,
+                requiresExpectedAgentPID: true
+            )
+
+            let readiness = await manager.debugAgentPolicyAdmissionStatus(
+                clientName: piBridgeClientName,
+                bootstrapClientName: piBridgeClientName,
+                connectionID: bootstrapConnectionID,
+                sessionKey: sessionKey,
+                clientPid: Int(getpid()),
+                timeout: 0.01
+            )
+
+            XCTAssertEqual(readiness, "timedOut")
+            await manager.clearClientConnectionPolicy(for: piBridgeClientName, windowID: windowID, runID: runID)
+            await manager.removeConnection(bootstrapConnectionID)
+            await manager.cleanupRunRoutingState(for: runID, windowID: windowID)
+        #else
+            throw XCTSkip("Bootstrap admission diagnostics require DEBUG helpers.")
+        #endif
+    }
+
     func testManagedPiBridgeBootstrapIgnoresStaleLiveAffinityWithoutConsumablePolicy() async throws {
         #if DEBUG
             let piBridgeClientName = "pi-schema"

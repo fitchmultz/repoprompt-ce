@@ -135,13 +135,7 @@ final class PiIntegratedAgentModeRunner {
                     finalizeNonCodexUsage: true,
                     supportsFollowUp: false,
                     notifyTurnComplete: false,
-                    prepareProviderState: {
-                        self.makeTerminalTeardown(
-                            session: session,
-                            controller: controller,
-                            runID: runID
-                        )
-                    }
+                    prepareProviderState: { nil }
                 ))
                 return
             }
@@ -196,13 +190,7 @@ final class PiIntegratedAgentModeRunner {
                 finalizeNonCodexUsage: true,
                 supportsFollowUp: state == .completed,
                 notifyTurnComplete: notifyTurnComplete,
-                prepareProviderState: {
-                    self.makeTerminalTeardown(
-                        session: session,
-                        controller: controller,
-                        runID: runID
-                    )
-                }
+                prepareProviderState: { nil }
             ))
         }
 

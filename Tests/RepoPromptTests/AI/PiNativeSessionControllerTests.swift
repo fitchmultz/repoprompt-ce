@@ -2109,6 +2109,54 @@ final class PiNativeSessionControllerTests: XCTestCase {
         })
     }
 
+    func testExtensionErrorCompletesInflightTurnAsFailed() async throws {
+        let directory = try makeTemporaryDirectory()
+        let scriptURL = try makeFakePiControllerScript(recordURL: directory.appendingPathComponent("commands.jsonl"))
+        let client = PiRPCClient(config: .init(
+            commandName: scriptURL.path,
+            additionalPathHints: [],
+            requestTimeout: 2,
+            launchArguments: [],
+            requiresSupportedVersionCheck: false
+        ))
+        let controller = makeController(client: client)
+        addTeardownBlock { await controller.shutdown() }
+        _ = try await controller.startOrResume(existing: nil)
+
+        let stream = await controller.events
+        let recorder = EventRecorder()
+        let collector = Task {
+            for await event in stream {
+                await recorder.append(event)
+            }
+        }
+
+        let turnID = try await controller.sendUserMessage("no-agent-end")
+        _ = try await client.sendCommand([
+            "type": .string("test_emit"),
+            "scenario": .string("extension_error")
+        ])
+        let events = await waitForRecordedEvents(recorder, timeoutNanoseconds: 1_500_000_000) { events in
+            events.contains { event in
+                if case let .turnCompleted(completedTurnID, status) = event {
+                    return completedTurnID == turnID && status == .failed
+                }
+                return false
+            }
+        }
+        collector.cancel()
+
+        let streamResults = events.compactMap { event -> AIStreamResult? in
+            if case let .stream(result) = event { return result }
+            return nil
+        }
+        XCTAssertEqual(streamResults.filter { $0.type == "message_stop" }.first?.stopReason, "failed")
+        XCTAssertTrue(events.contains { event in
+            if case let .error(message) = event { return message.contains("extension exploded") }
+            return false
+        })
+    }
+
     func testModelSpecifierParsesProviderModelAndThinking() {
         XCTAssertEqual(
             PiModelSpecifier(raw: "zai/glm-5.2:high", knownModelIDs: []),
@@ -2529,6 +2577,8 @@ final class PiNativeSessionControllerTests: XCTestCase {
                         EMIT_EXTENSION_CONTINUATION_AFTER_IDLE_STATE = False
                         EXTENSION_CONTINUATION_READY = False
                         emit_post_agent_end_continuation()
+                elif scenario == "extension_error":
+                    emit({"type": "extension_error", "message": "extension exploded"})
                 emit({"type": "response", "id": request_id, "command": "test_emit", "success": True})
             elif command == "abort":
                 emit({"type": "response", "id": request_id, "command": "abort", "success": True})
