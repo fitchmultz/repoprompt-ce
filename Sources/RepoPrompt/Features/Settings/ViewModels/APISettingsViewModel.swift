@@ -1172,9 +1172,11 @@ public class APISettingsViewModel: ObservableObject {
             return
         }
 
-        // Load persisted ACP catalogs before any provider result can trigger restoration.
-        // A live refresh may legitimately omit dynamic metadata, especially for Cursor.
+        // Load persisted ACP/pi catalogs before any provider result can trigger restoration.
+        // A live refresh may legitimately omit dynamic metadata, especially for Cursor, and a
+        // slow or in-flight pi RPC spawn must not drop a cached pi catalog mid-restoration.
         await AgentACPModelRegistry.shared.warmStandardStoreIfNeeded()
+        await AgentPiModelRegistry.shared.warmStandardStoreIfNeeded()
         guard !Task.isCancelled, !hasPreparedForWindowClose else { return }
         if isContextBuilderProviderValidationComplete { return }
         if let contextBuilderProviderValidationTask {
@@ -1225,6 +1227,14 @@ public class APISettingsViewModel: ObservableObject {
 
     private func probeCachedPiConnection(ifNeeded: Bool) async -> Bool {
         guard ifNeeded else { return false }
+        // Parity with probeCachedOpenCodeConnection: a persisted pi catalog (PiModelSnapshots/,
+        // warmed above) keeps a saved oracle/Context Builder pi selection verified while the live
+        // RPC refresh runs via the model subscription. Without this, a slow or in-flight startup
+        // spawn flips isPiConnected off and drops pi models, visually resetting saved selections.
+        // A genuine later failure is still revoked by the subscription's .failure handling.
+        if applyCachedPiAvailabilityIfPresent() {
+            return true
+        }
         do {
             return try await refreshPiAvailabilityFromModelDiscovery(workspacePath: nil, collector: nil)
         } catch {
@@ -1541,7 +1551,16 @@ public class APISettingsViewModel: ObservableObject {
         }
         if isOpenCodeConnected { startOpenCodeModelsSubscriptionIfNeeded(workspacePath: nil) } else { stopOpenCodeModelsSubscription(clearModels: true) }
         if isCursorConnected { startCursorModelsSubscriptionIfNeeded(workspacePath: nil) } else { stopCursorModelsSubscription(clearModels: true) }
-        if isPiConnected { startPiAvailabilityPreflightIfNeeded(workspacePath: nil) } else { stopPiModelsSubscription(clearModels: true) }
+        if isPiConnected {
+            await AgentPiModelRegistry.shared.warmStandardStoreIfNeeded()
+            if applyCachedPiAvailabilityIfPresent() {
+                startPiModelsSubscriptionIfNeeded(workspacePath: nil)
+            } else {
+                startPiAvailabilityPreflightIfNeeded(workspacePath: nil)
+            }
+        } else {
+            stopPiModelsSubscription(clearModels: true)
+        }
         if isOpenRouterKeyValid { openRouterModelsTask = Task { await self.fetchOpenRouterModels() } }
         if isCustomProviderValid { Task { await self.fetchCustomModels() } }
 

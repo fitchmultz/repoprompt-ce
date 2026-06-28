@@ -111,6 +111,13 @@ extension APISettingsViewModel {
         return url
     }
 
+    func applyCachedPiAvailabilityIfPresent() -> Bool {
+        guard let cached = AgentPiModelRegistry.shared.cachedSnapshot(), !cached.options.isEmpty else { return false }
+        applyPiConnected()
+        applyPiModelSnapshot(PiModelPollingService.Snapshot(models: cached, fetchedAt: Date()))
+        return true
+    }
+
     func startPiAvailabilityPreflightIfNeeded(workspacePath: String?) {
         guard piPreflightTask == nil else { return }
         piPreflightTask = Task { [weak self, workspacePath] in

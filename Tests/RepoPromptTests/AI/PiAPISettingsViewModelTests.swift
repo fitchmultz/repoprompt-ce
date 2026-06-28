@@ -5,9 +5,13 @@ import XCTest
 final class PiAPISettingsViewModelTests: XCTestCase {
     private var piConnectionDefaults: UserDefaults!
     private var piConnectionSuiteName: String!
+    private var piModelStoreDirectory: URL!
 
     override func setUp() {
         super.setUp()
+        piModelStoreDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PiAPISettingsViewModelTests-\(UUID().uuidString)", isDirectory: true)
+        PiDynamicModelStore.test_setStoreDirectoryOverride(piModelStoreDirectory)
         AgentPiModelRegistry.shared.test_reset()
         piConnectionSuiteName = "PiAPISettingsViewModelTests.\(UUID().uuidString)"
         piConnectionDefaults = UserDefaults(suiteName: piConnectionSuiteName)
@@ -16,11 +20,16 @@ final class PiAPISettingsViewModelTests: XCTestCase {
 
     override func tearDown() {
         AgentPiModelRegistry.shared.test_reset()
+        PiDynamicModelStore.test_setStoreDirectoryOverride(nil)
+        if let piModelStoreDirectory {
+            try? FileManager.default.removeItem(at: piModelStoreDirectory)
+        }
         if let piConnectionDefaults, let piConnectionSuiteName {
             piConnectionDefaults.removePersistentDomain(forName: piConnectionSuiteName)
         }
         piConnectionDefaults = nil
         piConnectionSuiteName = nil
+        piModelStoreDirectory = nil
         super.tearDown()
     }
 
@@ -233,6 +242,31 @@ final class PiAPISettingsViewModelTests: XCTestCase {
         let discoveryCount = await polling.discoveryCount()
         let subscriptionCount = await polling.subscriptionCount()
         XCTAssertEqual(discoveryCount, 1)
+        XCTAssertEqual(subscriptionCount, 1)
+    }
+
+    func testContextBuilderStartupValidationKeepsPersistedPiVerifiedFromCacheWhenLiveDiscoveryIsSlow() async {
+        piConnectionDefaults.set(true, forKey: "PiCLIConnected")
+        // Persisted catalog from a prior session (mirrors PiModelSnapshots/ on disk).
+        XCTAssertTrue(AgentPiModelRegistry.shared.updateDiscoveredModels(Self.piSnapshot().models))
+        AgentPiModelRegistry.shared.test_clearMemoryPreservingStore()
+        // Live RPC is slow / in flight: a fresh foreground spawn would not return in time.
+        let polling = FakePiModelPolling(error: PiRPCClient.ClientError.requestTimedOut(id: "1", command: "get_available_models"))
+        let viewModel = makeViewModel(polling: polling)
+        XCTAssertTrue(viewModel.isPiConnected)
+
+        await viewModel.loadAllKeys()
+        await viewModel.validateCachedContextBuilderProvidersIfNeeded()
+
+        XCTAssertTrue(viewModel.isPiConnected)
+        XCTAssertTrue(viewModel.contextBuilderRestorationAvailabilityContext.piAvailable)
+        XCTAssertEqual(viewModel.recommendationProviderStatusSnapshot.piCLI, .ready)
+        XCTAssertEqual(viewModel.availablePiModelOptions.map(\.rawValue), ["zai/glm-5.2"])
+        XCTAssertTrue(piConnectionDefaults.bool(forKey: "PiCLIConnected"))
+        // Cached catalog is enough; startup skips the blocking foreground spawn but still subscribes for live revocation.
+        let discoveryCount = await polling.discoveryCount()
+        let subscriptionCount = await polling.subscriptionCount()
+        XCTAssertEqual(discoveryCount, 0)
         XCTAssertEqual(subscriptionCount, 1)
     }
 
