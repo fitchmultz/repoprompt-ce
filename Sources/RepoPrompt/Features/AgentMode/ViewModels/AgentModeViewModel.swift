@@ -3509,6 +3509,25 @@ final class AgentModeViewModel: ObservableObject {
         }
     }
 
+    func routedAgentSession(_ routedSessionID: UUID, mayControl targetSessionID: UUID) -> Bool {
+        if routedSessionID == targetSessionID { return true }
+        var visited = Set<UUID>()
+        var current = targetSessionID
+        while visited.insert(current).inserted {
+            guard let parent = parentSessionID(for: current) else { return false }
+            if parent == routedSessionID { return true }
+            current = parent
+        }
+        return false
+    }
+
+    private func parentSessionID(for sessionID: UUID) -> UUID? {
+        if let live = try? authoritativeLiveSession(for: sessionID) {
+            return live.parentSessionID
+        }
+        return sessionIndex[sessionID]?.parentSessionID
+    }
+
     private func persistentBindingTransitionIsCurrent(_ token: PersistentBindingTransitionToken) -> Bool {
         guard let session = sessions[token.tabID],
               ObjectIdentifier(session) == token.sessionIdentity,

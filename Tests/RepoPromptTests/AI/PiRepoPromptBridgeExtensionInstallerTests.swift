@@ -219,6 +219,9 @@ final class PiRepoPromptBridgeExtensionInstallerTests: XCTestCase {
         XCTAssertFalse(source.contains("stdoutPreview"))
         XCTAssertFalse(source.contains("stderrPreview"))
         XCTAssertTrue(source.contains("safeToolInputSummary(params)"))
+        XCTAssertTrue(source.contains("let repoPromptToolQueue: Promise<unknown> = Promise.resolve()"))
+        XCTAssertTrue(source.contains("function serializeRepoPromptToolCall<T>(operation: () => Promise<T>): Promise<T>"))
+        XCTAssertTrue(source.contains("result = await serializeRepoPromptToolCall(() => pi.exec("))
         XCTAssertTrue(source.contains("sha256Hex(canonicalJSONString(event.input))"))
         XCTAssertTrue(source.contains("RepoPrompt pi preflight approval"))
         XCTAssertTrue(source.contains("Auto Review is not yet wired for pi built-ins"))
@@ -505,13 +508,14 @@ final class PiRepoPromptBridgeExtensionInstallerTests: XCTestCase {
     const repoPromptBridge = require("./bridge").default;
 
     type ExecResponse = { code: number; stdout: string; stderr: string };
+    type ExecResponseSource = ExecResponse | (() => Promise<ExecResponse> | ExecResponse);
 
     class FakePi {
       handlers = new Map<string, Array<(...args: any[]) => Promise<any> | any>>();
       registeredTools: any[] = [];
       execCalls: any[] = [];
 
-      constructor(private responses: ExecResponse[]) {}
+      constructor(private responses: ExecResponseSource[]) {}
 
       on(name: string, handler: (...args: any[]) => Promise<any> | any) {
         const handlers = this.handlers.get(name) ?? [];
@@ -527,7 +531,7 @@ final class PiRepoPromptBridgeExtensionInstallerTests: XCTestCase {
         this.execCalls.push({ command, args, options });
         const response = this.responses.shift();
         if (!response) throw new Error(`No fake pi.exec response for ${command} ${args.join(" ")}`);
-        return response;
+        return typeof response === "function" ? await response() : response;
       }
 
       async trigger(name: string, ...args: any[]) {
@@ -559,7 +563,7 @@ final class PiRepoPromptBridgeExtensionInstallerTests: XCTestCase {
       };
     }
 
-    async function loadBridge(permissionLevel: string | undefined, responses: ExecResponse[] = [schemaResponse()]): Promise<FakePi> {
+    async function loadBridge(permissionLevel: string | undefined, responses: ExecResponseSource[] = [schemaResponse()]): Promise<FakePi> {
       if (permissionLevel === undefined) {
         delete process.env.REPOPROMPT_PI_PERMISSION_LEVEL;
       } else {
@@ -626,6 +630,32 @@ final class PiRepoPromptBridgeExtensionInstallerTests: XCTestCase {
       assert.equal(pi.execCalls.at(-1).options.timeout, 0);
       await pi.registeredTools.find((entry) => entry.name === "ask_oracle").execute({});
       assert.equal(pi.execCalls.at(-1).options.timeout, 0);
+
+      let activeRepoPromptExecs = 0;
+      let maxActiveRepoPromptExecs = 0;
+      const execOrder: string[] = [];
+      function delayedToolResponse(label: string): () => Promise<ExecResponse> {
+        return async () => {
+          activeRepoPromptExecs += 1;
+          maxActiveRepoPromptExecs = Math.max(maxActiveRepoPromptExecs, activeRepoPromptExecs);
+          execOrder.push(`${label}:start`);
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          execOrder.push(`${label}:end`);
+          activeRepoPromptExecs -= 1;
+          return { code: 0, stdout: label, stderr: "" };
+        };
+      }
+      pi = await loadBridge("fullAccess", [
+        schemaResponse([toolSchema("agent_run"), toolSchema("read_file")]),
+        delayedToolResponse("agent_run"),
+        delayedToolResponse("read_file"),
+      ]);
+      await Promise.all([
+        pi.registeredTools.find((entry) => entry.name === "agent_run").execute({ op: "start" }),
+        pi.registeredTools.find((entry) => entry.name === "read_file").execute({ path: "README.md" }),
+      ]);
+      assert.equal(maxActiveRepoPromptExecs, 1, "managed RepoPrompt bridge calls must be serialized to avoid socket/admission races");
+      assert.deepEqual(execOrder, ["agent_run:start", "agent_run:end", "read_file:start", "read_file:end"]);
 
       pi = await loadBridge("autoReview", [schemaResponse(), { code: 0, stdout: "not json", stderr: "" }]);
       result = await pi.trigger("tool_call", bashEvent, ctx);

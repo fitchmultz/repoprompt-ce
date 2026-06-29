@@ -32,6 +32,7 @@ const PI_BUILT_IN_TOOLS = new Set<string>(["bash", "read", "edit", "write", "gre
 const PI_READ_ONLY_TOOLS = new Set<string>(["read", "grep", "find", "ls"]);
 const PI_MUTATING_TOOLS = new Set<string>(["bash", "edit", "write"]);
 const PI_SESSION_TOOL_GRANTS = new Set<string>();
+let repoPromptToolQueue: Promise<unknown> = Promise.resolve();
 
 type RepoPromptToolEntry = {
   name: string;
@@ -258,6 +259,12 @@ function sanitizedBindContextParams(params: unknown): JSONRecord {
   return sanitized;
 }
 
+async function serializeRepoPromptToolCall<T>(operation: () => Promise<T>): Promise<T> {
+  const run = repoPromptToolQueue.catch(() => undefined).then(operation);
+  repoPromptToolQueue = run.catch(() => undefined);
+  return await run;
+}
+
 async function callRepoPromptTool(
   pi: ExtensionAPI,
   toolName: string,
@@ -275,11 +282,11 @@ async function callRepoPromptTool(
   });
   let result: PiExecResult;
   try {
-    result = await pi.exec(
+    result = await serializeRepoPromptToolCall(() => pi.exec(
       REPOPROMPT_CLI,
       args,
       { signal, timeout },
-    );
+    ));
   } catch (error) {
     bridgeDebugLog("tool_exec_throw", {
       toolName,

@@ -97,6 +97,35 @@ final class AgentRunWorktreeStartTests: XCTestCase {
         XCTAssertEqual(try viewModel.effectiveWorkspacePath(for: optedOutChild), root.path)
     }
 
+    func testRoutedParentSessionMayControlDescendantWorktreeSessionsOnly() throws {
+        let root = try makeTemporaryDirectory(named: "root")
+        let viewModel = makeViewModel(workspacePath: root.path)
+        let parentID = UUID()
+        let childID = UUID()
+        let grandchildID = UUID()
+        let siblingID = UUID()
+
+        let parent = viewModel.session(for: UUID())
+        parent.testInstallPersistentSessionBinding(sessionID: parentID)
+
+        let child = viewModel.session(for: UUID())
+        child.testInstallPersistentSessionBinding(sessionID: childID)
+        child.parentSessionID = parentID
+
+        let grandchild = viewModel.session(for: UUID())
+        grandchild.testInstallPersistentSessionBinding(sessionID: grandchildID)
+        grandchild.parentSessionID = childID
+
+        let sibling = viewModel.session(for: UUID())
+        sibling.testInstallPersistentSessionBinding(sessionID: siblingID)
+
+        XCTAssertTrue(viewModel.routedAgentSession(parentID, mayControl: parentID))
+        XCTAssertTrue(viewModel.routedAgentSession(parentID, mayControl: childID))
+        XCTAssertTrue(viewModel.routedAgentSession(parentID, mayControl: grandchildID))
+        XCTAssertFalse(viewModel.routedAgentSession(parentID, mayControl: siblingID))
+        XCTAssertFalse(viewModel.routedAgentSession(childID, mayControl: parentID))
+    }
+
     func testAgentRunStartParentSourceWorktreeInheritanceMatrix() async throws {
         for (sourceIsMCPControlled, inheritWorktreeBindings) in [
             (true, true),

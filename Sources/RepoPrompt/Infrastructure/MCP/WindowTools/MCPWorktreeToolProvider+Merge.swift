@@ -189,6 +189,7 @@ extension MCPWorktreeToolProvider {
             .allowLegacyImplicitRouting
         )
         let isRoutedAgentMode = await (try? dependencies.requireAgentModeConnection(MCPWindowToolName.manageWorktree)) != nil
+        let agentModeViewModel = try dependencies.requireTargetWindow().agentModeViewModel
 
         if let raw = trimmedString(args["session_id"]) {
             guard let uuid = UUID(uuidString: raw) else {
@@ -196,9 +197,9 @@ extension MCPWorktreeToolProvider {
             }
             if isRoutedAgentMode,
                let routedSessionID = resolved.snapshot.activeAgentSessionID,
-               routedSessionID != uuid
+               !agentModeViewModel.routedAgentSession(routedSessionID, mayControl: uuid)
             {
-                throw MCPError.invalidParams("session_id must match the routed Agent Mode session.")
+                throw MCPError.invalidParams("session_id must match the routed Agent Mode session or one of its descendant sessions.")
             }
             return SessionResolution(sessionID: uuid, isRoutedAgentMode: isRoutedAgentMode)
         }

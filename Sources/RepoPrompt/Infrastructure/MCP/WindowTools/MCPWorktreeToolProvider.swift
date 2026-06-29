@@ -369,19 +369,28 @@ final class MCPWorktreeToolProvider: MCPWindowToolProviding {
     }
 
     private func resolveBindingSessionID(args: [String: Value]) async throws -> UUID {
-        if let raw = trimmedString(args["session_id"]) {
-            guard let uuid = UUID(uuidString: raw) else {
-                throw MCPError.invalidParams("session_id must be a UUID. Received: \(raw)")
-            }
-            return uuid
-        }
-
         let metadata = await dependencies.captureRequestMetadata()
         let resolved = try dependencies.resolveTabContextSnapshot(
             metadata,
             MCPWindowToolName.manageWorktree,
             .allowLegacyImplicitRouting
         )
+        let isRoutedAgentMode = await (try? dependencies.requireAgentModeConnection(MCPWindowToolName.manageWorktree)) != nil
+        let agentModeViewModel = try dependencies.requireTargetWindow().agentModeViewModel
+
+        if let raw = trimmedString(args["session_id"]) {
+            guard let uuid = UUID(uuidString: raw) else {
+                throw MCPError.invalidParams("session_id must be a UUID. Received: \(raw)")
+            }
+            if isRoutedAgentMode,
+               let routedSessionID = resolved.snapshot.activeAgentSessionID,
+               !agentModeViewModel.routedAgentSession(routedSessionID, mayControl: uuid)
+            {
+                throw MCPError.invalidParams("session_id must match the routed Agent Mode session or one of its descendant sessions.")
+            }
+            return uuid
+        }
+
         guard let sessionID = resolved.snapshot.activeAgentSessionID else {
             throw MCPError.invalidParams("session_id is required because current MCP routing does not resolve an active Agent session.")
         }
