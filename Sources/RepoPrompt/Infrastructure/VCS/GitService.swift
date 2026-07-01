@@ -19,10 +19,23 @@ actor GitService {
 
     // MARK: - Worktree Layout Cache
 
+    private struct CachedWorktreeLayout {
+        let layout: GitRepositoryLayout
+        var accessOrdinal: UInt64
+        var retainCountsByGitDirectory: [String: Int]
+        var isInvalidated: Bool
+
+        var retainCount: Int {
+            retainCountsByGitDirectory.values.reduce(0, +)
+        }
+    }
+
     /// Cached Git repository layouts to avoid repeated filesystem checks.
     /// Key: standardized repo root path
     /// Value: resolved layout (only non-nil results are cached)
-    private var worktreeLayoutCache: [String: GitRepositoryLayout] = [:]
+    private var worktreeLayoutCache: [String: CachedWorktreeLayout] = [:]
+    private let worktreeLayoutCacheLimit: Int = 256
+    private var worktreeLayoutCacheAccessOrdinal: UInt64 = 0
 
     /// Get the repository layout for a given repo URL, using cache when available.
     /// Only caches successful resolutions to prevent unbounded cache growth from
@@ -30,21 +43,95 @@ actor GitService {
     private func getLayout(for repoURL: URL) -> GitRepositoryLayout? {
         let key = repoURL.standardizedFileURL.path
 
-        if let cached = worktreeLayoutCache[key] {
-            return cached
+        if var cached = worktreeLayoutCache[key], !cached.isInvalidated {
+            worktreeLayoutCacheAccessOrdinal &+= 1
+            cached.accessOrdinal = worktreeLayoutCacheAccessOrdinal
+            worktreeLayoutCache[key] = cached
+            return cached.layout
         }
 
         let layout = GitRepositoryLayoutResolver.resolve(atWorkTreeRoot: repoURL)
         // Only cache non-nil to avoid unbounded growth from failed lookups
         if let layout {
-            worktreeLayoutCache[key] = layout
+            cacheLayout(layout, forKey: key)
         }
         return layout
     }
 
+    private func cacheLayout(
+        _ layout: GitRepositoryLayout,
+        forKey key: String
+    ) {
+        worktreeLayoutCacheAccessOrdinal &+= 1
+        let existingRetains = worktreeLayoutCache[key]?.retainCountsByGitDirectory ?? [:]
+        worktreeLayoutCache[key] = CachedWorktreeLayout(
+            layout: layout,
+            accessOrdinal: worktreeLayoutCacheAccessOrdinal,
+            retainCountsByGitDirectory: existingRetains,
+            isInvalidated: false
+        )
+        evictWorktreeLayoutsIfNeeded()
+    }
+
+    private func evictWorktreeLayoutsIfNeeded() {
+        while worktreeLayoutCache.count > worktreeLayoutCacheLimit,
+              let candidate = worktreeLayoutCache
+              .filter({ $0.value.retainCount == 0 })
+              .min(by: { $0.value.accessOrdinal < $1.value.accessOrdinal })
+        {
+            worktreeLayoutCache.removeValue(forKey: candidate.key)
+        }
+    }
+
+    func retainRepositoryLayout(_ layout: GitRepositoryLayout) {
+        let key = layout.workTreeRoot.standardizedFileURL.path
+        let gitDirectoryKey = layout.gitDir.standardizedFileURL.path
+        worktreeLayoutCacheAccessOrdinal &+= 1
+        var retains = worktreeLayoutCache[key]?.retainCountsByGitDirectory ?? [:]
+        retains[gitDirectoryKey, default: 0] += 1
+        worktreeLayoutCache[key] = CachedWorktreeLayout(
+            layout: layout,
+            accessOrdinal: worktreeLayoutCacheAccessOrdinal,
+            retainCountsByGitDirectory: retains,
+            isInvalidated: false
+        )
+        evictWorktreeLayoutsIfNeeded()
+    }
+
+    func releaseRepositoryLayout(
+        workTreeRoot: URL,
+        expectedGitDirectory: URL
+    ) {
+        let key = workTreeRoot.standardizedFileURL.path
+        let gitDirectoryKey = expectedGitDirectory.standardizedFileURL.path
+        guard var cached = worktreeLayoutCache[key],
+              let existingCount = cached.retainCountsByGitDirectory[gitDirectoryKey],
+              existingCount > 0
+        else { return }
+        if existingCount == 1 {
+            cached.retainCountsByGitDirectory.removeValue(forKey: gitDirectoryKey)
+        } else {
+            cached.retainCountsByGitDirectory[gitDirectoryKey] = existingCount - 1
+        }
+        if cached.retainCount == 0 {
+            worktreeLayoutCache.removeValue(forKey: key)
+        } else {
+            worktreeLayoutCache[key] = cached
+        }
+        evictWorktreeLayoutsIfNeeded()
+    }
+
     /// Clear the worktree layout cache (e.g., when workspace changes).
     func clearLayoutCache() {
-        worktreeLayoutCache.removeAll()
+        for key in Array(worktreeLayoutCache.keys) {
+            guard var cached = worktreeLayoutCache[key] else { continue }
+            if cached.retainCount == 0 {
+                worktreeLayoutCache.removeValue(forKey: key)
+            } else {
+                cached.isInvalidated = true
+                worktreeLayoutCache[key] = cached
+            }
+        }
     }
 
     private let worktreeMutationCoordinator = GitWorktreeMutationCoordinator()
@@ -117,6 +204,47 @@ actor GitService {
 
         let rootPath = stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         return URL(fileURLWithPath: rootPath)
+    }
+
+    /// Distinguishes a bare repository from an ordinary non-Git directory when
+    /// `--show-toplevel` cannot produce a worktree root.
+    func gitRepositoryKind(at path: URL) async throws -> GitRepositoryKind {
+        if try await findGitRoot(from: path) != nil {
+            return .worktree
+        }
+        let (stdout, _, exitCode) = try await runGit(
+            ["rev-parse", "--is-bare-repository"],
+            at: path
+        )
+        guard exitCode == 0 else {
+            // `rev-parse` has no repository context to inspect when this structured probe
+            // exits unsuccessfully. Do not parse localized diagnostics to distinguish it.
+            if Self.hasGitControlEntry(inOrAbove: path) {
+                throw GitError(message: "git repository kind probe failed")
+            }
+            return .nonGit
+        }
+        switch stdout.trimmingCharacters(in: .whitespacesAndNewlines) {
+        case "true": return .bare
+        case "false": return .worktree
+        default:
+            throw GitBlobIdentityError.malformedGitOutput("invalid bare repository response")
+        }
+    }
+
+    private nonisolated static func hasGitControlEntry(inOrAbove path: URL) -> Bool {
+        var directory = path.resolvingSymlinksInPath().standardizedFileURL
+        for _ in 0 ..< 512 {
+            var value = stat()
+            let controlPath = directory.appendingPathComponent(".git").path
+            if lstat(controlPath, &value) == 0 || errno == EACCES || errno == EPERM {
+                return true
+            }
+            let parent = directory.deletingLastPathComponent()
+            if parent.path == directory.path { return false }
+            directory = parent
+        }
+        return false
     }
 
     /// Check if the given path is within a git repository
@@ -2035,6 +2163,291 @@ actor GitService {
         try await getRepositoryStatus(at: repoURL).workingStatus
     }
 
+    // MARK: - Git Blob Artifact Plumbing
+
+    /// Resolve the actual repository layout for a loaded root, including roots that are
+    /// subdirectories of a checkout.
+    func resolveGitBlobRepository(containing workspaceRoot: URL) async throws -> GitRepositoryLayout? {
+        guard let repositoryRoot = try await findGitRoot(from: workspaceRoot) else { return nil }
+        return getLayout(for: repositoryRoot.standardizedFileURL)
+    }
+
+    func gitBlobObjectFormat(at repositoryRoot: URL) async throws -> GitObjectFormat {
+        let (stdout, stderr, exitCode) = try await runGit(
+            ["rev-parse", "--show-object-format"],
+            at: repositoryRoot
+        )
+        guard exitCode == 0 else {
+            throw GitBlobIdentityError.unsupportedGit(stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        let value = stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty,
+              !value.utf8.contains(0),
+              value.unicodeScalars.allSatisfy({ !CharacterSet.whitespacesAndNewlines.contains($0) })
+        else {
+            throw GitBlobIdentityError.invalidObjectFormat(stdout)
+        }
+        return try GitObjectFormat(gitValue: value)
+    }
+
+    func gitBlobObjectSize(in layout: GitRepositoryLayout, oid: GitBlobOID) async throws -> UInt64 {
+        let (stdout, _, exitCode) = try await runGit(
+            ["cat-file", "-s", oid.lowercaseHex],
+            at: layout.workTreeRoot
+        )
+        guard exitCode == 0 else { throw GitBlobObjectReadError.unavailable }
+        let value = stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty,
+              value.utf8.allSatisfy({ (UInt8(ascii: "0") ... UInt8(ascii: "9")).contains($0) }),
+              let size = UInt64(value)
+        else {
+            throw GitBlobObjectReadError.malformedSize
+        }
+        return size
+    }
+
+    func gitBlobObjectBytes(
+        in layout: GitRepositoryLayout,
+        oid: GitBlobOID,
+        expectedByteCount: Int
+    ) async throws -> Data {
+        let (captureLimit, overflow) = expectedByteCount.addingReportingOverflow(1)
+        guard expectedByteCount >= 0, !overflow else {
+            throw GitBlobObjectReadError.stdoutLimitExceeded
+        }
+        let result = try await runGitData(["cat-file", "blob", oid.lowercaseHex], at: layout.workTreeRoot)
+        guard result.exitCode == 0 else { throw GitBlobObjectReadError.unavailable }
+        guard result.stderr.count <= 64 * 1024 else { throw GitBlobObjectReadError.stderrLimitExceeded }
+        guard result.stdout.count <= captureLimit else { throw GitBlobObjectReadError.stdoutLimitExceeded }
+        return result.stdout
+    }
+
+    func gitBlobIndexEntries(
+        at repositoryRoot: URL,
+        repositoryRelativePaths: [String]
+    ) async throws -> [GitBlobIndexEntry] {
+        try Self.validateGitBlobPathBatch(repositoryRelativePaths)
+        var args = ["ls-files", "--stage", "-v", "-z", "--"]
+        args.append(contentsOf: repositoryRelativePaths)
+        let (stdout, stderr, exitCode) = try await runGit(
+            args,
+            at: repositoryRoot,
+            env: ["GIT_LITERAL_PATHSPECS": "1"]
+        )
+        guard exitCode == 0 else {
+            throw GitError(message: "git ls-files for blob identity failed: \(stderr)")
+        }
+        let requested = Set(repositoryRelativePaths)
+        return try stdout
+            .split(separator: "\0", omittingEmptySubsequences: true)
+            .compactMap { raw -> GitBlobIndexEntry? in
+                let record = String(raw)
+                guard record.count >= 3 else {
+                    throw GitBlobIdentityError.malformedGitOutput("short ls-files record")
+                }
+                let tag = record.first!
+                let payload = record.dropFirst(2)
+                guard let tab = payload.firstIndex(of: "\t") else {
+                    throw GitBlobIdentityError.malformedGitOutput("ls-files record has no path separator")
+                }
+                let metadata = payload[..<tab].split(separator: " ", omittingEmptySubsequences: true)
+                guard metadata.count == 3, let stage = Int(metadata[2]), (0 ... 3).contains(stage) else {
+                    throw GitBlobIdentityError.malformedGitOutput("invalid ls-files stage record")
+                }
+                let path = String(payload[payload.index(after: tab)...])
+                guard requested.contains(path) else { return nil }
+                return GitBlobIndexEntry(
+                    mode: String(metadata[0]),
+                    oid: String(metadata[1]).lowercased(),
+                    stage: stage,
+                    path: path,
+                    assumeUnchanged: tag.isLowercase,
+                    skipWorktree: tag == "S" || tag == "s"
+                )
+            }
+    }
+
+    func gitBlobStatusRecords(
+        at repositoryRoot: URL,
+        repositoryRelativePaths: [String]
+    ) async throws -> [GitPorcelainV2PathRecord] {
+        try Self.validateGitBlobPathBatch(repositoryRelativePaths)
+        var args = [
+            "status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignored=matching", "--"
+        ]
+        args.append(contentsOf: repositoryRelativePaths)
+        let (stdout, stderr, exitCode) = try await runGit(
+            args,
+            at: repositoryRoot,
+            env: ["GIT_LITERAL_PATHSPECS": "1"]
+        )
+        guard exitCode == 0 else {
+            throw GitError(message: "git status for blob identity failed: \(stderr)")
+        }
+        let requested = Set(repositoryRelativePaths)
+        return try GitStatusPorcelainV2Parser.parse(stdout).pathRecords.filter { record in
+            requested.contains(record.path) || {
+                if case let .renamedOrCopied(originalPath, _) = record.kind {
+                    return requested.contains(originalPath)
+                }
+                return false
+            }()
+        }
+    }
+
+    func gitBlobAttributes(
+        at repositoryRoot: URL,
+        repositoryRelativePaths: [String]
+    ) async throws -> [String: GitBlobPathAttributes] {
+        try Self.validateGitBlobPathBatch(repositoryRelativePaths)
+        let relevantAttributes = ["text", "eol", "filter", "ident", "working-tree-encoding"]
+        let relevantAttributeSet = Set(relevantAttributes)
+        let args = ["check-attr", "-z", "--all", "--stdin"]
+        let (stdout, stderr, exitCode) = try await runGit(
+            args,
+            at: repositoryRoot,
+            env: ["GIT_LITERAL_PATHSPECS": "1"],
+            stdin: makePathspecStdinData(repositoryRelativePaths)
+        )
+        guard exitCode == 0 else {
+            throw GitError(message: "git check-attr for blob identity failed: \(stderr)")
+        }
+        guard stdout.utf8.count <= 1024 * 1024 else {
+            throw GitBlobIdentityError.malformedGitOutput("check-attr output exceeds byte limit")
+        }
+        let fields = stdout.split(separator: "\0", omittingEmptySubsequences: false).map(String.init)
+        let completeFieldCount = fields.last == "" ? fields.count - 1 : fields.count
+        guard completeFieldCount.isMultiple(of: 3), completeFieldCount / 3 <= 4096 else {
+            throw GitBlobIdentityError.malformedGitOutput("invalid or oversized check-attr record set")
+        }
+        let requestedPaths = Set(repositoryRelativePaths)
+        var relevantRecordCount = 0
+        var raw: [String: [String: GitAttributeState]] = [:]
+        if completeFieldCount > 0 {
+            for index in stride(from: 0, to: completeFieldCount, by: 3) {
+                let path = fields[index]
+                let attribute = fields[index + 1]
+                guard requestedPaths.contains(path) else {
+                    throw GitBlobIdentityError.malformedGitOutput("unexpected check-attr path")
+                }
+                guard relevantAttributeSet.contains(attribute) else { continue }
+                relevantRecordCount += 1
+                guard relevantRecordCount <= repositoryRelativePaths.count * relevantAttributes.count else {
+                    throw GitBlobIdentityError.malformedGitOutput("oversized relevant check-attr record set")
+                }
+                let state: GitAttributeState = switch fields[index + 2] {
+                case "unset": .unset
+                case "set": .set("")
+                default: .set(fields[index + 2])
+                }
+                raw[path, default: [:]][attribute] = state
+            }
+        }
+        var result: [String: GitBlobPathAttributes] = [:]
+        for path in repositoryRelativePaths {
+            let values = raw[path] ?? [:]
+            result[path] = GitBlobPathAttributes(
+                text: values["text"] ?? .unspecified,
+                eol: values["eol"] ?? .unspecified,
+                filter: values["filter"] ?? .unspecified,
+                ident: values["ident"] ?? .unspecified,
+                workingTreeEncoding: values["working-tree-encoding"] ?? .unspecified
+            )
+        }
+        return result
+    }
+
+    func gitBlobCheckoutConfiguration(at repositoryRoot: URL) async throws -> GitBlobCheckoutConfiguration {
+        async let autoCRLFResult = runGit(["config", "--get", "core.autocrlf"], at: repositoryRoot)
+        async let eolResult = runGit(["config", "--get", "core.eol"], at: repositoryRoot)
+        async let filtersResult = runGit(
+            ["config", "--null", "--get-regexp", "^filter\\..*\\.(clean|smudge|process|required)$"],
+            at: repositoryRoot
+        )
+        let (autoCRLF, eol, filters) = try await (autoCRLFResult, eolResult, filtersResult)
+        func optionalValue(_ result: (String, String, Int32), name: String) throws -> String? {
+            if result.2 == 1 { return nil }
+            guard result.2 == 0 else {
+                throw GitError(message: "git config --get \(name) failed: \(result.1)")
+            }
+            let value = result.0.trimmingCharacters(in: .whitespacesAndNewlines)
+            return value.isEmpty ? nil : value.lowercased()
+        }
+        var drivers: [String: String] = [:]
+        if filters.2 != 1 {
+            guard filters.2 == 0 else {
+                throw GitError(message: "git config filter query failed: \(filters.1)")
+            }
+            for record in filters.0.split(separator: "\0", omittingEmptySubsequences: true) {
+                let value = String(record)
+                guard let separator = value.firstIndex(where: { $0 == "\n" || $0 == " " }) else {
+                    throw GitBlobIdentityError.malformedGitOutput("invalid filter configuration record")
+                }
+                drivers[String(value[..<separator]).lowercased()] = String(value[value.index(after: separator)...])
+            }
+        }
+        return try GitBlobCheckoutConfiguration(
+            coreAutoCRLF: optionalValue(autoCRLF, name: "core.autocrlf"),
+            coreEOL: optionalValue(eol, name: "core.eol"),
+            filterDriverConfiguration: drivers
+        )
+    }
+
+    func gitCodemapAuthorityConfiguration(at repositoryRoot: URL) async throws
+        -> GitCodemapAuthorityConfiguration
+    {
+        async let checkout = gitBlobCheckoutConfiguration(at: repositoryRoot)
+        async let attributesFile = runGit(["config", "--path", "--get", "core.attributesFile"], at: repositoryRoot)
+        async let sparseCheckout = runGit(["config", "--bool", "--get", "core.sparseCheckout"], at: repositoryRoot)
+        async let sparseCone = runGit(["config", "--bool", "--get", "core.sparseCheckoutCone"], at: repositoryRoot)
+        let (checkoutValue, attributesResult, sparseResult, coneResult) = try await (
+            checkout, attributesFile, sparseCheckout, sparseCone
+        )
+
+        func optionalValue(_ result: (String, String, Int32), name: String) throws -> String? {
+            if result.2 == 1 { return nil }
+            guard result.2 == 0 else {
+                throw GitError(message: "git config --get \(name) failed")
+            }
+            let value = result.0.trimmingCharacters(in: .whitespacesAndNewlines)
+            return value.isEmpty ? nil : value
+        }
+
+        func booleanValue(_ result: (String, String, Int32), name: String) throws -> Bool {
+            guard let value = try optionalValue(result, name: name)?.lowercased() else { return false }
+            switch value {
+            case "true", "yes", "on", "1": return true
+            case "false", "no", "off", "0": return false
+            default:
+                throw GitBlobIdentityError.malformedGitOutput("invalid boolean Git configuration")
+            }
+        }
+
+        return try GitCodemapAuthorityConfiguration(
+            checkout: checkoutValue,
+            attributesFilePath: optionalValue(attributesResult, name: "core.attributesFile"),
+            sparseCheckoutEnabled: booleanValue(sparseResult, name: "core.sparseCheckout"),
+            sparseCheckoutConeEnabled: booleanValue(coneResult, name: "core.sparseCheckoutCone")
+        )
+    }
+
+    private nonisolated static func validateGitBlobPathBatch(_ paths: [String]) throws {
+        guard !paths.isEmpty, paths.count <= 256 else {
+            throw GitBlobIdentityError.batchTooLarge
+        }
+        var bytes = 0
+        for path in paths {
+            let count = path.utf8.count
+            guard count <= 256 * 1024 - bytes else {
+                throw GitBlobIdentityError.batchTooLarge
+            }
+            bytes += count
+            guard !path.isEmpty, !path.utf8.contains(0) else {
+                throw GitBlobIdentityError.invalidRelativePath
+            }
+        }
+    }
+
     /// Summary of a commit for log output.
     struct CommitSummary {
         let sha: String
@@ -2328,6 +2741,47 @@ actor GitService {
                 return args[configIndex...].contains("--get")
             }
             return false
+        }
+    }
+
+    private func runGitData(
+        _ args: [String],
+        at repoURL: URL,
+        env: [String: String] = [:],
+        requiresRepoContext: Bool = true
+    ) async throws -> (stdout: Data, stderr: Data, exitCode: Int32) {
+        var environment = await processEnvironment()
+        environment["GIT_TERMINAL_PROMPT"] = "0"
+        if Self.isVerifiedReadOnlyGitOperation(args) {
+            environment["GIT_OPTIONAL_LOCKS"] = "0"
+        }
+        if requiresRepoContext, let layout = getLayout(for: repoURL), layout.isWorktree {
+            environment["GIT_DIR"] = layout.gitDir.path
+            environment["GIT_WORK_TREE"] = layout.workTreeRoot.path
+        }
+        environment.merge(env) { _, new in new }
+
+        return try await withCheckedThrowingContinuation { continuation in
+            let process = Process()
+            process.executableURL = gitExecutableURL
+            process.arguments = args
+            process.currentDirectoryURL = repoURL
+            process.environment = environment
+
+            let outPipe = Pipe()
+            let errPipe = Pipe()
+            process.standardOutput = outPipe
+            process.standardError = errPipe
+            process.terminationHandler = { proc in
+                let stdout = outPipe.fileHandleForReading.readDataToEndOfFile()
+                let stderr = errPipe.fileHandleForReading.readDataToEndOfFile()
+                continuation.resume(returning: (stdout, stderr, proc.terminationStatus))
+            }
+            do {
+                try process.run()
+            } catch {
+                continuation.resume(throwing: error)
+            }
         }
     }
 
