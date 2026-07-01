@@ -34,14 +34,19 @@ reports stay unignored so RepoPrompt tooling can read them; do not stage or merg
 them unless intentionally requested.
 
 Run the smallest relevant coordinated validation commands from [`AGENTS.md`](AGENTS.md).
-At minimum:
+For every change, run the repository guardrails:
 
 ```bash
 make guardrails
+```
+
+For Swift or style-sensitive changes, also run:
+
+```bash
 make dev-lint
 ```
 
-Add focused `make dev-test FILTER=<SuiteName>` coverage for behavior changes.
+Add focused `make dev-test FILTER=<SuiteName>` coverage for behavior changes. Use `.agents/skills/rpce-contribution-check/scripts/preflight.sh pr-ready` when you need computed-outgoing-range path-selected local PR-ready evidence.
 
-Do not change release metadata, signing identities, bundle IDs, Sparkle keys, or
+Do not change release metadata, signing identities, bundle IDs, Sparkle keys, local-production identifiers, or
 release channels unless a maintainer has explicitly requested it.

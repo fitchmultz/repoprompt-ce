@@ -67,7 +67,7 @@ final class MCPAgentRoleDefaultsServiceTests: XCTestCase {
         XCTAssertEqual(engineer.effective, engineer.recommended)
     }
 
-    func testSetSelectionClearsOverrideWhenSelectionMatchesFallbackRecommendation() {
+    func testSetSelectionPersistsExplicitPickEvenWhenItMatchesRecommendation() {
         let actualAvailability = AgentModelCatalog.AvailabilityContext(
             claudeCodeAvailable: false,
             codexAvailable: true,
@@ -95,7 +95,30 @@ final class MCPAgentRoleDefaultsServiceTests: XCTestCase {
             settingsStore: store
         )
 
-        XCTAssertNil(store.overrides)
+        let expected = AgentModelSelectionID(agentRaw: selection.agent.rawValue, modelRaw: selection.modelRaw).rawValue
+        XCTAssertEqual(store.overrides?[AgentModelCatalog.TaskLabelKind.explore.rawValue], expected)
+        XCTAssertEqual(
+            MCPAgentRoleDefaultsService.effectiveNormalizedSelection(
+                for: .explore,
+                availability: actualAvailability,
+                settingsStore: store
+            ),
+            selection
+        )
+    }
+
+    func testClearOverrideStillRevertsRoleToRecommendedTracking() {
+        let store = RoleDefaultsStoreStub()
+        MCPAgentRoleDefaultsService.setSelection(
+            AgentModelCatalog.NormalizedAgentSelection(agent: .codexExec, modelRaw: AgentModel.gpt55CodexHigh.rawValue),
+            for: .engineer,
+            settingsStore: store
+        )
+        XCTAssertNotNil(store.overrides?[AgentModelCatalog.TaskLabelKind.engineer.rawValue])
+
+        MCPAgentRoleDefaultsService.clearOverride(for: .engineer, settingsStore: store)
+
+        XCTAssertNil(store.overrides?[AgentModelCatalog.TaskLabelKind.engineer.rawValue])
     }
 }
 

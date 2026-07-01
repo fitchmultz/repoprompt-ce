@@ -98,33 +98,19 @@ enum MCPAgentRoleDefaultsService {
 
     // MARK: - Mutations
 
-    /// Set a user-selected global override for a role.
-    /// If the selection matches the recommended default, the override is removed.
+    /// Set a user-selected global override for a role. Revert to recommendation tracking with `clearOverride`.
     @discardableResult
     static func setSelection(
         _ selection: AgentModelCatalog.NormalizedAgentSelection,
         for role: AgentModelCatalog.TaskLabelKind,
-        availability: AgentModelCatalog.AvailabilityContext = .current,
+        availability _: AgentModelCatalog.AvailabilityContext = .current,
         settingsStore: (any MCPAgentRoleDefaultsStoring)? = nil
     ) -> Bool {
         let settingsStore = settingsStore ?? GlobalSettingsStore.shared
-        let recommendationAvailability = defaultRecommendedAvailability(from: availability, settingsStore: settingsStore)
-        let recommended = resolvedRecommendedSelection(
-            for: role,
-            recommendedAvailability: recommendationAvailability,
-            fallbackAvailability: availability
-        )
         let selectionID = AgentModelSelectionID(agentRaw: selection.agent.rawValue, modelRaw: selection.modelRaw)
         var overrides = settingsStore.globalMCPAgentRoleOverrides() ?? [:]
-
-        if let rec = recommended, rec == selection {
-            // Matches recommended — remove override
-            overrides.removeValue(forKey: role.rawValue)
-        } else {
-            overrides[role.rawValue] = selectionID.rawValue
-        }
-
-        settingsStore.updateGlobalMCPAgentRoleOverrides(overrides.isEmpty ? nil : overrides, commit: true)
+        overrides[role.rawValue] = selectionID.rawValue
+        settingsStore.updateGlobalMCPAgentRoleOverrides(overrides, commit: true)
         return true
     }
 

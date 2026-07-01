@@ -702,9 +702,10 @@ class GlobalSettingsStore: ObservableObject {
         let oldPreferred = scalarPreferences.modelSelection?.preferredComposeModel
         let oldPlanning = scalarPreferences.modelSelection?.planningModel
         let shouldMirror = honorSync && resolvedSyncChatModelWithOracleFromCurrentPreferences()
+        let shouldMirrorModel = shouldMirror && (raw?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
         updateModelSelectionScalar(commit: commit) { settings in
             settings.preferredComposeModel = raw
-            if shouldMirror {
+            if shouldMirrorModel {
                 settings.planningModel = raw
             }
         }
@@ -718,7 +719,7 @@ class GlobalSettingsStore: ObservableObject {
             line: line,
             function: function
         )
-        if shouldMirror, oldPlanning != raw {
+        if shouldMirrorModel, oldPlanning != raw {
             recordSettingsWriteDiagnostic(
                 key: "planningModelRaw",
                 oldValue: oldPlanning,

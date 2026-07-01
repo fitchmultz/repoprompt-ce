@@ -2,24 +2,24 @@ import Foundation
 
 // MARK: - Supporting Types
 
-struct InterfaceInfo: Codable {
+struct InterfaceInfo: Codable, Equatable {
     let name: String
     var properties: [PropertyInfo] = []
     var methods: [FunctionInfo] = []
 }
 
-struct TypeAliasInfo: Codable {
+struct TypeAliasInfo: Codable, Equatable {
     let name: String
     let definitionLine: String
 }
 
-struct ClassInfo: Codable {
+struct ClassInfo: Codable, Equatable {
     let name: String
     var methods: [FunctionInfo]
     var properties: [PropertyInfo]
 }
 
-struct FunctionInfo: Codable {
+struct FunctionInfo: Codable, Equatable {
     let name: String
     var parameters: [ParameterInfo]
     var returnType: String?
@@ -27,24 +27,24 @@ struct FunctionInfo: Codable {
     let lineNumber: Int?
 }
 
-struct ParameterInfo: Codable {
+struct ParameterInfo: Codable, Equatable {
     let externalName: String?
     let localName: String
     var typeName: String?
 }
 
-struct PropertyInfo: Codable {
+struct PropertyInfo: Codable, Equatable {
     let name: String
     let typeName: String?
 }
 
-struct VariableInfo: Codable {
+struct VariableInfo: Codable, Equatable {
     let name: String
     let typeName: String?
     let definitionLine: String
 }
 
-struct EnumInfo: Codable {
+struct EnumInfo: Codable, Equatable {
     let name: String
     var cases: [String]
 }

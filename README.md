@@ -118,6 +118,25 @@ be copied to another Mac or redistributed.
 - macOS 26 or later
 - Xcode 26, or matching Command Line Tools with the macOS 26 SDK
 
+### Develop in Xcode
+
+Generate and open the disposable contributor workspace with:
+
+```bash
+make xcode
+```
+
+In Xcode 26.3, use `RepoPrompt CE App` for the packaged debug app,
+`RepoPrompt CE MCP` for the coordinated MCP executable, and `RepoPrompt CE
+Tests` for tests. The test scheme delegates to conductor because
+`RepoPromptMCP` is an executable-only SwiftPM target. Xcode also exposes the
+native `RepoPrompt` and `repoprompt-mcp` product schemes.
+
+See [`docs/architecture/xcode-workspace.md`](docs/architecture/xcode-workspace.md)
+for generation, validation, cleanup, and workflow boundaries. Release packaging
+and local-production signing are unchanged and do not use the generated
+workspace.
+
 ## Features
 
 - **Context engineering**: Build dense, reviewable prompts with the files and
@@ -158,6 +177,8 @@ third-party notices in
   Agent Mode provider architecture
 - [`docs/architecture/pi-integration.md`](docs/architecture/pi-integration.md):
   pi provider, RPC, and bridge architecture
+- [`docs/architecture/xcode-workspace.md`](docs/architecture/xcode-workspace.md):
+  generated Xcode developer workflow and boundaries
 - [`docs/releasing.md`](docs/releasing.md): release-candidate and publishing
   workflows
 - [`docs/open-source-readiness.md`](docs/open-source-readiness.md): public

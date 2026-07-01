@@ -26,8 +26,38 @@ final class AppSettingsMCPServiceAgentModeSettingsTests: XCTestCase {
         XCTAssertTrue(persisted.codexReasoningSummariesEnabled())
     }
 
+    func testBlankPreferredComposeAppSettingDoesNotBlankOracleWhenSyncOn() async throws {
+        let (store, fileStore) = try makeStore(document: GlobalSettingsDocument())
+        let model = AIModel.codexCustom(name: "gpt-5.5-high").rawValue
+
+        store.setSyncChatModelWithOracle(true)
+        store.setPlanningModelRaw(model, commit: true)
+        _ = try await executeAppSettings(store: store, arguments: ["op": Value.string("set"), "key": Value.string("models.preferred_compose_model"), "value": Value.null])
+        _ = try await executeAppSettings(store: store, arguments: ["op": Value.string("set"), "key": Value.string("models.preferred_compose_model"), "value": Value.string("   ")])
+
+        XCTAssertEqual(store.planningModelRaw(), model)
+        let persisted = try GlobalSettingsStore(defaults: makeIsolatedDefaults(), fileStore: fileStore)
+        XCTAssertEqual(persisted.planningModelRaw(), model)
+    }
+
+    func testRealPreferredComposeAppSettingStillMirrorsOracleWhenSyncOn() async throws {
+        let (store, _) = try makeStore(document: GlobalSettingsDocument())
+        let newModel = AIModel.codexCustom(name: "gpt-5.5-low").rawValue
+
+        store.setSyncChatModelWithOracle(true)
+        _ = try await executeAppSettings(store: store, arguments: ["op": Value.string("set"), "key": Value.string("models.preferred_compose_model"), "value": Value.string(newModel)])
+
+        XCTAssertEqual(store.planningModelRaw(), newModel)
+    }
+
     private func settingValue(_ key: String, inGetResult result: Value) -> Value? {
         result.objectValue?["values"]?.objectValue?[key]
+    }
+
+    private func executeAppSettings(store: GlobalSettingsStore, arguments: [String: Value]) async throws -> Value {
+        let service = AppSettingsMCPService(store: store)
+        let result = try await service.call(tool: AppSettingsMCPService.toolName, with: arguments)
+        return try XCTUnwrap(result)
     }
 
     private func makeStore(document: GlobalSettingsDocument) throws -> (GlobalSettingsStore, GlobalSettingsFileStore) {

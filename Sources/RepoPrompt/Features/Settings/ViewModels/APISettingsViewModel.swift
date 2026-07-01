@@ -2158,7 +2158,11 @@ public class APISettingsViewModel: ObservableObject {
                 )
             } else {
                 let replacement = availableModels.first(where: { !condition($0) })?.rawValue
-                if settingsStore.syncChatModelWithOracle(), planningRaw.isEmpty || planningModel.map(condition) == true {
+                if let replacement,
+                   !replacement.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                   settingsStore.syncChatModelWithOracle(),
+                   planningRaw.isEmpty || planningModel.map(condition) == true
+                {
                     settingsStore.setPlanningModelRaw(
                         replacement,
                         reason: "api_settings.provider_reset.planning.\(reasonSuffix)",

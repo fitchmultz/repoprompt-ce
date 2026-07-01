@@ -30,6 +30,18 @@ private func detectEncodingFull(_ data: Data) -> String.Encoding {
     return guess != 0 ? .init(rawValue: guess) : .utf8
 }
 
+func decodeWorkspaceAutomaticV1(_ data: Data) -> DetectedText? {
+    if data.isEmpty {
+        return DetectedText(string: "", encoding: .utf8)
+    }
+    if let utf8String = String(data: data, encoding: .utf8) {
+        return DetectedText(string: utf8String, encoding: .utf8)
+    }
+    let encoding = detectEncodingFull(data)
+    guard let string = String(data: data, encoding: encoding) else { return nil }
+    return DetectedText(string: string, encoding: encoding)
+}
+
 private enum ContentReadMode {
     case automatic
     case streamed
@@ -541,6 +553,21 @@ extension FileSystemService {
         capacity: contentReadWorkerLimit,
         maxQueuedWaiterCount: 512
     )
+
+    nonisolated static func withCodeMapArtifactBuildPermit<T: Sendable>(
+        ownerID: UUID,
+        priority: TaskPriority,
+        operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        try await contentReadWorkerLimiter.withPermit(workloadClass: .codemap, ownerID: ownerID) {
+            let task = Task.detached(priority: priority, operation: operation)
+            return try await withTaskCancellationHandler {
+                try await task.value
+            } onCancel: {
+                task.cancel()
+            }
+        }
+    }
 
     #if DEBUG
         nonisolated static var contentReadWorkerLimitForTesting: Int {

@@ -262,6 +262,35 @@ final class AIModelPreferenceRegressionTests: XCTestCase {
         XCTAssertFalse(contents.contains("prompt.validate_planning_model.fallback"))
     }
 
+    @MainActor
+    func testBlankChatModelDoesNotBlankOracleAcrossReloadWhenSyncOn() throws {
+        let (store, fileStore) = try makeIsolatedGlobalStore()
+        let model = AIModel.codexCustom(name: "gpt-5.5-high").rawValue
+
+        store.setSyncChatModelWithOracle(true)
+        store.setPlanningModelRaw(model, commit: true)
+        store.setPreferredComposeModelRaw(model, commit: true)
+        store.setPreferredComposeModelRaw("", commit: true, honorSync: true)
+        store.setPreferredComposeModelRaw("   ", commit: true, honorSync: true)
+
+        XCTAssertEqual(store.planningModelRaw(), model)
+        let reloaded = try GlobalSettingsStore(defaults: makeIsolatedDefaults(), fileStore: fileStore)
+        XCTAssertEqual(reloaded.planningModelRaw(), model)
+    }
+
+    @MainActor
+    func testRealChatModelStillMirrorsIntoOracleWhenSyncOn() throws {
+        let (store, _) = try makeIsolatedGlobalStore()
+        let oldModel = AIModel.codexCustom(name: "gpt-5.5-high").rawValue
+        let newModel = AIModel.codexCustom(name: "gpt-5.5-low").rawValue
+
+        store.setSyncChatModelWithOracle(true)
+        store.setPlanningModelRaw(oldModel, commit: true)
+        store.setPreferredComposeModelRaw(newModel, commit: true, honorSync: true)
+
+        XCTAssertEqual(store.planningModelRaw(), newModel)
+    }
+
     func testLegacyMCPPlanningModelMigrationSymbolAndStartupCallAreRemoved() throws {
         let repoRoot = try RepoRoot.url(filePath: #filePath)
         let sourcePaths = [
@@ -275,5 +304,22 @@ final class AIModelPreferenceRegressionTests: XCTestCase {
             XCTAssertFalse(contents.contains("mcpPlanningModel"), sourcePath)
             XCTAssertFalse(contents.contains("didMigrateMCPPlanningModelToPlanningModel"), sourcePath)
         }
+    }
+
+    @MainActor
+    private func makeIsolatedGlobalStore() throws -> (GlobalSettingsStore, GlobalSettingsFileStore) {
+        let temp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AIModelPreferenceRegressionTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: temp) }
+        let fileStore = GlobalSettingsFileStore(fileURL: temp.appendingPathComponent("Settings/globalSettings.json"))
+        return try (GlobalSettingsStore(defaults: makeIsolatedDefaults(), fileStore: fileStore), fileStore)
+    }
+
+    private func makeIsolatedDefaults() throws -> UserDefaults {
+        let suiteName = "AIModelPreferenceRegressionTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        return defaults
     }
 }
