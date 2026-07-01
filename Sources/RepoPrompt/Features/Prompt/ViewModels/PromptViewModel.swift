@@ -1082,7 +1082,7 @@ class PromptViewModel: ObservableObject {
         )
 
         // Ensure _git_data is visible and refreshed
-        await fileManager.ensureGitDataRootLoaded(workspace: workspace, workspaceManager: workspaceManager)
+        try? await fileManager.ensureGitDataRootLoaded(workspace: workspace, workspaceManager: workspaceManager)
         await fileManager.flushPendingDeltas(aggressive: true)
 
         return result
@@ -5838,6 +5838,48 @@ extension PromptViewModel {
             gitInclusion: resolvedGit,
             storedPromptIds: chatPreset.storedPromptIds
         )
+    }
+
+    func freezePromptGitReviewContext(
+        workspaceID: UUID? = nil,
+        tabID: UUID? = nil,
+        sessionID: UUID? = nil,
+        bindings: [AgentSessionWorktreeBinding] = [],
+        base: String? = nil
+    ) async -> FrozenPromptGitReviewContext {
+        let effectiveBase = base ?? gitViewModel.selectedDiffBranch
+        guard let manager = workspaceManager,
+              let workspace = Self.workspaceForFrozenPromptGitReviewContext(
+                  requestedWorkspaceID: workspaceID,
+                  workspaces: manager.workspaces,
+                  activeWorkspace: manager.activeWorkspace
+              ),
+              let creatorTabID = tabID ?? activeComposeTabID
+        else {
+            return .automaticOnly(base: effectiveBase, bindings: bindings)
+        }
+
+        return await FrozenPromptGitReviewContext.make(
+            workspaceID: workspace.id,
+            workspaceDirectoryPath: manager.workspaceDirectory(for: workspace).path,
+            workspaceRootPaths: workspace.repoPaths,
+            tabID: creatorTabID,
+            sessionID: sessionID,
+            bindings: bindings,
+            base: effectiveBase,
+            store: workspaceFileContextStore
+        )
+    }
+
+    static func workspaceForFrozenPromptGitReviewContext(
+        requestedWorkspaceID: UUID?,
+        workspaces: [WorkspaceModel],
+        activeWorkspace: WorkspaceModel?
+    ) -> WorkspaceModel? {
+        if let requestedWorkspaceID {
+            return workspaces.first { $0.id == requestedWorkspaceID }
+        }
+        return activeWorkspace
     }
 
     func modelFromChatPreset(_ preset: ChatPreset) -> AIModel? {

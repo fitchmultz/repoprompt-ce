@@ -184,7 +184,26 @@ final class MCPServerViewModel: ObservableObject {
     // -----------------------------------------------------------------
     // MARK: Configuration constants
 
-    // -----------------------------------------------------------------
+    /// -----------------------------------------------------------------
+    struct CodeStructureRequest: Equatable {
+        let direction: WorkspaceCodemapStructureTraversalDirection?
+        let maximumDepth: Int
+        let maximumFiles: Int
+        let maximumEdges: Int
+        let maximumCodemapTokens: Int
+    }
+
+    private static let maximumCodeStructureSeedCount = 8192
+    private static let maximumCodeStructurePathInputCount = 256
+
+    static func codeStructureSeedLimit(for request: CodeStructureRequest) -> Int {
+        min(
+            maximumCodeStructureSeedCount,
+            maximumCodeStructurePathInputCount,
+            max(1, request.maximumFiles)
+        )
+    }
+
     private nonisolated static let defaultCodeStructureMaxResults = 10
     private nonisolated static let maxCodeStructureSelfHealingFiles = 50
     private nonisolated static let codeStructureTokenBudget = 6000
@@ -204,6 +223,41 @@ final class MCPServerViewModel: ObservableObject {
             omittedByMaxResults + omittedByTokenBudget
         }
     }
+
+    #if DEBUG
+        struct CodeStructureAdmissionWorkCounts: Equatable {
+            let uniqueSeedCandidatesVisited: Int
+            let logicalPathComputations: Int
+            let coordinatorInvocations: Int
+        }
+
+        private var codeStructureUniqueSeedCandidatesVisitedForTesting = 0
+        private var codeStructureLogicalPathComputationsForTesting = 0
+        private var codeStructureCoordinatorInvocationsForTesting = 0
+        private var lastCodeStructureRequestForTesting: CodeStructureRequest?
+
+        func resetCodeStructureAdmissionWorkCountsForTesting() {
+            codeStructureUniqueSeedCandidatesVisitedForTesting = 0
+            codeStructureLogicalPathComputationsForTesting = 0
+            codeStructureCoordinatorInvocationsForTesting = 0
+        }
+
+        func codeStructureAdmissionWorkCountsForTesting() -> CodeStructureAdmissionWorkCounts {
+            CodeStructureAdmissionWorkCounts(
+                uniqueSeedCandidatesVisited: codeStructureUniqueSeedCandidatesVisitedForTesting,
+                logicalPathComputations: codeStructureLogicalPathComputationsForTesting,
+                coordinatorInvocations: codeStructureCoordinatorInvocationsForTesting
+            )
+        }
+
+        func resetLastCodeStructureRequestForTesting() {
+            lastCodeStructureRequestForTesting = nil
+        }
+
+        func capturedCodeStructureRequestForTesting() -> CodeStructureRequest? {
+            lastCodeStructureRequestForTesting
+        }
+    #endif
 
     // ---------------------------------------------------------------------
     // MARK: External dependencies (weak/unowned to avoid retain cycles)
@@ -230,7 +284,8 @@ final class MCPServerViewModel: ObservableObject {
     }
 
     private let workspaceSearch: WorkspaceSearchHandler
-    private let ensureGitDataRootLoaded: (WorkspaceModel?, WorkspaceManagerViewModel?) async -> Void
+    private let ensureGitDataRootLoaded: (WorkspaceModel, WorkspaceManagerViewModel) async throws -> WorkspaceRootRef
+    let gitArtifactAdvertisementRegistry = MCPGitArtifactAdvertisementRegistry()
 
     struct MCPVirtualTokenSignature: Equatable, Hashable {
         let tabID: UUID
@@ -819,6 +874,27 @@ final class MCPServerViewModel: ObservableObject {
             guard let self else { return MCPServerViewModel.RequestMetadata(connectionID: nil, clientName: nil, windowID: nil) }
             return await captureRequestMetadata()
         },
+        resolveImplicitContextBuilderGitTarget: { [weak self] metadata in
+            guard metadata.runPurpose == .discoverRun else { return nil }
+            guard let self else { return .unavailable(.missingFrozenTarget) }
+            guard let connectionID = metadata.connectionID,
+                  let runID = connectionIDToRunID[connectionID],
+                  let context = tabContextByConnectionID[connectionID],
+                  context.runID == runID,
+                  context.workspaceID != nil
+            else { return .unavailable(.missingFrozenTarget) }
+            return .unavailable(.missingFrozenTarget)
+        },
+        validateContextBuilderGitArtifactSelection: { [weak self] metadata, target in
+            guard metadata.runPurpose == .discoverRun else { return }
+            guard let self else { throw MCPError.invalidParams(ContextBuilderReviewTargetUnavailableReason.missingFrozenTarget.localizedDescription) }
+            if let reason = await ContextBuilderReviewTargetResolver().revalidate(
+                target,
+                store: promptVM.workspaceFileContextStore
+            ) {
+                throw MCPError.invalidParams(reason.localizedDescription)
+            }
+        },
         resolveTabContextSnapshot: { [weak self] metadata, toolName, policy in
             guard let self else { throw MCPError.internalError("Window deallocated while resolving tab context") }
             return try resolveTabContextSnapshot(
@@ -835,6 +911,14 @@ final class MCPServerViewModel: ObservableObject {
             guard let self else { throw MCPError.internalError("Window deallocated while resolving selected files") }
             return try await selectedRecordsForCurrentTabContext()
         },
+        resolveSelectedFilesForCodeStructure: { [weak self] metadata, lookupContext, maximumSeedCount in
+            guard let self else { throw MCPError.internalError("Window deallocated while resolving selected code structure files") }
+            return try await resolveSelectedFilesForCodeStructure(
+                metadata: metadata,
+                lookupContext: lookupContext,
+                maximumSeedCount: maximumSeedCount
+            )
+        },
         boundTabID: { [weak self] connectionID in
             guard let self, let connectionID else { return nil }
             return boundTabID(forConnection: connectionID)
@@ -844,15 +928,27 @@ final class MCPServerViewModel: ObservableObject {
             return await mapFileManagerErrorToMCP(error, action: action, path: path)
         },
         ensureGitDataRootLoaded: { [weak self] workspace, workspaceManager in
-            guard let self else { return }
-            await ensureGitDataRootLoaded(workspace, workspaceManager)
+            guard let self else { throw MCPError.internalError("Window deallocated while loading the Git-data root") }
+            return try await ensureGitDataRootLoaded(workspace, workspaceManager)
         },
         logDebug: { message in
             mcpServerViewModelDebugLog(message)
         },
-        addPrimaryGitDiffArtifactsToSelection: { [weak self] existing, paths in
-            guard let self else { return (existing, []) }
-            return await addPrimaryGitDiffArtifactsToSelection(existing: existing, paths: paths)
+        commitPrimaryGitDiffArtifactsToCurrentTab: { [weak self] toolName, candidates, sourceSelection in
+            guard let self else { throw MCPError.internalError("Window deallocated while committing Git artifacts") }
+            return try await commitPrimaryGitArtifactsToCurrentTab(
+                toolName: toolName,
+                candidates: candidates,
+                sourceSelection: sourceSelection
+            )
+        },
+        replaceAdvertisedGitArtifactsForCurrentTab: { [weak self] toolName, artifacts in
+            guard let self else { throw MCPError.internalError("Window deallocated while registering Git artifact aliases") }
+            return try await replaceAdvertisedGitArtifactsForCurrentTab(toolName: toolName, artifacts: artifacts)
+        },
+        invalidateAdvertisedGitArtifactsForCurrentTab: { [weak self] toolName in
+            guard let self else { return }
+            await invalidateAdvertisedGitArtifactsForCurrentTab(toolName: toolName)
         },
         workspaceSearch: workspaceSearch,
         parseManageSelectionInputs: { [weak self] rawPaths, slicesValue in
@@ -860,6 +956,41 @@ final class MCPServerViewModel: ObservableObject {
                 return MCPServerViewModel.ManageSelectionInputs(paths: [], sliceInputs: [], sliceErrors: [], hadExplicitSliceSpec: false)
             }
             return parseManageSelectionInputs(rawPaths: rawPaths, slicesValue: slicesValue)
+        },
+        resolveManageSelectionArtifactInputs: { [weak self] request in
+            guard let self else {
+                return MCPManageSelectionArtifactResolution(
+                    ordinaryPaths: request.paths,
+                    ordinarySliceInputs: request.sliceInputs,
+                    artifacts: [],
+                    invalidDiagnostics: ["Git artifact capability is unavailable"],
+                    fence: nil
+                )
+            }
+            return await MCPManageSelectionArtifactResolver(
+                store: promptVM.workspaceFileContextStore,
+                registry: gitArtifactAdvertisementRegistry
+            ).resolve(request)
+        },
+        validateManageSelectionArtifactFence: { [weak self] fence in
+            guard let self, let fence else { return }
+            let expectedPath = StandardizedPath.join(
+                standardizedRoot: fence.capability.workspaceDirectoryPath,
+                standardizedRelativePath: "_git_data"
+            )
+            guard expectedPath == fence.capability.gitDataRoot.standardizedFullPath,
+                  await promptVM.workspaceFileContextStore.exactRootRef(
+                      path: expectedPath,
+                      kind: .workspaceGitData
+                  ) == fence.capability.gitDataRoot
+            else {
+                throw MCPError.invalidParams("Git artifact selection grant is stale")
+            }
+            if let grantSnapshot = fence.grantSnapshot,
+               !gitArtifactAdvertisementRegistry.isCurrent(grantSnapshot)
+            {
+                throw MCPError.invalidParams("Git artifact selection grant was replaced")
+            }
         },
         resolveFileToolLookupContext: { [weak self] metadata in
             guard let self else { return .visibleWorkspace }
@@ -943,18 +1074,22 @@ final class MCPServerViewModel: ObservableObject {
             guard let self else { throw MCPError.internalError("Window deallocated while performing file action") }
             return try await performFileAction(action: action, path: path, content: content, newPath: newPath, ifExists: ifExists)
         },
-        buildCodeStructureDTO: { [weak self] files, maxResults, includeUnmappedPaths, lookupContext in
+        buildCodeStructureDTO: { [weak self] files, request, includePathNotFoundIssue, lookupContext in
             guard let self else { throw MCPError.internalError("Window deallocated while building code structure") }
             return try await buildCodeStructureDTO(
                 fromRecords: files,
-                maxResults: maxResults,
-                includeUnmappedPaths: includeUnmappedPaths,
+                request: request,
+                includePathNotFoundIssue: includePathNotFoundIssue,
                 lookupContext: lookupContext
             )
         },
-        resolveFilesForCodeStructure: { [weak self] paths, lookupRootScope in
+        resolveFilesForCodeStructure: { [weak self] paths, lookupRootScope, maximumSeedCount in
             guard let self else { throw MCPError.internalError("Window deallocated while resolving code structure files") }
-            return try await resolveFilesForCodeStructure(paths: paths, lookupRootScope: lookupRootScope)
+            return try await resolveFilesForCodeStructure(
+                paths: paths,
+                lookupRootScope: lookupRootScope,
+                maximumSeedCount: maximumSeedCount
+            )
         },
         buildStoreBackedFileTreeResult: { [weak self] mode, maxDepth, startPath, lookupContext in
             guard let self else { throw MCPError.internalError("Window deallocated while building file tree") }
@@ -1913,7 +2048,7 @@ final class MCPServerViewModel: ObservableObject {
         selectionCoordinator: WorkspaceSelectionCoordinator? = nil,
         windowID: Int,
         workspaceSearch: @escaping WorkspaceSearchHandler,
-        ensureGitDataRootLoaded: @escaping (WorkspaceModel?, WorkspaceManagerViewModel?) async -> Void,
+        ensureGitDataRootLoaded: @escaping (WorkspaceModel, WorkspaceManagerViewModel) async throws -> WorkspaceRootRef,
         applyEditsApprovalStore: ApplyEditsApprovalStore = .shared
     ) {
         self.service = service
@@ -4356,10 +4491,38 @@ final class MCPServerViewModel: ObservableObject {
         return lines.joined(separator: " ")
     }
 
+    private func resolveSelectedFilesForCodeStructure(
+        metadata: RequestMetadata,
+        lookupContext: WorkspaceLookupContext,
+        maximumSeedCount: Int
+    ) async throws -> [WorkspaceFileRecord] {
+        precondition(maximumSeedCount > 0)
+        try Task.checkCancellation()
+        let resolved = try resolveTabContextSnapshot(
+            from: metadata,
+            toolName: MCPWindowToolName.getCodeStructure,
+            policy: .allowLegacyImplicitRouting
+        )
+        let selection = resolved.snapshot.selection
+        let selectedPaths = StoredSelectionPathNormalization.standardizedPaths(
+            selection.selectedPaths.map { lookupContext.translateInputPath($0) }
+        )
+        let slicePaths = StoredSelectionPathNormalization.standardizedPaths(
+            selection.slices.keys.map { lookupContext.translateInputPath($0) }
+        ).sorted { $0.utf8.lexicographicallyPrecedes($1.utf8) }
+        return try await resolveFilesForCodeStructure(
+            paths: selectedPaths + slicePaths,
+            lookupRootScope: lookupContext.rootScope,
+            maximumSeedCount: maximumSeedCount
+        )
+    }
+
     private func resolveFilesForCodeStructure(
         paths: [String],
-        lookupRootScope: WorkspaceLookupRootScope = .visibleWorkspace
+        lookupRootScope: WorkspaceLookupRootScope = .visibleWorkspace,
+        maximumSeedCount: Int
     ) async throws -> [WorkspaceFileRecord] {
+        precondition(maximumSeedCount > 0)
         try Task.checkCancellation()
         let directFiles = await promptVM.workspaceFileContextStore.lookupFiles(
             atPaths: paths,
@@ -4369,24 +4532,38 @@ final class MCPServerViewModel: ObservableObject {
         try Task.checkCancellation()
         let matchedFileInputs = Set(directFiles.keys)
         var resolved: [WorkspaceFileRecord] = []
-        var seenPaths = Set<String>()
+        var seenStandardizedFullPaths = Set<String>()
 
         for path in paths {
             try Task.checkCancellation()
-            if let file = directFiles[path], seenPaths.insert(file.standardizedFullPath).inserted {
-                resolved.append(file)
-            }
+            guard let file = directFiles[path],
+                  seenStandardizedFullPaths.insert(file.standardizedFullPath).inserted
+            else { continue }
+            resolved.append(file)
+            #if DEBUG
+                codeStructureUniqueSeedCandidatesVisitedForTesting += 1
+            #endif
+            if resolved.count > maximumSeedCount { return resolved }
         }
 
         let dirCandidates = paths.filter { !matchedFileInputs.contains($0) }
         for raw in dirCandidates {
             try Task.checkCancellation()
-            let folderResolution = await promptVM.workspaceFileContextStore.expandFolderInputToFiles(raw, rootScope: lookupRootScope, profile: .mcpSelection)
+            let folderResolution = await promptVM.workspaceFileContextStore.expandFolderInputToFiles(
+                raw,
+                rootScope: lookupRootScope,
+                profile: .mcpSelection
+            )
             try Task.checkCancellation()
             guard folderResolution.handled else { continue }
-            for file in folderResolution.files where seenPaths.insert(file.standardizedFullPath).inserted {
-                try Task.checkCancellation()
+            for file in folderResolution.files
+                where seenStandardizedFullPaths.insert(file.standardizedFullPath).inserted
+            {
+                #if DEBUG
+                    codeStructureUniqueSeedCandidatesVisitedForTesting += 1
+                #endif
                 resolved.append(file)
+                if resolved.count > maximumSeedCount { return resolved }
             }
         }
 
@@ -4529,46 +4706,588 @@ final class MCPServerViewModel: ObservableObject {
         )
     }
 
-    /// Collect codemaps with a hard cap; also report how many were omitted.
-    private func getCodeMaps(
-        for paths: [String],
-        maxResults: Int = 25,
-        lookupRootScope: WorkspaceLookupRootScope = .visibleWorkspace
-    ) async -> (maps: [String: FileAPI], omitted: Int) {
+    func buildCodeStructureDTO(
+        fromRecords files: [WorkspaceFileRecord],
+        request: CodeStructureRequest,
+        includePathNotFoundIssue: Bool,
+        lookupContext: WorkspaceLookupContext = .visibleWorkspace
+    ) async throws -> ToolResultDTOs.CodeStructureReplyDTO {
+        try Task.checkCancellation()
+        #if DEBUG
+            lastCodeStructureRequestForTesting = request
+        #endif
+        let worktreeScope = ToolResultDTOs.WorktreeScopeDTO.sessionBound(
+            from: lookupContext.bindingProjection
+        )
+        if promptVM.codeMapsGloballyDisabled {
+            return Self.codeStructureUnavailableReply(
+                issue: .init(
+                    code: "codemaps_disabled",
+                    phase: "seed_demand",
+                    path: nil,
+                    retryable: false,
+                    retryAfterMilliseconds: nil,
+                    attempted: nil,
+                    limit: nil,
+                    message: "Codemap generation is disabled."
+                ),
+                requestedSeeds: files.count,
+                worktreeScope: worktreeScope
+            )
+        }
+
         let store = promptVM.workspaceFileContextStore
-        let snapshots = await store.codemapSnapshotDictionary()
-        let directFiles = await store.lookupFiles(atPaths: paths, profile: .mcpRead, rootScope: lookupRootScope)
-        var results: [String: FileAPI] = [:]
-        var seenFileIDs = Set<UUID>()
-        var collected = 0
-        let cap = max(0, maxResults)
-        var omitted = 0
+        switch await store.rootScopeAvailability(lookupContext.rootScope) {
+        case .available:
+            break
+        case .sessionWorktreeUnavailable:
+            return Self.codeStructureUnavailableReply(
+                issue: .init(
+                    code: "git_root_unavailable",
+                    phase: "seed_resolution",
+                    path: nil,
+                    retryable: false,
+                    retryAfterMilliseconds: nil,
+                    attempted: nil,
+                    limit: nil,
+                    message: "The session-bound worktree root is unavailable."
+                ),
+                requestedSeeds: files.count,
+                worktreeScope: worktreeScope
+            )
+        }
 
-        func consider(_ file: WorkspaceFileRecord) {
-            guard seenFileIDs.insert(file.id).inserted, let api = snapshots[file.id]?.fileAPI else { return }
-            if collected < cap {
-                results[file.standardizedFullPath] = api
-                collected += 1
-            } else {
-                omitted += 1
+        let roots = await store.rootRefs(scope: lookupContext.rootScope)
+        let allowedRootIDs = Set(roots.map(\.id))
+        var uniqueFilesByStandardizedFullPath: [String: WorkspaceFileRecord] = [:]
+        for file in files where allowedRootIDs.contains(file.rootID) {
+            if uniqueFilesByStandardizedFullPath[file.standardizedFullPath] == nil {
+                uniqueFilesByStandardizedFullPath[file.standardizedFullPath] = file
             }
         }
-
-        for path in paths {
-            if let file = directFiles[path] { consider(file) }
+        let seedLimit = Self.codeStructureSeedLimit(for: request)
+        guard uniqueFilesByStandardizedFullPath.count <= seedLimit else {
+            return Self.codeStructureSeedBudgetReply(
+                attempted: min(uniqueFilesByStandardizedFullPath.count, seedLimit + 1),
+                limit: seedLimit,
+                worktreeScope: worktreeScope
+            )
         }
-        guard collected < cap else { return (results, omitted) }
+        if uniqueFilesByStandardizedFullPath.isEmpty, includePathNotFoundIssue {
+            return Self.codeStructureUnavailableReply(
+                issue: .init(
+                    code: "path_not_found",
+                    phase: "seed_resolution",
+                    path: nil,
+                    retryable: false,
+                    retryAfterMilliseconds: nil,
+                    attempted: nil,
+                    limit: nil,
+                    message: "No requested path resolved to a file."
+                ),
+                requestedSeeds: files.count,
+                worktreeScope: worktreeScope
+            )
+        }
 
-        let matchedFileInputs = Set(directFiles.keys)
-        for raw in paths where !matchedFileInputs.contains(raw) {
-            let folderResolution = await promptVM.workspaceFileContextStore.expandFolderInputToFiles(raw, rootScope: lookupRootScope, profile: .mcpSelection)
-            guard folderResolution.handled else { continue }
-            for file in folderResolution.files {
-                consider(file)
+        let logicalRootNames: [UUID: String] = [:]
+        let orderedFilePaths: [(file: WorkspaceFileRecord, logicalPath: String)] = uniqueFilesByStandardizedFullPath.values.map { file in
+            #if DEBUG
+                codeStructureLogicalPathComputationsForTesting += 1
+            #endif
+            return (
+                file: file,
+                logicalPath: Self.logicalCodeStructurePath(
+                    for: file,
+                    roots: roots,
+                    lookupContext: lookupContext,
+                    logicalRootDisplayNamesByRootID: logicalRootNames
+                )
+            )
+        }.sorted { lhs, rhs in
+            if lhs.logicalPath != rhs.logicalPath {
+                return lhs.logicalPath.utf8.lexicographicallyPrecedes(rhs.logicalPath.utf8)
             }
+            return lhs.file.id.uuidString < rhs.file.id.uuidString
         }
+        let orderedFiles = orderedFilePaths.map(\.file)
 
-        return (results, omitted)
+        let policy = WorkspaceCodemapPresentationRequestPolicy(
+            maximumReadinessRounds: 4096,
+            initialBackoffMilliseconds: 25,
+            maximumBackoffMilliseconds: 250,
+            maximumTotalWait: .milliseconds(workspaceCodemapProductionDemandWaitMilliseconds),
+            maximumStructureSeedCountPerRoot: Self.maximumCodeStructureSeedCount,
+            maximumCandidateDemandCount: seedLimit
+        )
+        #if DEBUG
+            codeStructureCoordinatorInvocationsForTesting += 1
+        #endif
+        let presentation = try await WorkspaceCodemapPresentationCoordinator(
+            store: store,
+            policy: policy
+        ).structurePresentation(
+            seedFileIDs: orderedFiles.map(\.id),
+            direction: request.direction,
+            traversalLimits: WorkspaceCodemapStructureTraversalLimits(
+                maximumDepth: request.maximumDepth,
+                maximumNodeCount: request.maximumFiles,
+                maximumEdgeCount: request.maximumEdges,
+                maximumByteCount: 8 * 1024 * 1024
+            ),
+            outputLimits: WorkspaceCodemapStructureOutputLimits(
+                maximumFileCount: request.maximumFiles,
+                maximumCodemapTokenCount: request.maximumCodemapTokens
+            ),
+            rootScope: lookupContext.rootScope,
+            logicalRootDisplayNamesByRootID: logicalRootNames
+        )
+        try Task.checkCancellation()
+
+        var logicalPathsByFileID = Dictionary(uniqueKeysWithValues: orderedFilePaths.map {
+            ($0.file.id, $0.logicalPath)
+        })
+        for entry in presentation.entries {
+            logicalPathsByFileID[entry.entry.fileID] = entry.entry.logicalPath.displayPath
+        }
+        return Self.codeStructureReplyDTO(
+            presentation: presentation,
+            logicalPathsByFileID: logicalPathsByFileID,
+            worktreeScope: worktreeScope
+        )
+    }
+
+    static func codeStructureReplyDTO(
+        presentation: WorkspaceCodemapStructurePresentation,
+        logicalPathsByFileID: [UUID: String],
+        worktreeScope: ToolResultDTOs.WorktreeScopeDTO?
+    ) -> ToolResultDTOs.CodeStructureReplyDTO {
+        let outcome: WorkspaceCodemapStructureOutcome = switch presentation.outcome {
+        case .partial, .pending: .timeout
+        default: presentation.outcome
+        }
+        var issueDTOs = presentation.issues.prefix(256).map {
+            codeStructureIssueDTO($0, logicalPathsByFileID: logicalPathsByFileID)
+        }
+        if outcome == .busy, !issueDTOs.contains(where: { $0.code == "codemap_busy" }) {
+            issueDTOs.append(.init(
+                code: "codemap_busy", phase: "projection", path: nil,
+                retryable: true, retryAfterMilliseconds: 100,
+                attempted: nil, limit: nil,
+                message: "Codemap readiness is temporarily busy."
+            ))
+        }
+        if outcome == .timeout, !issueDTOs.contains(where: { $0.code == "readiness_timeout" }) {
+            issueDTOs.append(.init(
+                code: "readiness_timeout", phase: "readiness", path: nil,
+                retryable: true, retryAfterMilliseconds: 100,
+                attempted: workspaceCodemapProductionDemandWaitMilliseconds,
+                limit: workspaceCodemapProductionDemandWaitMilliseconds,
+                message: "Exact codemap readiness was not reached before the request deadline."
+            ))
+        }
+        issueDTOs = issueDTOs.map(codeStructureIssueWithNormalizedRetry)
+
+        let publishesFiles = outcome == .ready || outcome == .budget
+        let filesDTO = (publishesFiles ? presentation.entries : []).map { rendered in
+            ToolResultDTOs.CodeStructureReplyDTO.FileDTO(
+                path: rendered.entry.logicalPath.displayPath,
+                role: rendered.isSeed ? "seed" : "related",
+                depth: rendered.depth,
+                reachedBy: rendered.reachedBy.map(Self.codeStructureDirectionName).sorted(),
+                content: rendered.entry.text,
+                tokens: rendered.entry.tokenCount
+            )
+        }
+        let returnedSeeds = filesDTO.lazy.count(where: { $0.role == "seed" })
+        let returnedRelated = filesDTO.count - returnedSeeds
+        let retryableIssues = issueDTOs.filter(\.retryable)
+        let retry = retryableIssues.isEmpty ? nil : ToolResultDTOs.CodeStructureReplyDTO.RetryDTO(
+            retryable: true,
+            retryAfterMilliseconds: retryableIssues.compactMap(\.retryAfterMilliseconds).max() ?? 100
+        )
+        return ToolResultDTOs.CodeStructureReplyDTO(
+            status: outcome.rawValue,
+            files: filesDTO,
+            summary: .init(
+                requestedSeeds: presentation.requestedSeedCount,
+                resolvedSeeds: presentation.resolvedSeedCount,
+                returnedSeeds: returnedSeeds,
+                returnedRelated: returnedRelated,
+                returnedFiles: filesDTO.count,
+                codemapContentTokens: publishesFiles ? presentation.codemapTokenCount : 0,
+                examinedEdges: publishesFiles ? presentation.examinedEdgeCount : 0
+            ),
+            issues: issueDTOs,
+            retry: retry,
+            worktreeScope: worktreeScope
+        )
+    }
+
+    private static func codeStructureIssueWithNormalizedRetry(
+        _ issue: ToolResultDTOs.CodeStructureReplyDTO.IssueDTO
+    ) -> ToolResultDTOs.CodeStructureReplyDTO.IssueDTO {
+        let retryAfterMilliseconds = issue.retryable
+            ? normalizedCodeStructureRetryDelay(issue.retryAfterMilliseconds)
+            : nil
+        return .init(
+            code: issue.code,
+            phase: issue.phase,
+            path: issue.path,
+            retryable: issue.retryable,
+            retryAfterMilliseconds: retryAfterMilliseconds,
+            attempted: issue.attempted,
+            limit: issue.limit,
+            message: issue.message
+        )
+    }
+
+    private static func normalizedCodeStructureRetryDelay(_ milliseconds: Int?) -> Int {
+        min(1000, max(25, milliseconds ?? 100))
+    }
+
+    private static func logicalCodeStructurePath(
+        for file: WorkspaceFileRecord,
+        roots: [WorkspaceRootRef],
+        lookupContext: WorkspaceLookupContext,
+        logicalRootDisplayNamesByRootID: [UUID: String]
+    ) -> String {
+        if let projected = lookupContext.bindingProjection?.projectedLogicalDisplayPath(
+            forPhysicalPath: file.standardizedFullPath,
+            display: .relative
+        ) {
+            return projected
+        }
+        if let root = roots.first(where: { $0.id == file.rootID }) {
+            return ClientPathFormatter.displayPath(
+                root: root,
+                relativePath: file.standardizedRelativePath,
+                visibleRoots: roots
+            )
+        }
+        return file.standardizedRelativePath
+    }
+
+    private static func codeStructureDirectionName(
+        _ direction: WorkspaceCodemapStructureTraversalReachDirection
+    ) -> String {
+        switch direction {
+        case .referencedDefinitions: "referenced_definitions"
+        case .referrers: "referrers"
+        }
+    }
+
+    private static func codeStructureSeedBudgetReply(
+        attempted: Int,
+        limit: Int,
+        worktreeScope: ToolResultDTOs.WorktreeScopeDTO?
+    ) -> ToolResultDTOs.CodeStructureReplyDTO {
+        ToolResultDTOs.CodeStructureReplyDTO(
+            status: "budget",
+            files: [],
+            summary: .init(
+                requestedSeeds: attempted,
+                resolvedSeeds: 0,
+                returnedSeeds: 0,
+                returnedRelated: 0,
+                returnedFiles: 0,
+                codemapContentTokens: 0,
+                examinedEdges: 0
+            ),
+            issues: [
+                .init(
+                    code: "hard_budget_exceeded",
+                    phase: "seed_demand",
+                    path: nil,
+                    retryable: false,
+                    retryAfterMilliseconds: nil,
+                    attempted: attempted,
+                    limit: limit,
+                    message: "The expanded seed set exceeds the effective request limit."
+                )
+            ],
+            retry: nil,
+            worktreeScope: worktreeScope
+        )
+    }
+
+    private static func codeStructureUnavailableReply(
+        issue: ToolResultDTOs.CodeStructureReplyDTO.IssueDTO,
+        requestedSeeds: Int,
+        worktreeScope: ToolResultDTOs.WorktreeScopeDTO?
+    ) -> ToolResultDTOs.CodeStructureReplyDTO {
+        let issue = codeStructureIssueWithNormalizedRetry(issue)
+        return ToolResultDTOs.CodeStructureReplyDTO(
+            status: "unavailable",
+            files: [],
+            summary: .init(
+                requestedSeeds: requestedSeeds,
+                resolvedSeeds: 0,
+                returnedSeeds: 0,
+                returnedRelated: 0,
+                returnedFiles: 0,
+                codemapContentTokens: 0,
+                examinedEdges: 0
+            ),
+            issues: [issue],
+            retry: issue.retryable
+                ? .init(
+                    retryable: true,
+                    retryAfterMilliseconds: issue.retryAfterMilliseconds
+                )
+                : nil,
+            worktreeScope: worktreeScope
+        )
+    }
+
+    private static func codeStructureIssueDTO(
+        _ issue: WorkspaceCodemapStructureIssue,
+        logicalPathsByFileID: [UUID: String]
+    ) -> ToolResultDTOs.CodeStructureReplyDTO.IssueDTO {
+        typealias DTO = ToolResultDTOs.CodeStructureReplyDTO.IssueDTO
+        switch issue {
+        case let .candidate(candidate):
+            switch candidate {
+            case let .fileNotCataloged(fileID):
+                return DTO(
+                    code: "path_not_found", phase: "seed_resolution",
+                    path: logicalPathsByFileID[fileID], retryable: false,
+                    retryAfterMilliseconds: nil, attempted: nil, limit: nil,
+                    message: "The file is no longer cataloged."
+                )
+            case let .fileOutsideRootScope(fileID):
+                return DTO(
+                    code: "outside_root_scope", phase: "seed_resolution",
+                    path: logicalPathsByFileID[fileID], retryable: false,
+                    retryAfterMilliseconds: nil, attempted: nil, limit: nil,
+                    message: "The file is outside the captured root scope."
+                )
+            case let .logicalPathUnavailable(fileID):
+                return DTO(
+                    code: "path_not_found", phase: "seed_resolution",
+                    path: logicalPathsByFileID[fileID], retryable: false,
+                    retryAfterMilliseconds: nil, attempted: nil, limit: nil,
+                    message: "A logical display path is unavailable."
+                )
+            case let .incompleteRootSet(missingFileIDs):
+                return DTO(
+                    code: "candidate_overflow", phase: "seed_resolution",
+                    path: nil, retryable: false, retryAfterMilliseconds: nil,
+                    attempted: missingFileIDs.count, limit: nil,
+                    message: "The requested root set is incomplete."
+                )
+            }
+        case let .artifactPending(fileID, _):
+            return DTO(
+                code: "artifact_pending", phase: "seed_demand",
+                path: logicalPathsByFileID[fileID], retryable: true,
+                retryAfterMilliseconds: nil, attempted: nil, limit: nil,
+                message: "Codemap generation is still pending."
+            )
+        case let .artifactUnavailable(fileID, reason):
+            let path = logicalPathsByFileID[fileID]
+            switch reason {
+            case .unsupportedFileType:
+                return DTO(
+                    code: "unsupported_file", phase: "seed_demand", path: path,
+                    retryable: false, retryAfterMilliseconds: nil,
+                    attempted: nil, limit: nil,
+                    message: "The file type does not support codemaps."
+                )
+            case .rootNotLoaded, .gitTerminal:
+                return DTO(
+                    code: "git_root_unavailable", phase: "seed_demand", path: path,
+                    retryable: false, retryAfterMilliseconds: nil,
+                    attempted: nil, limit: nil,
+                    message: "The Git root is unavailable for codemap generation."
+                )
+            case let .busy(retryAfterMilliseconds):
+                return DTO(
+                    code: "artifact_pending", phase: "seed_demand", path: path,
+                    retryable: true,
+                    retryAfterMilliseconds: retryAfterMilliseconds,
+                    attempted: nil, limit: nil,
+                    message: "Codemap generation is temporarily unavailable."
+                )
+            case .gitTransient:
+                return DTO(
+                    code: "artifact_pending", phase: "seed_demand", path: path,
+                    retryable: true, retryAfterMilliseconds: nil,
+                    attempted: nil, limit: nil,
+                    message: "Codemap generation is temporarily unavailable."
+                )
+            case .staleCurrentness:
+                return DTO(
+                    code: "publication_stale", phase: "publication", path: path,
+                    retryable: true, retryAfterMilliseconds: nil,
+                    attempted: nil, limit: nil,
+                    message: "The codemap demand became stale."
+                )
+            case .fileNotCataloged:
+                return DTO(
+                    code: "path_not_found", phase: "seed_demand", path: path,
+                    retryable: false, retryAfterMilliseconds: nil,
+                    attempted: nil, limit: nil,
+                    message: "The file is no longer cataloged."
+                )
+            case .demandUnavailable, .rejected, .routeConflict, .registrationFailed,
+                 .runtimeFailure, .cancelled:
+                return DTO(
+                    code: "artifact_unavailable", phase: "seed_demand", path: path,
+                    retryable: false, retryAfterMilliseconds: nil,
+                    attempted: nil, limit: nil,
+                    message: "A codemap artifact is unavailable."
+                )
+            }
+        case let .traversalPartial(reason):
+            switch reason {
+            case .definitionUniverseIncomplete:
+                return DTO(
+                    code: "definition_universe_incomplete", phase: "graph", path: nil,
+                    retryable: false, retryAfterMilliseconds: nil,
+                    attempted: nil, limit: nil,
+                    message: "Cold relationship discovery is incomplete."
+                )
+            case .referenceFailuresPresent:
+                return DTO(
+                    code: "unresolved_reference", phase: "graph", path: nil,
+                    retryable: false, retryAfterMilliseconds: nil,
+                    attempted: nil, limit: nil,
+                    message: "One or more resident references could not be resolved."
+                )
+            }
+        case let .traversalPending(reason):
+            let code = switch reason {
+            case .graphRebuilding: "graph_rebuilding"
+            case .graphBusy: "graph_rebuilding"
+            }
+            return DTO(
+                code: code, phase: "graph", path: nil, retryable: true,
+                retryAfterMilliseconds: nil, attempted: nil, limit: nil,
+                message: "The root-local codemap graph is rebuilding."
+            )
+        case let .traversalUnavailable(reason):
+            let code = switch reason {
+            case .graphNotBuilt: "graph_not_built"
+            case .definitionUniverse: "definition_universe_incomplete"
+            case .emptySeeds, .foreignRootEpoch, .duplicateSeedConflict,
+                 .seedNotReady, .invalidGraphResult, .runtime: "artifact_unavailable"
+            }
+            return DTO(
+                code: code, phase: "graph", path: nil, retryable: false,
+                retryAfterMilliseconds: nil, attempted: nil, limit: nil,
+                message: "Root-local relationship traversal is unavailable."
+            )
+        case .traversalStale:
+            return DTO(
+                code: "publication_stale", phase: "publication", path: nil,
+                retryable: true, retryAfterMilliseconds: nil,
+                attempted: nil, limit: nil,
+                message: "Relationship traversal became stale."
+            )
+        case let .traversalBudget(reason):
+            let values: (String, Int?, Int?) = switch reason {
+            case let .nodeLimit(attempted, limit): ("result_limit", attempted, limit)
+            case let .edgeLimit(attempted, limit): ("edge_limit", attempted, limit)
+            case let .byteLimit(attempted, limit): ("hard_budget_exceeded", attempted, limit)
+            case let .rootLimit(attempted, limit): ("hard_budget_exceeded", attempted, limit)
+            case .accountingOverflow, .runtime: ("hard_budget_exceeded", nil, nil)
+            }
+            return DTO(
+                code: values.0, phase: "graph", path: nil, retryable: false,
+                retryAfterMilliseconds: nil, attempted: values.1, limit: values.2,
+                message: "A traversal budget was reached."
+            )
+        case let .busy(retryAfterMilliseconds):
+            return DTO(
+                code: "codemap_busy", phase: "projection", path: nil,
+                retryable: true,
+                retryAfterMilliseconds: normalizedCodeStructureRetryDelay(retryAfterMilliseconds),
+                attempted: nil, limit: nil,
+                message: "Codemap readiness is temporarily busy."
+            )
+        case let .readinessTimeout(elapsedMilliseconds, limitMilliseconds, retryAfterMilliseconds):
+            return DTO(
+                code: "readiness_timeout", phase: "readiness", path: nil,
+                retryable: true,
+                retryAfterMilliseconds: normalizedCodeStructureRetryDelay(retryAfterMilliseconds),
+                attempted: elapsedMilliseconds,
+                limit: limitMilliseconds,
+                message: "Exact codemap readiness was not reached before the request deadline."
+            )
+        case let .projectionUnavailable(reason, retryAfterMilliseconds):
+            let message = switch reason {
+            case .rootNotRegistered:
+                "The codemap projection root is no longer registered."
+            case .capabilityUnavailable:
+                "Codemap projection is unavailable for this root."
+            case .generationMismatch:
+                "The codemap projection generation changed before admission."
+            case .projectionBudget:
+                "Codemap projection exceeded a resource budget."
+            }
+            return DTO(
+                code: "projection_unavailable", phase: "projection", path: nil,
+                retryable: retryAfterMilliseconds != nil,
+                retryAfterMilliseconds: retryAfterMilliseconds,
+                attempted: nil, limit: nil,
+                message: message
+            )
+        case let .projectionBudget(budget):
+            return DTO(
+                code: "projection_budget", phase: "projection", path: nil,
+                retryable: false, retryAfterMilliseconds: nil,
+                attempted: Int(clamping: budget.attempted),
+                limit: Int(clamping: budget.limit),
+                message: "Codemap projection exceeded a resource budget."
+            )
+        case let .freezeUnavailable(_, reason):
+            let isBudget = switch reason {
+            case .entryLimitExceeded, .retainedBundleLimitExceeded: true
+            default: false
+            }
+            return DTO(
+                code: isBudget ? "hard_budget_exceeded" : "artifact_unavailable",
+                phase: "presentation", path: nil, retryable: !isBudget,
+                retryAfterMilliseconds: nil, attempted: nil, limit: nil,
+                message: "Codemap presentation could not be frozen."
+            )
+        case .renderUnavailable:
+            return DTO(
+                code: "artifact_unavailable", phase: "presentation", path: nil,
+                retryable: false, retryAfterMilliseconds: nil,
+                attempted: nil, limit: nil,
+                message: "Codemap presentation could not be rendered."
+            )
+        case let .fileLimit(attempted, limit):
+            return DTO(
+                code: "result_limit", phase: "output", path: nil,
+                retryable: false, retryAfterMilliseconds: nil,
+                attempted: attempted, limit: limit,
+                message: "The file result limit was reached."
+            )
+        case let .seedDemandLimit(attempted, limit):
+            return DTO(
+                code: "hard_budget_exceeded", phase: "seed_demand", path: nil,
+                retryable: false, retryAfterMilliseconds: nil,
+                attempted: attempted, limit: limit,
+                message: "The resolved seed set exceeds the artifact-demand limit."
+            )
+        case let .tokenLimit(path, attempted, limit):
+            return DTO(
+                code: "token_limit", phase: "output", path: path,
+                retryable: false, retryAfterMilliseconds: nil,
+                attempted: attempted, limit: limit,
+                message: "The codemap content token limit was reached."
+            )
+        case .publicationStale:
+            return DTO(
+                code: "publication_stale", phase: "publication", path: nil,
+                retryable: true, retryAfterMilliseconds: nil,
+                attempted: nil, limit: nil,
+                message: "The operation changed before publication."
+            )
+        }
     }
 
     /// Reads a file with optional slicing. Supports 1-based indices and a negative sentinel
@@ -5333,6 +6052,47 @@ final class MCPServerViewModel: ObservableObject {
     }
 
     // MARK: - Tab workspace helpers
+
+    private func getCodeMaps(
+        for paths: [String],
+        maxResults: Int = 25,
+        lookupRootScope: WorkspaceLookupRootScope = .visibleWorkspace
+    ) async -> (maps: [String: FileAPI], omitted: Int) {
+        let store = promptVM.workspaceFileContextStore
+        let snapshots = await store.codemapSnapshotDictionary()
+        let directFiles = await store.lookupFiles(atPaths: paths, profile: .mcpRead, rootScope: lookupRootScope)
+        var results: [String: FileAPI] = [:]
+        var seenFileIDs = Set<UUID>()
+        var collected = 0
+        let cap = max(0, maxResults)
+        var omitted = 0
+
+        func consider(_ file: WorkspaceFileRecord) {
+            guard seenFileIDs.insert(file.id).inserted, let api = snapshots[file.id]?.fileAPI else { return }
+            if collected < cap {
+                results[file.standardizedFullPath] = api
+                collected += 1
+            } else {
+                omitted += 1
+            }
+        }
+
+        for path in paths {
+            if let file = directFiles[path] { consider(file) }
+        }
+        guard collected < cap else { return (results, omitted) }
+
+        let matchedFileInputs = Set(directFiles.keys)
+        for raw in paths where !matchedFileInputs.contains(raw) {
+            let folderResolution = await store.expandFolderInputToFiles(raw, rootScope: lookupRootScope, profile: .mcpSelection)
+            guard folderResolution.handled else { continue }
+            for file in folderResolution.files {
+                consider(file)
+            }
+        }
+
+        return (results, omitted)
+    }
 
     func tabCodeMaps(for paths: [String], maxResults: Int = 25) async -> (maps: [String: FileAPI], omitted: Int) {
         await getCodeMaps(for: paths, maxResults: maxResults)

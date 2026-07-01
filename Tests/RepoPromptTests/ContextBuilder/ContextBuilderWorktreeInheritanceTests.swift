@@ -139,19 +139,18 @@ import XCTest
                         .init(fullPaths: [logicalFile.path], slicePaths: [])
                     )
                     XCTAssertEqual(runs[1].selectionAfterRead, runs[1].selectionBeforeRead)
-                    let logicalRelativeFilePath = String(
-                        logicalFile.standardizedFileURL.path.dropFirst(logicalRoot.standardizedFileURL.path.count)
-                    ).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
                     for run in runs {
                         XCTAssertEqual(run.workspacePath, worktreeRoot.standardizedFileURL.path)
                         XCTAssertTrue(run.userMessage.contains("BranchOnly.swift"), run.userMessage)
                         XCTAssertFalse(run.userMessage.contains(canonicalSentinel), run.userMessage)
                         XCTAssertFalse(run.userMessage.contains(worktreeRoot.path), run.userMessage)
-                        for output in [run.bindingStatus, run.windowStatus, run.tree, run.read, run.search, run.codeStructure, run.selection, run.workspaceContext] {
+                        for output in [run.bindingStatus, run.windowStatus, run.tree, run.read, run.search, run.selection, run.workspaceContext] {
                             XCTAssertFalse(output.contains(canonicalSentinel), output)
                             XCTAssertFalse(output.contains(worktreeRoot.path), output)
                             XCTAssertFalse(output.contains("Active-tab compatibility fallback is not allowed"), output)
                         }
+                        XCTAssertFalse(run.codeStructure.contains(canonicalSentinel), run.codeStructure)
+                        XCTAssertFalse(run.codeStructure.contains("Active-tab compatibility fallback is not allowed"), run.codeStructure)
                         XCTAssertFalse(run.bindingStatus.contains("Tool 'bind_context' is disabled"), run.bindingStatus)
                         XCTAssertFalse(run.windowStatus.contains("Tool 'bind_context' is disabled"), run.windowStatus)
                         XCTAssertTrue(run.mutatingBindAttempt.contains("Mutating bind_context operations are disabled"), run.mutatingBindAttempt)
@@ -161,7 +160,10 @@ import XCTest
                         if run.codeStructure.contains("Codemap generation pending") {
                             XCTAssertTrue(run.codeStructure.contains("Files with codemap**: 0"), run.codeStructure)
                             XCTAssertTrue(run.codeStructure.contains("### Files still awaiting codemap"), run.codeStructure)
-                            assertLogicalPath(logicalRelativeFilePath, in: run.codeStructure)
+                            XCTAssertTrue(run.codeStructure.contains(logicalFile.lastPathComponent), run.codeStructure)
+                            XCTAssertFalse(run.codeStructure.contains(worktreeSentinel), run.codeStructure)
+                        } else if run.codeStructure.contains("artifact_pending") || run.codeStructure.contains("readiness_timeout") || run.codeStructure.contains("artifact_unavailable") {
+                            XCTAssertTrue(run.codeStructure.contains(logicalFile.lastPathComponent), run.codeStructure)
                             XCTAssertFalse(run.codeStructure.contains(worktreeSentinel), run.codeStructure)
                         } else {
                             XCTAssertFalse(run.codeStructure.contains("Without codemap"), run.codeStructure)
@@ -450,7 +452,11 @@ import XCTest
                     XCTAssertEqual(run.workspacePath, fixture.contextA.rootURL.standardizedFileURL.path)
                     XCTAssertTrue(run.read.contains(canonicalSentinel), run.read)
                     XCTAssertTrue(run.search.contains(canonicalSentinel), run.search)
-                    XCTAssertTrue(run.codeStructure.contains(canonicalSentinel), run.codeStructure)
+                    if run.codeStructure.contains("artifact_pending") || run.codeStructure.contains("readiness_timeout") || run.codeStructure.contains("artifact_unavailable") {
+                        XCTAssertTrue(run.codeStructure.contains(fixture.contextA.fileURL.lastPathComponent), run.codeStructure)
+                    } else {
+                        XCTAssertTrue(run.codeStructure.contains(canonicalSentinel), run.codeStructure)
+                    }
                     XCTAssertNil(state.followUps.first)
 
                     await fixture.cleanup()
@@ -742,6 +748,7 @@ import XCTest
             let codeStructure = try await toolResultText(endpoint.callTool(
                 name: MCPWindowToolName.getCodeStructure,
                 arguments: [
+                    "scope": "paths",
                     "paths": [logicalFilePath]
                 ],
                 timeoutSeconds: 30

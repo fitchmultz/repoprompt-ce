@@ -104,6 +104,26 @@ enum WorkspaceGitDiffSelectionResolver {
         return selectedPaths
     }
 
+    static func resolveSelectedGitDiffPaths(
+        for selection: StoredSelection,
+        store: WorkspaceFileContextStore,
+        rootScope: WorkspaceLookupRootScope,
+        folderPolicy: SelectedGitDiffFolderPolicy,
+        profile: PathLocateProfile,
+        allowFilesystemFallback: Bool,
+        excluding excludedPaths: Set<String>
+    ) async -> WorkspaceSelectedGitPathResolution {
+        let paths = await selectedGitDiffPaths(
+            for: selection,
+            store: store,
+            rootScope: rootScope,
+            folderPolicy: folderPolicy,
+            profile: profile,
+            allowFilesystemFallback: allowFilesystemFallback
+        ).filter { !excludedPaths.contains($0) }
+        return WorkspaceSelectedGitPathResolution(paths: paths, unresolvedCandidates: [])
+    }
+
     private static func normalizeUserInput(_ raw: String) -> String {
         (raw as NSString).expandingTildeInPath.trimmingCharacters(in: .whitespacesAndNewlines)
     }

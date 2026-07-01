@@ -3140,7 +3140,7 @@ class WorkspaceManagerViewModel: ObservableObject {
         }
 
         logWorkspaceSwitch("post-switch ensureGitDataRootLoaded BEGIN workspace=\"\(workspace.name)\" reason=\(reason)")
-        await fileManager.ensureGitDataRootLoaded(
+        try? await fileManager.ensureGitDataRootLoaded(
             workspace: workspace,
             workspaceManager: self,
             refreshRootFolderStateAfterLoad: false
@@ -6018,7 +6018,7 @@ class WorkspaceManagerViewModel: ObservableObject {
                 let gitDataStartMS = WorkspaceRestorePerfLog.timestampMSIfEnabled()
             #endif
             logWorkspaceSwitch("ensureGitDataRootLoaded BEGIN workspace=\"\(workspace.name)\" mode=inline")
-            await fileManager.ensureGitDataRootLoaded(
+            try? await fileManager.ensureGitDataRootLoaded(
                 workspace: workspace,
                 workspaceManager: self,
                 refreshRootFolderStateAfterLoad: false

@@ -3216,4 +3216,93 @@ extension MCPServerViewModel {
         tabContextLog("commitTabContext UI applied: tab=\(applyTab.id)")
         return isStillCurrent() && !Task.isCancelled
     }
+
+    struct PrimaryGitArtifactCommitResult: Equatable {
+        let selection: StoredSelection
+        let selectionRevision: UInt64
+        let newlyAddedArtifacts: [GitDiffPublishedArtifact]
+        let autoSelectedAliases: [String]
+    }
+
+    @MainActor
+    func commitPrimaryGitArtifactsToCurrentTab(
+        toolName: String,
+        candidates: [GitDiffPublishedArtifact],
+        sourceSelection: StoredSelection? = nil
+    ) async throws -> PrimaryGitArtifactCommitResult {
+        let (connectionID, context) = try await contextForCurrentRequest(toolName: toolName)
+        let base = sourceSelection ?? context.selection
+        let merge = await addPrimaryGitDiffArtifactsToSelection(
+            existing: base,
+            paths: candidates.map(\.absolutePath),
+            lookupRootScope: .visibleWorkspacePlusGitData
+        )
+        let verification = await Self.persistMCPSelectionAndVerifyThroughCoordinator(
+            merge.selection,
+            for: context.tabID,
+            workspaceID: context.workspaceID,
+            selectionCoordinator: selectionCoordinator,
+            mirrorToUIIfActive: context.worktreeBindings.isEmpty,
+            expectedCurrentSelection: nil
+        )
+        guard verification.outcome != .unavailable else {
+            throw MCPError.internalError("Canonical tab selection is unavailable for Git artifact publication")
+        }
+        guard verification.isVerified else {
+            throw MCPError.internalError("Canonical Git artifact selection verification failed")
+        }
+
+        let committedRevision = context.workspaceID.flatMap { workspaceID in
+            workspaceManager?.selectionRevisionForMCP(workspaceID: workspaceID, tabID: context.tabID)
+        } ?? context.selectionRevision
+        if var latest = tabContextByConnectionID[connectionID] {
+            latest.selection = merge.selection
+            latest.selectionRevision = committedRevision
+            tabContextByConnectionID[connectionID] = latest
+        }
+        let selected = Set(merge.autoSelectedPaths)
+        let newlyAdded = candidates.filter { selected.contains($0.absolutePath) }
+        return PrimaryGitArtifactCommitResult(
+            selection: merge.selection,
+            selectionRevision: committedRevision,
+            newlyAddedArtifacts: newlyAdded,
+            autoSelectedAliases: newlyAdded.compactMap(\.clientAlias)
+        )
+    }
+
+    @MainActor
+    func replaceAdvertisedGitArtifactsForCurrentTab(
+        toolName: String,
+        artifacts: [GitDiffPublishedArtifact]
+    ) async throws -> MCPGitArtifactAdvertisementSnapshot {
+        let (_, context) = try await contextForCurrentRequest(toolName: toolName)
+        guard let workspaceID = context.workspaceID else {
+            throw MCPError.internalError("Workspace identity is unavailable for Git artifact advertisement")
+        }
+        let reviewContext = await promptVM.freezePromptGitReviewContext(
+            workspaceID: workspaceID,
+            tabID: context.tabID,
+            sessionID: context.activeAgentSessionID,
+            bindings: context.worktreeBindings,
+            base: "HEAD"
+        )
+        guard let capability = reviewContext.artifactCapability else {
+            throw MCPError.internalError("Git artifact capability is unavailable for advertisement")
+        }
+        return try gitArtifactAdvertisementRegistry.replace(
+            identity: WorkspaceSelectionIdentity(workspaceID: workspaceID, tabID: context.tabID),
+            capability: capability,
+            artifacts: artifacts
+        )
+    }
+
+    @MainActor
+    func invalidateAdvertisedGitArtifactsForCurrentTab(toolName: String) async {
+        guard let (_, context) = try? await contextForCurrentRequest(toolName: toolName),
+              let workspaceID = context.workspaceID
+        else { return }
+        gitArtifactAdvertisementRegistry.invalidate(
+            identity: WorkspaceSelectionIdentity(workspaceID: workspaceID, tabID: context.tabID)
+        )
+    }
 }

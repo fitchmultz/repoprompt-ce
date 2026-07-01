@@ -87,6 +87,13 @@ struct MCPWindowToolDependencies {
         _ activityReporter: ContextBuilderMCPActivityReporter?
     ) async throws -> ChatSendReply
     typealias CaptureRequestMetadata = @MainActor @Sendable () async -> MCPServerViewModel.RequestMetadata
+    typealias ResolveImplicitContextBuilderGitTarget = @MainActor @Sendable (
+        _ metadata: MCPServerViewModel.RequestMetadata
+    ) async throws -> ContextBuilderReviewTargetResolution?
+    typealias ValidateContextBuilderGitArtifactSelection = @MainActor @Sendable (
+        _ metadata: MCPServerViewModel.RequestMetadata,
+        _ target: ContextBuilderReviewTarget
+    ) async throws -> Void
     typealias ResolveTabContextSnapshot = @MainActor @Sendable (
         _ metadata: MCPServerViewModel.RequestMetadata,
         _ toolName: String,
@@ -97,15 +104,34 @@ struct MCPWindowToolDependencies {
         _ mutation: (inout MCPServerViewModel.TabScopedContext) -> Void
     ) async throws -> Void
     typealias SelectedRecordsForCurrentTabContext = @MainActor @Sendable () async throws -> [WorkspaceFileRecord]
+    typealias ResolveSelectedFilesForCodeStructure = @MainActor @Sendable (
+        _ metadata: MCPServerViewModel.RequestMetadata,
+        _ lookupContext: WorkspaceLookupContext,
+        _ maximumSeedCount: Int
+    ) async throws -> [WorkspaceFileRecord]
     typealias BoundTabID = @MainActor @Sendable (_ connectionID: UUID?) -> UUID?
     typealias MapFileManagerErrorToMCP = @MainActor @Sendable (_ error: FileManagerError, _ action: String, _ path: String?) async -> MCPError
-    typealias EnsureGitDataRootLoaded = @MainActor @Sendable (_ workspace: WorkspaceModel?, _ workspaceManager: WorkspaceManagerViewModel?) async -> Void
+    typealias EnsureGitDataRootLoaded = @MainActor @Sendable (_ workspace: WorkspaceModel, _ workspaceManager: WorkspaceManagerViewModel) async throws -> WorkspaceRootRef
     typealias DebugLog = @Sendable (_ message: String) -> Void
-    typealias AddPrimaryGitDiffArtifactsToSelection = @MainActor @Sendable (
-        _ existing: StoredSelection,
-        _ paths: [String]
-    ) async -> (selection: StoredSelection, autoSelectedPaths: [String])
+    typealias CommitPrimaryGitDiffArtifactsToCurrentTab = @MainActor @Sendable (
+        _ toolName: String,
+        _ candidates: [GitDiffPublishedArtifact],
+        _ sourceSelection: StoredSelection?
+    ) async throws -> MCPServerViewModel.PrimaryGitArtifactCommitResult
+    typealias ReplaceAdvertisedGitArtifactsForCurrentTab = @MainActor @Sendable (
+        _ toolName: String,
+        _ artifacts: [GitDiffPublishedArtifact]
+    ) async throws -> MCPGitArtifactAdvertisementSnapshot
+    typealias InvalidateAdvertisedGitArtifactsForCurrentTab = @MainActor @Sendable (
+        _ toolName: String
+    ) async -> Void
     typealias ParseManageSelectionInputs = @Sendable (_ rawPaths: [String], _ slicesValue: Value?) -> MCPServerViewModel.ManageSelectionInputs
+    typealias ResolveManageSelectionArtifactInputs = @MainActor @Sendable (
+        _ request: MCPManageSelectionArtifactResolutionRequest
+    ) async -> MCPManageSelectionArtifactResolution
+    typealias ValidateManageSelectionArtifactFence = @MainActor @Sendable (
+        _ fence: MCPManageSelectionArtifactAuthorizationFence?
+    ) async throws -> Void
     typealias ResolveFileToolLookupContext = @MainActor @Sendable (_ metadata: MCPServerViewModel.RequestMetadata) async -> WorkspaceLookupContext
     typealias StabilizedVirtualSelection = @MainActor @Sendable (_ context: MCPServerViewModel.TabScopedContext) async -> StoredSelection
     typealias BuildCurrentSelectionReply = @MainActor @Sendable (
@@ -182,8 +208,8 @@ struct MCPWindowToolDependencies {
     ) async -> MCPServerViewModel.MCPSelectionPersistenceVerification?
     typealias MakeSelectionHintError = @MainActor @Sendable (_ paths: [String], _ operation: String, _ lookupContext: WorkspaceLookupContext) async -> String
     typealias PerformFileAction = @MainActor @Sendable (_ action: String, _ path: String, _ content: String?, _ newPath: String?, _ ifExists: String?) async throws -> String?
-    typealias BuildCodeStructureDTO = @MainActor @Sendable (_ files: [WorkspaceFileRecord], _ maxResults: Int, _ includeUnmappedPaths: Bool, _ lookupContext: WorkspaceLookupContext) async throws -> ToolResultDTOs.SelectedCodeStructureDTO
-    typealias ResolveFilesForCodeStructure = @MainActor @Sendable (_ paths: [String], _ lookupRootScope: WorkspaceLookupRootScope) async throws -> [WorkspaceFileRecord]
+    typealias BuildCodeStructureDTO = @MainActor @Sendable (_ files: [WorkspaceFileRecord], _ request: MCPServerViewModel.CodeStructureRequest, _ includePathNotFoundIssue: Bool, _ lookupContext: WorkspaceLookupContext) async throws -> ToolResultDTOs.CodeStructureReplyDTO
+    typealias ResolveFilesForCodeStructure = @MainActor @Sendable (_ paths: [String], _ lookupRootScope: WorkspaceLookupRootScope, _ maximumSeedCount: Int) async throws -> [WorkspaceFileRecord]
     typealias BuildStoreBackedFileTreeResult = @MainActor @Sendable (_ mode: String, _ maxDepth: Int?, _ startPath: String?, _ lookupContext: WorkspaceLookupContext) async throws -> (result: FileTreeResult, rootCount: Int)
     typealias ReadFile = @MainActor @Sendable (_ path: String, _ startLine1Based: Int?, _ lineCount: Int?, _ lookupRootScope: WorkspaceLookupRootScope) async throws -> (reply: ToolResultDTOs.ReadFileReply, shouldAutoSelect: Bool)
     typealias EnqueueReadFileAutoSelection = @MainActor @Sendable (
@@ -247,17 +273,24 @@ struct MCPWindowToolDependencies {
     let selectionCoordinator: WorkspaceSelectionCoordinator?
     let applyEditsApprovalStore: ApplyEditsApprovalStore
     let captureRequestMetadata: CaptureRequestMetadata
+    let resolveImplicitContextBuilderGitTarget: ResolveImplicitContextBuilderGitTarget
+    let validateContextBuilderGitArtifactSelection: ValidateContextBuilderGitArtifactSelection
     let resolveTabContextSnapshot: ResolveTabContextSnapshot
     let updateCurrentTabContext: UpdateCurrentTabContext
     let selectedRecordsForCurrentTabContext: SelectedRecordsForCurrentTabContext
+    let resolveSelectedFilesForCodeStructure: ResolveSelectedFilesForCodeStructure
     let boundTabID: BoundTabID
     let mapFileManagerErrorToMCP: MapFileManagerErrorToMCP
     let ensureGitDataRootLoaded: EnsureGitDataRootLoaded
     let logDebug: DebugLog
-    let addPrimaryGitDiffArtifactsToSelection: AddPrimaryGitDiffArtifactsToSelection
+    let commitPrimaryGitDiffArtifactsToCurrentTab: CommitPrimaryGitDiffArtifactsToCurrentTab
+    let replaceAdvertisedGitArtifactsForCurrentTab: ReplaceAdvertisedGitArtifactsForCurrentTab
+    let invalidateAdvertisedGitArtifactsForCurrentTab: InvalidateAdvertisedGitArtifactsForCurrentTab
 
     let workspaceSearch: WorkspaceSearch
     let parseManageSelectionInputs: ParseManageSelectionInputs
+    let resolveManageSelectionArtifactInputs: ResolveManageSelectionArtifactInputs
+    let validateManageSelectionArtifactFence: ValidateManageSelectionArtifactFence
     let resolveFileToolLookupContext: ResolveFileToolLookupContext
     let stabilizedVirtualSelection: StabilizedVirtualSelection
     let buildCurrentSelectionReply: BuildCurrentSelectionReply

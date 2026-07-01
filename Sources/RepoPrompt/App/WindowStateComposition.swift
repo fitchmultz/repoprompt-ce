@@ -128,8 +128,10 @@ enum WindowStateCompositionFactory {
                 )
             },
             ensureGitDataRootLoaded: { [fileManager = workspaceFilesViewModel] workspace, workspaceManager in
-                guard let workspace, let workspaceManager else { return }
-                await fileManager.ensureGitDataRootLoaded(workspace: workspace, workspaceManager: workspaceManager)
+                try await fileManager.ensureGitDataRootLoaded(
+                    workspace: workspace,
+                    workspaceManager: workspaceManager
+                )
             },
             applyEditsApprovalStore: applyEditsApprovalStore
         )

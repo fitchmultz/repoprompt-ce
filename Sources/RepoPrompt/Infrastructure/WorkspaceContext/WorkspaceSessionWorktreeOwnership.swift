@@ -11,6 +11,46 @@ struct WorkspaceSessionWorktreeOwnedRoot: Hashable {
     let standardizedPhysicalPath: String
 }
 
+struct WorkspaceSessionRootAuthorization: Hashable {
+    let sessionID: UUID
+    let ownershipGeneration: UInt64
+    let root: WorkspaceRootRef
+    let lifetimeID: UUID
+}
+
+enum WorkspaceSessionRootAuthorizationMismatch: String, Equatable {
+    case token
+    case generation
+    case rootClaim
+    case rootID
+    case lifetime
+    case kind
+    case path
+}
+
+enum WorkspaceAuthorizedSelectionCandidateRoute: String, Equatable {
+    case catalogFile
+    case materializedFile
+    case catalogFolder
+}
+
+enum WorkspaceAuthorizedSelectionCandidateBlock: String, Equatable {
+    case invalidPath
+    case outsideAuthorizedRoot
+    case symbolicLink
+    case symlinkComponent
+    case outsideCanonicalRoot
+    case nonRegularFile
+    case materializationFailed
+}
+
+enum WorkspaceAuthorizedSelectionCandidateResolution: Equatable {
+    case resolved(files: [WorkspaceFileRecord], route: WorkspaceAuthorizedSelectionCandidateRoute)
+    case noCandidate
+    case blockedOrAmbiguous(WorkspaceAuthorizedSelectionCandidateBlock)
+    case staleAuthority(WorkspaceSessionRootAuthorizationMismatch)
+}
+
 struct WorkspaceSessionWorktreeOwnershipPreparation {
     let token: WorkspaceSessionWorktreeOwnershipToken
     let bindingFingerprint: String

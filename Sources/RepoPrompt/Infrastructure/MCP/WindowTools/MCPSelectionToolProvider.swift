@@ -145,15 +145,47 @@ final class MCPSelectionToolProvider: MCPWindowToolProviding {
             try Task.checkCancellation()
         }
         resolvedContext.snapshot.selection = lookupContext.physicalizeSelection(resolvedContext.snapshot.selection)
+        let artifactResolution: MCPManageSelectionArtifactResolution
+        if ["add", "remove", "set", "preview"].contains(op) {
+            let reviewContext = await dependencies.promptVM.freezePromptGitReviewContext(
+                workspaceID: resolvedContext.snapshot.workspaceID,
+                tabID: resolvedContext.snapshot.tabID,
+                sessionID: resolvedContext.snapshot.activeAgentSessionID,
+                bindings: resolvedContext.snapshot.worktreeBindings,
+                base: "HEAD"
+            )
+            let identity = resolvedContext.snapshot.workspaceID.map {
+                WorkspaceSelectionIdentity(workspaceID: $0, tabID: resolvedContext.snapshot.tabID)
+            }
+            artifactResolution = await dependencies.resolveManageSelectionArtifactInputs(
+                MCPManageSelectionArtifactResolutionRequest(
+                    paths: parsedInputs.paths,
+                    sliceInputs: parsedInputs.sliceInputs,
+                    use: op == "remove" ? .remove : .insert,
+                    mode: mode,
+                    physicalSelection: resolvedContext.snapshot.selection,
+                    identity: identity,
+                    capability: reviewContext.artifactCapability
+                )
+            )
+        } else {
+            artifactResolution = MCPManageSelectionArtifactResolution(
+                ordinaryPaths: parsedInputs.paths,
+                ordinarySliceInputs: parsedInputs.sliceInputs,
+                artifacts: [],
+                invalidDiagnostics: [],
+                fence: nil
+            )
+        }
         let physicalParsedInputs = MCPServerViewModel.ManageSelectionInputs(
-            paths: lookupContext.translateInputPaths(parsedInputs.paths),
-            sliceInputs: lookupContext.translateSliceInputs(parsedInputs.sliceInputs),
+            paths: lookupContext.translateInputPaths(artifactResolution.ordinaryPaths),
+            sliceInputs: lookupContext.translateSliceInputs(artifactResolution.ordinarySliceInputs),
             sliceErrors: parsedInputs.sliceErrors,
             hadExplicitSliceSpec: parsedInputs.hadExplicitSliceSpec
         )
         let physicalSelectionPaths = physicalParsedInputs.paths
         let physicalSliceInputs = physicalParsedInputs.sliceInputs
-        let extraInvalid = sliceParseErrors
+        let extraInvalid = sliceParseErrors + artifactResolution.invalidDiagnostics
 
         switch op {
         case "get":
@@ -176,7 +208,7 @@ final class MCPSelectionToolProvider: MCPWindowToolProviding {
             let previewSelectionFinal: StoredSelection = if mode == "codemap_only" {
                 StoredSelection(selectedPaths: buildResult.selection.selectedPaths, autoCodemapPaths: buildResult.selection.autoCodemapPaths, slices: buildResult.selection.slices, codemapAutoEnabled: false)
             } else {
-                buildResult.selection
+                Self.mutateArtifactPaths(buildResult.selection, paths: artifactResolution.absolutePaths, use: .insert)
             }
             var combinedInvalid = buildResult.invalidPaths
             for msg in buildResult.codemapUnavailable where !combinedInvalid.contains(msg) {
@@ -193,7 +225,7 @@ final class MCPSelectionToolProvider: MCPWindowToolProviding {
             await MCPToolExecutionHandlerPhaseContext.report(.manageSelectionReplyConstruction, transition: .completed)
             try Task.checkCancellation()
             if strict {
-                let resolvedAny = (previewReply.files?.isEmpty == false) || (previewReply.fileSlices?.isEmpty == false)
+                let resolvedAny = artifactResolution.resolvedCount > 0 || (previewReply.files?.isEmpty == false) || (previewReply.fileSlices?.isEmpty == false)
                 if !resolvedAny {
                     var hintInputs = rawPaths
                     let slicePaths = physicalSliceInputs.map(\.path)
@@ -217,7 +249,6 @@ final class MCPSelectionToolProvider: MCPWindowToolProviding {
             }
             let setBuildResult = await dependencies.buildManageSelectionSetSelection(physicalParsedInputs, mode, context.selection, lookupRootScope)
             try Task.checkCancellation()
-            let currentSelection = setBuildResult.selection
             var combinedInvalid = setBuildResult.invalidPaths
             for error in extraInvalid where !combinedInvalid.contains(error) {
                 combinedInvalid.append(error)
@@ -228,6 +259,8 @@ final class MCPSelectionToolProvider: MCPWindowToolProviding {
             for msg in setBuildResult.codemapUnavailable where !combinedInvalid.contains(msg) {
                 combinedInvalid.append(msg)
             }
+            try await dependencies.validateManageSelectionArtifactFence(artifactResolution.fence)
+            let currentSelection = Self.mutateArtifactPaths(setBuildResult.selection, paths: artifactResolution.absolutePaths, use: .insert)
             return try await persistAndReply(
                 resolvedContext: &resolvedContext,
                 metadata: metadata,
@@ -240,7 +273,7 @@ final class MCPSelectionToolProvider: MCPWindowToolProviding {
                 view: view
             )
         case "add":
-            if physicalSelectionPaths.isEmpty, physicalSliceInputs.isEmpty { throw MCPError.invalidParams("paths or slices required for add") }
+            if parsedInputs.paths.isEmpty, parsedInputs.sliceInputs.isEmpty { throw MCPError.invalidParams("paths or slices required for add") }
             let context = resolvedContext.snapshot
             selectionLog("[Virtual] manage_selection op=add mode=\(mode) paths=\(selectionPaths.count) slices=\(sliceInputs.count) tab=\(context.tabID)")
             var invalid: [String] = []
@@ -279,7 +312,7 @@ final class MCPSelectionToolProvider: MCPWindowToolProviding {
                     let detail = sliceParseErrors.isEmpty ? "No valid slices parsed from provided specification" : sliceParseErrors.joined(separator: "; ")
                     throw MCPError.invalidParams(detail)
                 }
-                let resolvedAnything = pathMutated || !resolvedMap.isEmpty || sliceResolved || sliceMutated
+                let resolvedAnything = pathMutated || !resolvedMap.isEmpty || sliceResolved || sliceMutated || artifactResolution.resolvedCount > 0
                 if strict, !resolvedAnything {
                     if !selectionPaths.isEmpty {
                         let hint = await dependencies.makeSelectionHintError(rawPaths, "add", lookupContext)
@@ -288,10 +321,15 @@ final class MCPSelectionToolProvider: MCPWindowToolProviding {
                         throw MCPError.invalidParams("Provided slices did not match any files")
                     }
                 }
-            } else if strict, !pathMutated, resolvedMap.isEmpty {
+            } else if strict, !pathMutated, resolvedMap.isEmpty, artifactResolution.resolvedCount == 0 {
+                if !artifactResolution.invalidDiagnostics.isEmpty {
+                    throw MCPError.invalidParams(artifactResolution.invalidDiagnostics.joined(separator: "; "))
+                }
                 let hint = await dependencies.makeSelectionHintError(rawPaths, "add", lookupContext)
                 throw MCPError.invalidParams(hint)
             }
+            try await dependencies.validateManageSelectionArtifactFence(artifactResolution.fence)
+            currentSelection = Self.mutateArtifactPaths(currentSelection, paths: artifactResolution.absolutePaths, use: .insert)
             var combinedInvalid = invalid
             for error in extraInvalid where !combinedInvalid.contains(error) {
                 combinedInvalid.append(error)
@@ -304,7 +342,7 @@ final class MCPSelectionToolProvider: MCPWindowToolProviding {
             }
             return try await persistAndReply(resolvedContext: &resolvedContext, metadata: metadata, lookupContext: lookupContext, baseContext: context, selection: currentSelection, includeBlocks: includeBlocks, display: display, extraInvalid: combinedInvalid, view: view)
         case "remove":
-            if physicalSelectionPaths.isEmpty, physicalSliceInputs.isEmpty { throw MCPError.invalidParams("paths or slices required for remove") }
+            if parsedInputs.paths.isEmpty, parsedInputs.sliceInputs.isEmpty { throw MCPError.invalidParams("paths or slices required for remove") }
             if mode == "codemap_only", !physicalSliceInputs.isEmpty { throw MCPError.invalidParams("mode 'codemap_only' cannot be used with slices") }
             let context = resolvedContext.snapshot
             selectionLog("[Virtual] manage_selection op=remove mode=\(mode) paths=\(selectionPaths.count) slices=\(sliceInputs.count) tab=\(context.tabID)")
@@ -341,9 +379,16 @@ final class MCPSelectionToolProvider: MCPWindowToolProviding {
                 throw MCPError.invalidParams(detail)
             }
             if strict, !(pathMutated || !resolvedMap.isEmpty || sliceResolved || sliceMutated), !selectionPaths.isEmpty {
-                let hint = await dependencies.makeSelectionHintError(rawPaths, "remove", lookupContext)
-                throw MCPError.invalidParams(hint)
+                if artifactResolution.resolvedCount == 0, !artifactResolution.invalidDiagnostics.isEmpty {
+                    throw MCPError.invalidParams(artifactResolution.invalidDiagnostics.joined(separator: "; "))
+                }
+                if artifactResolution.resolvedCount == 0 {
+                    let hint = await dependencies.makeSelectionHintError(rawPaths, "remove", lookupContext)
+                    throw MCPError.invalidParams(hint)
+                }
             }
+            try await dependencies.validateManageSelectionArtifactFence(artifactResolution.fence)
+            currentSelection = Self.mutateArtifactPaths(currentSelection, paths: artifactResolution.absolutePaths, use: .remove)
             var combinedInvalid = invalid
             for error in extraInvalid where !combinedInvalid.contains(error) {
                 combinedInvalid.append(error)
@@ -399,6 +444,38 @@ final class MCPSelectionToolProvider: MCPWindowToolProviding {
         default:
             throw MCPError.invalidParams("Unsupported op '\(op)' for manage_selection when tab context is active")
         }
+    }
+
+    private static func mutateArtifactPaths(
+        _ selection: StoredSelection,
+        paths: [String],
+        use: MCPManageSelectionArtifactUse
+    ) -> StoredSelection {
+        guard !paths.isEmpty else { return selection }
+        let artifactPaths = Set(StoredSelectionPathNormalization.standardizedPaths(paths))
+        var selectedPaths = StoredSelectionPathNormalization.standardizedPaths(selection.selectedPaths)
+        var selectedSet = Set(selectedPaths)
+        var slices = StoredSelectionPathNormalization.standardizedSlices(selection.slices)
+        var codemapPaths = StoredSelectionPathNormalization.standardizedPaths(selection.autoCodemapPaths)
+
+        switch use {
+        case .insert:
+            for path in artifactPaths.sorted() where selectedSet.insert(path).inserted {
+                selectedPaths.append(path)
+                slices.removeValue(forKey: path)
+            }
+        case .remove:
+            selectedPaths.removeAll { artifactPaths.contains($0) }
+            slices = slices.filter { !artifactPaths.contains($0.key) }
+            codemapPaths.removeAll { artifactPaths.contains($0) }
+        }
+
+        return StoredSelection(
+            selectedPaths: selectedPaths,
+            autoCodemapPaths: codemapPaths,
+            slices: slices,
+            codemapAutoEnabled: selection.codemapAutoEnabled
+        )
     }
 
     private func persistAndReply(
