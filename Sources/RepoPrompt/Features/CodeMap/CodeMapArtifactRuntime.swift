@@ -11,6 +11,8 @@ final class CodeMapArtifactRuntime: @unchecked Sendable {
     let locatorStore: GitBlobCodeMapLocatorStore
     let manifestStore: CodeMapRootManifestStore
     let coordinator: CodeMapArtifactBuildCoordinator
+    let bindingIntegrationRegistry: WorkspaceCodemapBindingIntegrationRegistry
+    private let bindingEngineProvider: WorkspaceCodemapBindingEngineProvider
 
     init(
         rootURL: URL,
@@ -28,7 +30,11 @@ final class CodeMapArtifactRuntime: @unchecked Sendable {
         builder: CodeMapArtifactBuilderClient = CodeMapArtifactBuilderClient(),
         coordinatorPolicy: CodeMapArtifactBuildCoordinatorPolicy = .default,
         coordinatorClock: CodeMapArtifactBuildCoordinatorClock = .continuous,
-        coordinatorHooks: CodeMapArtifactBuildCoordinatorHooks = .none
+        coordinatorHooks: CodeMapArtifactBuildCoordinatorHooks = .none,
+        bindingIntegrationRegistry: WorkspaceCodemapBindingIntegrationRegistry =
+            WorkspaceCodemapBindingIntegrationRegistry(),
+        bindingEngineFactory: @escaping WorkspaceCodemapBindingEngineProvider.Factory =
+            WorkspaceCodemapBindingEngineProvider.unconfiguredFactory
     ) throws {
         let artifactStore = try CodeMapArtifactStore(
             rootURL: rootURL,
@@ -60,6 +66,12 @@ final class CodeMapArtifactRuntime: @unchecked Sendable {
         self.locatorStore = locatorStore
         self.manifestStore = manifestStore
         self.coordinator = coordinator
+        self.bindingIntegrationRegistry = bindingIntegrationRegistry
+        bindingEngineProvider = WorkspaceCodemapBindingEngineProvider(factory: bindingEngineFactory)
+    }
+
+    func bindingEngine() throws -> WorkspaceCodemapBindingEngine {
+        try bindingEngineProvider.engine(for: self)
     }
 
     static func processWide() throws -> CodeMapArtifactRuntime {
@@ -85,6 +97,10 @@ final class CodeMapArtifactRuntime: @unchecked Sendable {
                 identity: identity
             )
         },
+        bindingIntegrationRegistryFactory: @escaping @Sendable ()
+            -> WorkspaceCodemapBindingIntegrationRegistry = {
+                WorkspaceCodemapBindingIntegrationRegistry()
+            },
         postSuccessfulInitialization: @escaping @Sendable () -> Void = {}
     ) -> CodeMapArtifactRuntimeProvider {
         CodeMapArtifactRuntimeProvider {
@@ -97,10 +113,22 @@ final class CodeMapArtifactRuntime: @unchecked Sendable {
                 withIntermediateDirectories: true,
                 attributes: [.posixPermissions: 0o700]
             )
-            _ = try namespaceSaltProvider(rootURL, identity)
+            let registry = bindingIntegrationRegistryFactory()
+            let namespaceSalt = try namespaceSaltProvider(rootURL, identity)
             let runtime = try CodeMapArtifactRuntime(
                 rootURL: rootURL,
-                artifactStoreLeaseAdmission: .processWide
+                artifactStoreLeaseAdmission: .processWide,
+                bindingIntegrationRegistry: registry,
+                bindingEngineFactory: { runtime in
+                    WorkspaceCodemapBindingEngine(
+                        runtime: runtime,
+                        capabilityService: WorkspaceCodemapGitCapabilityService(
+                            namespaceSalt: namespaceSalt
+                        ),
+                        sourceReader: registry.makeValidatedSourceReaderClient(),
+                        catalogClient: registry.makeBindingCatalogClient()
+                    )
+                }
             )
             postSuccessfulInitialization()
             return runtime

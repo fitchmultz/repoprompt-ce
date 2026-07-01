@@ -6009,31 +6009,31 @@ class WorkspaceFileContextStoreTestCase: XCTestCase {
             let oldRecord = try await store.loadRoot(path: root.path)
             try await store.requestInitialRootCodemapScans(rootIDs: [oldRecord.id])
             _ = await waitForCodemapCounters(store: store) { counters in
-                counters.trackedFileIDCount == 1
+                counters.compatibilitySnapshotCount == 1
             }
 
             await store.unloadRoot(id: oldRecord.id)
             let unloadedCounters = await waitForCodemapCounters(store: store) { counters in
-                counters.trackedFileIDCount == 0 &&
-                    counters.trackedRootCount == 0 &&
-                    counters.queuedCount == 0 &&
-                    counters.activeScanCount == 0 &&
-                    counters.outstandingScanCount == 0
+                counters.compatibilitySnapshotCount == 0 &&
+                    counters.compatibilitySnapshotRootCount == 0 &&
+                    counters.pendingDemandCount == 0 &&
+                    counters.activeDemandTaskCount == 0 &&
+                    counters.modernDemandCount == 0
             }
-            XCTAssertEqual(unloadedCounters.trackedFileIDCount, 0)
+            XCTAssertEqual(unloadedCounters.compatibilitySnapshotCount, 0)
 
             let newRecord = try await store.loadRoot(path: root.path)
             try await store.requestInitialRootCodemapScans(rootIDs: [oldRecord.id])
             try await Task.sleep(nanoseconds: 50_000_000)
             let afterOldRootIDRequest = await store.codemapMemoryCounters()
-            XCTAssertEqual(afterOldRootIDRequest.trackedFileIDCount, 0)
-            XCTAssertEqual(afterOldRootIDRequest.trackedRootCount, 0)
+            XCTAssertEqual(afterOldRootIDRequest.compatibilitySnapshotCount, 0)
+            XCTAssertEqual(afterOldRootIDRequest.compatibilitySnapshotRootCount, 0)
 
             try await store.requestInitialRootCodemapScans(rootIDs: [newRecord.id])
             let reloadedCounters = await waitForCodemapCounters(store: store) { counters in
-                counters.trackedFileIDCount == 1
+                counters.compatibilitySnapshotCount == 1
             }
-            XCTAssertEqual(reloadedCounters.trackedFileIDCount, 1)
+            XCTAssertEqual(reloadedCounters.compatibilitySnapshotCount, 1)
         }
 
         func runTestInitialRootCodemapScansByPathTargetReloadedSamePathRoot() async throws {
@@ -6044,16 +6044,16 @@ class WorkspaceFileContextStoreTestCase: XCTestCase {
             let oldRecord = try await store.loadRoot(path: root.path)
             try await store.requestInitialRootCodemapScans(rootFolderPaths: [root.path])
             _ = await waitForCodemapCounters(store: store) { counters in
-                counters.trackedFileIDCount == 1
+                counters.compatibilitySnapshotCount == 1
             }
 
             await store.unloadRoot(id: oldRecord.id)
             _ = await waitForCodemapCounters(store: store) { counters in
-                counters.trackedFileIDCount == 0 &&
-                    counters.trackedRootCount == 0 &&
-                    counters.queuedCount == 0 &&
-                    counters.activeScanCount == 0 &&
-                    counters.outstandingScanCount == 0
+                counters.compatibilitySnapshotCount == 0 &&
+                    counters.compatibilitySnapshotRootCount == 0 &&
+                    counters.pendingDemandCount == 0 &&
+                    counters.activeDemandTaskCount == 0 &&
+                    counters.modernDemandCount == 0
             }
 
             let newRecord = try await store.loadRoot(path: root.path)
@@ -6064,10 +6064,10 @@ class WorkspaceFileContextStoreTestCase: XCTestCase {
             )
 
             let reloadedCounters = await waitForCodemapCounters(store: store) { counters in
-                counters.trackedRootCount == 1 && counters.trackedFileIDCount == 1
+                counters.compatibilitySnapshotRootCount == 1 && counters.compatibilitySnapshotCount == 1
             }
-            XCTAssertEqual(reloadedCounters.trackedRootCount, 1)
-            XCTAssertEqual(reloadedCounters.trackedFileIDCount, 1)
+            XCTAssertEqual(reloadedCounters.compatibilitySnapshotRootCount, 1)
+            XCTAssertEqual(reloadedCounters.compatibilitySnapshotCount, 1)
         }
 
         func runTestDeferredInitialRootLoadFlushUsesStoreRootsInsteadOfMainActorUIGather() throws {
@@ -6529,8 +6529,8 @@ class WorkspaceFileContextStoreTestCase: XCTestCase {
             timeout: TimeInterval = 5,
             file: StaticString = #filePath,
             line: UInt = #line,
-            until predicate: (CodeScanActor.CodemapMemoryCounters) -> Bool
-        ) async -> CodeScanActor.CodemapMemoryCounters {
+            until predicate: (WorkspaceCodemapMemoryCounters) -> Bool
+        ) async -> WorkspaceCodemapMemoryCounters {
             let deadline = Date().addingTimeInterval(timeout)
             while Date() < deadline {
                 let counters = await store.codemapMemoryCounters()

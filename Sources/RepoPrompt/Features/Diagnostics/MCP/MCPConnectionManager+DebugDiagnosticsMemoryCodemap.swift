@@ -125,7 +125,7 @@ import MCP
                 selectedWindows = allWindows
             }
 
-            var countersByWindow: [(window: WindowState, workspaceID: String, workspaceName: String, counters: CodeScanActor.CodemapMemoryCounters)] = []
+            var countersByWindow: [(window: WindowState, workspaceID: String, workspaceName: String, counters: WorkspaceCodemapMemoryCounters)] = []
             countersByWindow.reserveCapacity(selectedWindows.count)
             for window in selectedWindows {
                 let workspace = window.workspaceManager.activeWorkspace
@@ -164,78 +164,57 @@ import MCP
             return .payload(payload)
         }
 
-        private static func debugEmptyCodemapMemoryCounters() -> CodeScanActor.CodemapMemoryCounters {
-            CodeScanActor.CodemapMemoryCounters(
-                fileAPIEntryCount: 0,
-                latestFileModDateCount: 0,
-                trackedRootCount: 0,
-                trackedFileIDCount: 0,
-                rootKeyByFileIDCount: 0,
-                rootCacheRootCount: 0,
-                rootCacheFileEntryCount: 0,
-                dirtyRootCount: 0,
-                rootCacheLoadTaskCount: 0,
-                rebuildLookupRootCount: 0,
-                rebuildLookupFileEntryCount: 0,
-                queuedCount: 0,
-                activeScanCount: 0,
-                outstandingScanCount: 0,
-                totalScheduledCount: 0,
-                cacheProcessingCount: 0,
-                resultBatchBufferCount: 0,
-                resultBatchBufferFileAPICount: 0,
-                actorRetainedFileAPILikeEntryCount: 0
+        private static func debugEmptyCodemapMemoryCounters() -> WorkspaceCodemapMemoryCounters {
+            WorkspaceCodemapMemoryCounters(
+                compatibilitySnapshotCount: 0,
+                compatibilitySnapshotRootCount: 0,
+                modernSessionCount: 0,
+                modernDemandCount: 0,
+                retainedDemandCount: 0,
+                internalRetainCount: 0,
+                readyBundleCount: 0,
+                cleanupFlightCount: 0,
+                setupTaskCount: 0,
+                pendingDemandCount: 0,
+                activeDemandTaskCount: 0,
+                pendingRepairFileCount: 0
             )
         }
 
         private static func debugAddCodemapMemoryCounters(
-            _ lhs: CodeScanActor.CodemapMemoryCounters,
-            _ rhs: CodeScanActor.CodemapMemoryCounters
-        ) -> CodeScanActor.CodemapMemoryCounters {
-            CodeScanActor.CodemapMemoryCounters(
-                fileAPIEntryCount: lhs.fileAPIEntryCount + rhs.fileAPIEntryCount,
-                latestFileModDateCount: lhs.latestFileModDateCount + rhs.latestFileModDateCount,
-                trackedRootCount: lhs.trackedRootCount + rhs.trackedRootCount,
-                trackedFileIDCount: lhs.trackedFileIDCount + rhs.trackedFileIDCount,
-                rootKeyByFileIDCount: lhs.rootKeyByFileIDCount + rhs.rootKeyByFileIDCount,
-                rootCacheRootCount: lhs.rootCacheRootCount + rhs.rootCacheRootCount,
-                rootCacheFileEntryCount: lhs.rootCacheFileEntryCount + rhs.rootCacheFileEntryCount,
-                dirtyRootCount: lhs.dirtyRootCount + rhs.dirtyRootCount,
-                rootCacheLoadTaskCount: lhs.rootCacheLoadTaskCount + rhs.rootCacheLoadTaskCount,
-                rebuildLookupRootCount: lhs.rebuildLookupRootCount + rhs.rebuildLookupRootCount,
-                rebuildLookupFileEntryCount: lhs.rebuildLookupFileEntryCount + rhs.rebuildLookupFileEntryCount,
-                queuedCount: lhs.queuedCount + rhs.queuedCount,
-                activeScanCount: lhs.activeScanCount + rhs.activeScanCount,
-                outstandingScanCount: lhs.outstandingScanCount + rhs.outstandingScanCount,
-                totalScheduledCount: lhs.totalScheduledCount + rhs.totalScheduledCount,
-                cacheProcessingCount: lhs.cacheProcessingCount + rhs.cacheProcessingCount,
-                resultBatchBufferCount: lhs.resultBatchBufferCount + rhs.resultBatchBufferCount,
-                resultBatchBufferFileAPICount: lhs.resultBatchBufferFileAPICount + rhs.resultBatchBufferFileAPICount,
-                actorRetainedFileAPILikeEntryCount: lhs.actorRetainedFileAPILikeEntryCount + rhs.actorRetainedFileAPILikeEntryCount
+            _ lhs: WorkspaceCodemapMemoryCounters,
+            _ rhs: WorkspaceCodemapMemoryCounters
+        ) -> WorkspaceCodemapMemoryCounters {
+            WorkspaceCodemapMemoryCounters(
+                compatibilitySnapshotCount: lhs.compatibilitySnapshotCount + rhs.compatibilitySnapshotCount,
+                compatibilitySnapshotRootCount: lhs.compatibilitySnapshotRootCount + rhs.compatibilitySnapshotRootCount,
+                modernSessionCount: lhs.modernSessionCount + rhs.modernSessionCount,
+                modernDemandCount: lhs.modernDemandCount + rhs.modernDemandCount,
+                retainedDemandCount: lhs.retainedDemandCount + rhs.retainedDemandCount,
+                internalRetainCount: lhs.internalRetainCount + rhs.internalRetainCount,
+                readyBundleCount: lhs.readyBundleCount + rhs.readyBundleCount,
+                cleanupFlightCount: lhs.cleanupFlightCount + rhs.cleanupFlightCount,
+                setupTaskCount: lhs.setupTaskCount + rhs.setupTaskCount,
+                pendingDemandCount: lhs.pendingDemandCount + rhs.pendingDemandCount,
+                activeDemandTaskCount: lhs.activeDemandTaskCount + rhs.activeDemandTaskCount,
+                pendingRepairFileCount: lhs.pendingRepairFileCount + rhs.pendingRepairFileCount
             )
         }
 
-        private static func debugCodemapCountersDictionary(_ counters: CodeScanActor.CodemapMemoryCounters) -> [String: Any] {
+        private static func debugCodemapCountersDictionary(_ counters: WorkspaceCodemapMemoryCounters) -> [String: Any] {
             [
-                "file_api_entries": counters.fileAPIEntryCount,
-                "latest_file_mod_dates": counters.latestFileModDateCount,
-                "tracked_roots": counters.trackedRootCount,
-                "tracked_file_ids": counters.trackedFileIDCount,
-                "root_key_by_file_ids": counters.rootKeyByFileIDCount,
-                "root_cache_roots": counters.rootCacheRootCount,
-                "root_cache_file_entries": counters.rootCacheFileEntryCount,
-                "dirty_roots": counters.dirtyRootCount,
-                "root_cache_load_tasks": counters.rootCacheLoadTaskCount,
-                "rebuild_lookup_roots": counters.rebuildLookupRootCount,
-                "rebuild_lookup_file_entries": counters.rebuildLookupFileEntryCount,
-                "queued": counters.queuedCount,
-                "active_scans": counters.activeScanCount,
-                "outstanding_scans": counters.outstandingScanCount,
-                "total_scheduled": counters.totalScheduledCount,
-                "cache_processing": counters.cacheProcessingCount,
-                "result_batch_buffer": counters.resultBatchBufferCount,
-                "result_batch_buffer_file_apis": counters.resultBatchBufferFileAPICount,
-                "actor_retained_file_api_like_entries": counters.actorRetainedFileAPILikeEntryCount
+                "compatibility_snapshots": counters.compatibilitySnapshotCount,
+                "compatibility_snapshot_roots": counters.compatibilitySnapshotRootCount,
+                "modern_sessions": counters.modernSessionCount,
+                "modern_demands": counters.modernDemandCount,
+                "retained_demands": counters.retainedDemandCount,
+                "internal_retains": counters.internalRetainCount,
+                "ready_bundles": counters.readyBundleCount,
+                "cleanup_flights": counters.cleanupFlightCount,
+                "setup_tasks": counters.setupTaskCount,
+                "pending_demands": counters.pendingDemandCount,
+                "active_demand_tasks": counters.activeDemandTaskCount,
+                "pending_repair_files": counters.pendingRepairFileCount
             ]
         }
     }

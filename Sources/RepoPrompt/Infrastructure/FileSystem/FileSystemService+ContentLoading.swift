@@ -630,6 +630,66 @@ extension FileSystemService {
         )
     }
 
+    func loadValidatedRawContent(
+        ofRelativePath relativePath: String,
+        expectedFingerprint: FileContentFingerprint? = nil,
+        maximumBytes: Int64 = 10_000_000,
+        workloadClass: ContentReadWorkloadClass = .codemap,
+        schedulerOwnerID: UUID? = nil
+    ) async throws -> ValidatedRawFileContentSnapshot {
+        guard maximumBytes >= 0 else { throw FileSystemError.fileTooLarge }
+        let request = try makeContentReadRequest(
+            cacheKey: relativePath,
+            chunkSize: 1_048_576,
+            fileSizeLimit: maximumBytes,
+            mode: .automatic,
+            workloadClass: workloadClass,
+            schedulerOwnerID: schedulerOwnerID
+        )
+        let workerPriority = Task.currentPriority
+        return try await Self.contentReadWorkerLimiter.withPermit(
+            workloadClass: request.workloadClass,
+            ownerID: request.schedulerOwnerID
+        ) {
+            try await withThrowingTaskGroup(of: ValidatedRawFileContentSnapshot.self) { group in
+                group.addTask(priority: workerPriority) {
+                    let validated = try Self.validateContentFileForReading(request)
+                    if let expectedFingerprint, expectedFingerprint != validated.fingerprint {
+                        throw FileContentValidationError.fingerprintChanged
+                    }
+                    guard validated.fileSize <= request.fileSizeLimit else {
+                        throw FileSystemError.fileTooLarge
+                    }
+                    let handle = try Self.openValidatedContentHandle(
+                        request,
+                        validated: validated,
+                        requireStableIdentity: expectedFingerprint != nil
+                    )
+                    defer { try? handle.close() }
+                    let data: Data
+                    switch try await Self.readBoundedData(request, handle: handle) {
+                    case let .data(readData):
+                        data = readData
+                    case .tooLarge:
+                        throw FileSystemError.fileTooLarge
+                    }
+                    let finalFingerprint = try FileContentFingerprintReader.fingerprint(fileDescriptor: handle.fileDescriptor)
+                    guard finalFingerprint == validated.fingerprint else {
+                        throw FileContentValidationError.fingerprintChanged
+                    }
+                    return ValidatedRawFileContentSnapshot(
+                        data: data,
+                        modificationDate: validated.modificationDate,
+                        fingerprint: validated.fingerprint
+                    )
+                }
+                guard let result = try await group.next() else { throw CancellationError() }
+                group.cancelAll()
+                return result
+            }
+        }
+    }
+
     func loadContentPrefix(
         ofRelativePath relativePath: String,
         maximumBytes: Int,

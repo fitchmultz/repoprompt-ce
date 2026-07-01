@@ -1500,26 +1500,25 @@ class WorkspaceFilesViewModel: ObservableObject {
 
         for fileID in event.modifiedFileIDs {
             guard let file = snapshot.files.first(where: { $0.id == fileID }),
-                  file.rootID == event.rootID,
-                  let targets = await hiddenSessionSliceRebaseTargets(
-                      physicalRootPath: snapshot.root.standardizedFullPath,
-                      physicalFullPath: file.standardizedFullPath
-                  ),
-                  !targets.isEmpty
+                  file.rootID == event.rootID
             else { continue }
-            let eventSource = event.modifiedFileSourceSnapshotsByID[fileID]
-            let sourceSnapshot: SliceRebaseSourceSnapshot? = eventSource.flatMap { source in
-                guard source.rootID == event.rootID,
-                      source.rootLifetimeID == rootLifetimeID,
-                      source.fileID == fileID,
-                      source.relativePath == file.standardizedRelativePath,
-                      source.fullPath == file.standardizedFullPath
-                else { return nil }
-                return SliceRebaseSourceSnapshot(
-                    text: source.text,
-                    modificationTime: source.modificationTime
-                )
+            let sourceSnapshot = sliceRebaseSourceSnapshot(
+                from: event.modifiedFileSourceSnapshotsByID[fileID],
+                event: event,
+                rootLifetimeID: rootLifetimeID,
+                fileID: fileID,
+                relativePath: file.standardizedRelativePath,
+                fullPath: file.standardizedFullPath
+            )
+            if let sourceSnapshot,
+               sliceRebaseSourceSnapshotByFullPath[file.standardizedFullPath] == nil
+            {
+                sliceRebaseSourceSnapshotByFullPath[file.standardizedFullPath] = sourceSnapshot
             }
+            guard let targets = await hiddenSessionSliceRebaseTargets(
+                physicalRootPath: snapshot.root.standardizedFullPath,
+                physicalFullPath: file.standardizedFullPath
+            ), !targets.isEmpty else { continue }
             scheduleHiddenSessionSliceRebase(HiddenSessionSliceRebaseRequest(
                 rootID: event.rootID,
                 rootLifetimeID: rootLifetimeID,
@@ -2250,7 +2249,19 @@ class WorkspaceFilesViewModel: ObservableObject {
 
         for fileID in event.modifiedFileIDs {
             guard let fileVM = modificationTargets.filesByID[fileID] else { continue }
-            let sourceSnapshot = await trustworthySliceRebaseSourceSnapshot(for: fileVM)
+            let eventSourceSnapshot = sliceRebaseSourceSnapshot(
+                from: event.modifiedFileSourceSnapshotsByID[fileID],
+                event: event,
+                rootLifetimeID: event.rootLifetimeID,
+                fileID: fileID,
+                relativePath: fileVM.relativePath,
+                fullPath: fileVM.standardizedFullPath
+            )
+            let sourceSnapshot = if let eventSourceSnapshot {
+                eventSourceSnapshot
+            } else {
+                await trustworthySliceRebaseSourceSnapshot(for: fileVM)
+            }
             let date: Date
             do {
                 date = try await workspaceFileContextStore.fileModificationDate(
@@ -8924,7 +8935,7 @@ class WorkspaceFilesViewModel: ObservableObject {
             }
 
             @MainActor
-            func debugCodemapMemoryCounters() async -> CodeScanActor.CodemapMemoryCounters {
+            func debugCodemapMemoryCounters() async -> WorkspaceCodemapMemoryCounters {
                 await workspaceFileContextStore.codemapMemoryCounters()
             }
         #endif
@@ -12567,6 +12578,28 @@ extension WorkspaceFilesViewModel {
     }
 
     @MainActor
+    private func sliceRebaseSourceSnapshot(
+        from source: WorkspaceSliceRebaseSourceSnapshot?,
+        event: WorkspaceAppliedIndexBatchEvent,
+        rootLifetimeID: UUID?,
+        fileID: UUID,
+        relativePath: String,
+        fullPath: String
+    ) -> SliceRebaseSourceSnapshot? {
+        guard let source,
+              let rootLifetimeID,
+              source.rootID == event.rootID,
+              source.rootLifetimeID == rootLifetimeID,
+              source.fileID == fileID,
+              source.relativePath == relativePath,
+              source.fullPath == fullPath
+        else { return nil }
+        return SliceRebaseSourceSnapshot(
+            text: source.text,
+            modificationTime: source.modificationTime
+        )
+    }
+
     private func trustworthySliceRebaseSourceSnapshot(for file: FileViewModel) async -> SliceRebaseSourceSnapshot? {
         let snapshot = await file.cachedContentSnapshot()
         guard snapshot.isFresh, let content = snapshot.content else { return nil }
