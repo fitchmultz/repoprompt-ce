@@ -44,6 +44,9 @@ struct WorkspaceCodemapPresentationCoordinator {
     let store: WorkspaceFileContextStore
     let policy: WorkspaceCodemapPresentationRequestPolicy
     let waiter: WorkspaceCodemapPresentationWaiter
+    let beforePublicationRevalidation: @Sendable (WorkspaceCodemapOperationPresentationPublicationReceipt) async -> Void
+    let afterAutomaticCandidateReconstruction: @Sendable (WorkspaceCodemapAutomaticSelectionPublicationReceipt) async throws -> Void
+    let structureAttemptDidBegin: @Sendable (Int) -> Void
 
     init(
         store: WorkspaceFileContextStore,
@@ -56,6 +59,9 @@ struct WorkspaceCodemapPresentationCoordinator {
         self.store = store
         self.policy = policy
         self.waiter = waiter
+        self.beforePublicationRevalidation = beforePublicationRevalidation
+        self.afterAutomaticCandidateReconstruction = afterAutomaticCandidateReconstruction
+        self.structureAttemptDidBegin = structureAttemptDidBegin
     }
 
     func presentation(
@@ -72,8 +78,45 @@ struct WorkspaceCodemapPresentationCoordinator {
         logicalRootDisplayNamesByRootID: [UUID: String] = [:],
         operation: (WorkspaceCodemapOperationPresentation) async throws -> Value
     ) async throws -> Value {
-        try Task.checkCancellation()
-        return try await operation(.empty)
+        let result = try await makePresentation(
+            for: intent,
+            rootScope: rootScope,
+            logicalRootDisplayNamesByRootID: logicalRootDisplayNamesByRootID
+        )
+        if let receipt = result.presentation.publicationReceipt {
+            await beforePublicationRevalidation(receipt)
+            let staleIssues = await publicationStaleIssues(receipt)
+            if !staleIssues.isEmpty {
+                let stalePresentation = presentation(
+                    from: result.presentation,
+                    adding: staleIssues,
+                    forceUnavailableWhenEmpty: true
+                )
+                await release(tickets: result.ownedTickets)
+                return try await operation(stalePresentation)
+            }
+        }
+        do {
+            let value = try await operation(result.presentation)
+            if let receipt = result.presentation.publicationReceipt {
+                await beforePublicationRevalidation(receipt)
+                let staleIssues = await publicationStaleIssues(receipt)
+                if !staleIssues.isEmpty {
+                    let stalePresentation = presentation(
+                        from: result.presentation,
+                        adding: staleIssues,
+                        forceUnavailableWhenEmpty: true
+                    )
+                    await release(tickets: result.ownedTickets)
+                    return try await operation(stalePresentation)
+                }
+            }
+            await release(tickets: result.ownedTickets)
+            return value
+        } catch {
+            await release(tickets: result.ownedTickets)
+            throw error
+        }
     }
 
     func structurePresentation(
@@ -98,34 +141,184 @@ struct WorkspaceCodemapPresentationCoordinator {
             )
         }
 
-        let roots = await store.rootRefs(scope: rootScope)
-        var filePairs: [(UUID, (WorkspaceRootRef, WorkspaceFileRecord))] = []
-        for root in roots {
-            let files = await store.files(inRoot: root.id)
-            filePairs.append(contentsOf: files.map { ($0.id, (root, $0)) })
-        }
-        let filesByID = Dictionary(uniqueKeysWithValues: filePairs)
-        var entries: [WorkspaceCodemapStructureRenderedEntry] = []
-        var issues: [WorkspaceCodemapStructureIssue] = []
-        var tokenCount = 0
+        structureAttemptDidBegin(1)
+        let intent = WorkspaceCodemapOperationPresentationIntent.exact(
+            fileIDs: Array(seedFileIDs.prefix(policy.maximumStructureSeedCountPerRoot)),
+            completeRootSet: false
+        )
+        let operation = try await presentation(
+            for: intent,
+            rootScope: rootScope,
+            logicalRootDisplayNamesByRootID: logicalRootDisplayNamesByRootID
+        )
 
-        for fileID in seedFileIDs.prefix(outputLimits.maximumFileCount) {
+        var entries = operation.orderedEntries.prefix(outputLimits.maximumFileCount).map {
+            WorkspaceCodemapStructureRenderedEntry(entry: $0, isSeed: seedFileIDs.contains($0.fileID), depth: 0, reachedBy: [])
+        }
+        var issues = operation.issues.map(WorkspaceCodemapStructureIssue.operation)
+        if operation.orderedEntries.count > outputLimits.maximumFileCount {
+            issues.append(.fileLimit(attempted: operation.orderedEntries.count, limit: outputLimits.maximumFileCount))
+        }
+
+        var tokenCount = 0
+        var limitedEntries: [WorkspaceCodemapStructureRenderedEntry] = []
+        for entry in entries {
+            let next = tokenCount + entry.entry.tokenCount
+            if next > outputLimits.maximumCodemapTokenCount {
+                issues.append(.tokenLimit(path: entry.entry.logicalPath.displayPath, attempted: next, limit: outputLimits.maximumCodemapTokenCount))
+                break
+            }
+            limitedEntries.append(entry)
+            tokenCount = next
+        }
+        entries = limitedEntries
+
+        let outcome: WorkspaceCodemapStructureOutcome = switch operation.coverage {
+        case .complete where !entries.isEmpty && issues.isEmpty:
+            .ready
+        case .complete:
+            .partial
+        case .partial where !entries.isEmpty:
+            .partial
+        case .partial:
+            .unavailable
+        case .pending:
+            entries.isEmpty ? .timeout : .partial
+        case .unavailable:
+            .unavailable
+        }
+        return WorkspaceCodemapStructurePresentation(
+            outcome: outcome,
+            entries: entries,
+            issues: issues,
+            requestedSeedCount: requestedSeedCount,
+            resolvedSeedCount: entries.count,
+            examinedEdgeCount: 0,
+            codemapTokenCount: tokenCount
+        )
+    }
+}
+
+private extension WorkspaceCodemapPresentationCoordinator {
+    struct PresentationBuildResult {
+        let presentation: WorkspaceCodemapOperationPresentation
+        let ownedTickets: [WorkspaceCodemapArtifactDemandTicket]
+    }
+
+    struct DemandRecord {
+        let fileID: UUID
+        let logicalPath: WorkspaceCodemapLogicalPresentationPath
+        let result: WorkspaceCodemapArtifactDemandResult
+    }
+
+    func makePresentation(
+        for intent: WorkspaceCodemapOperationPresentationIntent,
+        rootScope: WorkspaceLookupRootScope,
+        logicalRootDisplayNamesByRootID: [UUID: String]
+    ) async throws -> PresentationBuildResult {
+        try Task.checkCancellation()
+        switch intent {
+        case .none:
+            return PresentationBuildResult(presentation: .empty, ownedTickets: [])
+        case let .exact(fileIDs, completeRootSet):
+            return try await makeExactPresentation(
+                fileIDs: fileIDs,
+                completeRootSet: completeRootSet,
+                automaticIssue: nil,
+                rootScope: rootScope,
+                logicalRootDisplayNamesByRootID: logicalRootDisplayNamesByRootID
+            )
+        case let .automatic(sourceFileIDs):
+            let targetFileIDs = await automaticTargetFileIDs(
+                sourceFileIDs: sourceFileIDs,
+                rootScope: rootScope
+            )
+            return try await makeExactPresentation(
+                fileIDs: targetFileIDs,
+                completeRootSet: false,
+                automaticIssue: nil,
+                rootScope: rootScope,
+                logicalRootDisplayNamesByRootID: logicalRootDisplayNamesByRootID
+            )
+        }
+    }
+
+    func automaticTargetFileIDs(
+        sourceFileIDs: [UUID],
+        rootScope: WorkspaceLookupRootScope
+    ) async -> [UUID] {
+        guard !sourceFileIDs.isEmpty else { return [] }
+        let roots = await store.rootRefs(scope: rootScope)
+        var filesByID: [UUID: WorkspaceFileRecord] = [:]
+        var fileIDsByFullPath: [String: UUID] = [:]
+        for root in roots {
+            for file in await store.files(inRoot: root.id) {
+                filesByID[file.id] = file
+                fileIDsByFullPath[file.standardizedFullPath] = file.id
+            }
+        }
+        let sourceFiles = sourceFileIDs.compactMap { filesByID[$0] }
+        guard !sourceFiles.isEmpty else { return [] }
+        let aggregate = await store.codemapFileAPIAggregate(rootScope: rootScope)
+        let paths = CodeMapExtractor.resolveReferencedFilePaths(
+            from: sourceFiles,
+            among: aggregate.orderedFileAPIs,
+            firstFileAPIByStandardizedNestedPath: aggregate.firstFileAPIByStandardizedNestedPath
+        )
+        var seen = Set<UUID>()
+        var ordered: [UUID] = []
+        for path in paths {
+            guard let fileID = fileIDsByFullPath[StandardizedPath.absolute(path)],
+                  seen.insert(fileID).inserted
+            else { continue }
+            ordered.append(fileID)
+        }
+        return ordered
+    }
+
+    func makeExactPresentation(
+        fileIDs: [UUID],
+        completeRootSet: Bool,
+        automaticIssue: WorkspaceCodemapOperationIssue?,
+        rootScope: WorkspaceLookupRootScope,
+        logicalRootDisplayNamesByRootID: [UUID: String]
+    ) async throws -> PresentationBuildResult {
+        try Task.checkCancellation()
+        guard !fileIDs.isEmpty else {
+            let issues = [automaticIssue].compactMap(\.self)
+            return PresentationBuildResult(
+                presentation: WorkspaceCodemapOperationPresentation(
+                    orderedEntries: [],
+                    coverage: issues.isEmpty ? .complete : .unavailable(issues),
+                    issues: issues,
+                    publicationReceipt: nil
+                ),
+                ownedTickets: []
+            )
+        }
+
+        let roots = await store.rootRefs(scope: rootScope)
+        let rootsByID = Dictionary(uniqueKeysWithValues: roots.map { ($0.id, $0) })
+        var filesByID: [UUID: WorkspaceFileRecord] = [:]
+        for root in roots {
+            for file in await store.files(inRoot: root.id) {
+                filesByID[file.id] = file
+            }
+        }
+
+        var issues = [automaticIssue].compactMap(\.self)
+        var records: [DemandRecord] = []
+        var ownedTickets: [WorkspaceCodemapArtifactDemandTicket] = []
+        var seenFileIDs = Set<UUID>()
+        for fileID in fileIDs.prefix(policy.maximumCandidateDemandCount) {
             try Task.checkCancellation()
-            guard let (root, file) = filesByID[fileID] else {
-                issues.append(.candidate(.fileNotCataloged(fileID)))
+            guard seenFileIDs.insert(fileID).inserted else { continue }
+            guard let file = filesByID[fileID] else {
+                issues.append(.candidate(.fileOutsideRootScope(fileID)))
                 continue
             }
-            let demand = await store.requestCodemapArtifact(forFileID: fileID)
-            guard case let .ready(ready) = demand else {
-                switch demand {
-                case let .pending(ticket): issues.append(.artifactPending(fileID: fileID, ticket: ticket))
-                case let .unavailable(reason): issues.append(.artifactUnavailable(fileID: fileID, reason: reason))
-                case .ready: break
-                }
-                continue
-            }
-            guard let api = await store.codemapSnapshot(fileID: fileID)?.fileAPI else {
-                issues.append(.artifactUnavailable(fileID: fileID, reason: .staleCurrentness))
+            guard let root = rootsByID[file.rootID] else {
+                issues.append(.candidate(.fileOutsideRootScope(fileID)))
                 continue
             }
             let rootName = logicalRootDisplayNamesByRootID[root.id]
@@ -137,57 +330,242 @@ struct WorkspaceCodemapPresentationCoordinator {
                 issues.append(.candidate(.logicalPathUnavailable(fileID)))
                 continue
             }
-            let text = api.getFullAPIDescription(displayPath: logicalPath.displayPath)
-            let tokens = TokenCalculationService.estimateTokens(for: text)
-            if tokenCount + tokens > outputLimits.maximumCodemapTokenCount {
-                issues.append(.tokenLimit(path: logicalPath.displayPath, attempted: tokenCount + tokens, limit: outputLimits.maximumCodemapTokenCount))
-                break
-            }
-            tokenCount += tokens
-            let rendered = WorkspaceCodemapOperationRenderedEntry(
-                bundleID: WorkspaceCodemapFrozenPresentationBundleID(),
-                fileID: fileID,
-                rootEpoch: ready.snapshot.rootEpoch,
-                artifactKey: ready.snapshot.artifactKey,
-                logicalPath: logicalPath,
-                text: text,
-                tokenCount: tokens
-            )
-            entries.append(WorkspaceCodemapStructureRenderedEntry(
-                entry: rendered,
-                isSeed: true,
-                depth: 0,
-                reachedBy: []
-            ))
+
+            let owned = await store.requestCodemapArtifactWithOwnership(forFileID: fileID)
+            if case let .created(ticket) = owned.ownership { ownedTickets.append(ticket) }
+            if case let .joined(ticket) = owned.ownership { ownedTickets.append(ticket) }
+            let result = try await waitForReadiness(owned.result)
+            records.append(DemandRecord(fileID: fileID, logicalPath: logicalPath, result: result))
+        }
+        if fileIDs.count > policy.maximumCandidateDemandCount {
+            issues.append(.candidate(.incompleteRootSet(missingFileIDs: Array(fileIDs.dropFirst(policy.maximumCandidateDemandCount)))))
         }
 
-        if seedFileIDs.count > outputLimits.maximumFileCount {
-            issues.append(.fileLimit(attempted: seedFileIDs.count, limit: outputLimits.maximumFileCount))
-        }
-        let outcome: WorkspaceCodemapStructureOutcome = if !entries.isEmpty, issues.contains(where: { issue in
-            if case .fileLimit = issue { return true }
-            if case .tokenLimit = issue { return true }
-            return false
-        }) {
-            .budget
-        } else if issues.contains(where: { issue in
-            if case .artifactPending = issue { return true }
-            return false
-        }) {
-            .timeout
-        } else if entries.isEmpty {
-            .unavailable
-        } else {
-            .ready
-        }
-        return WorkspaceCodemapStructurePresentation(
-            outcome: outcome,
-            entries: entries,
-            issues: issues,
-            requestedSeedCount: requestedSeedCount,
-            resolvedSeedCount: entries.count,
-            examinedEdgeCount: 0,
-            codemapTokenCount: tokenCount
+        let rendered = render(records: records, issues: &issues)
+        let recordsByRenderedFileID = Dictionary(
+            uniqueKeysWithValues: records.compactMap { record -> (UUID, DemandRecord)? in
+                guard rendered.contains(where: { $0.fileID == record.fileID }) else { return nil }
+                return (record.fileID, record)
+            }
         )
+        let candidates = rendered.compactMap { entry -> WorkspaceCodemapOperationPresentationCandidate? in
+            guard let record = recordsByRenderedFileID[entry.fileID],
+                  case let .ready(ready) = record.result
+            else { return nil }
+            return WorkspaceCodemapOperationPresentationCandidate(
+                fileID: entry.fileID,
+                rootEpoch: entry.rootEpoch,
+                catalogGeneration: ready.ticket.catalogGeneration,
+                logicalPath: entry.logicalPath
+            )
+        }
+        let bundles = bundleReceipts(from: recordsByRenderedFileID, renderedEntries: rendered)
+        let readyTickets = bundles.flatMap(\.entries).map(\.ticket)
+        let receipt: WorkspaceCodemapOperationPresentationPublicationReceipt? = if rendered.isEmpty {
+            nil
+        } else {
+            WorkspaceCodemapOperationPresentationPublicationReceipt(
+                requestID: UUID(),
+                rootScope: rootScope,
+                logicalRootDisplayNamesByRootID: Dictionary(
+                    rendered.map { ($0.rootEpoch.rootID, $0.logicalPath.rootDisplayName) },
+                    uniquingKeysWith: { current, _ in current }
+                ),
+                completeRootSet: completeRootSet,
+                completeRootCatalogs: [],
+                candidates: candidates,
+                demandTickets: readyTickets,
+                bundles: bundles,
+                automaticReceipt: nil
+            )
+        }
+        let coverage = coverage(entryCount: rendered.count, requestedCount: fileIDs.count, issues: issues)
+        let presentation = WorkspaceCodemapOperationPresentation(
+            orderedEntries: rendered,
+            coverage: coverage,
+            issues: issues,
+            publicationReceipt: receipt
+        )
+        return PresentationBuildResult(presentation: presentation, ownedTickets: ownedTickets)
+    }
+
+    func waitForReadiness(
+        _ initial: WorkspaceCodemapArtifactDemandResult
+    ) async throws -> WorkspaceCodemapArtifactDemandResult {
+        var result = initial
+        var round = 0
+        var backoff = max(0, policy.initialBackoffMilliseconds)
+        let clock = ContinuousClock()
+        let start = clock.now
+        while case let .pending(ticket) = result {
+            try Task.checkCancellation()
+            if round >= policy.maximumReadinessRounds || clock.now - start >= policy.maximumTotalWait {
+                return .pending(ticket)
+            }
+            if backoff > 0 {
+                try await waiter.sleep(.milliseconds(backoff))
+            }
+            result = await store.codemapArtifactDemandStatus(ticket)
+            round += 1
+            backoff = min(max(backoff * 2, policy.initialBackoffMilliseconds), policy.maximumBackoffMilliseconds)
+        }
+        return result
+    }
+
+    func render(
+        records: [DemandRecord],
+        issues: inout [WorkspaceCodemapOperationIssue]
+    ) -> [WorkspaceCodemapOperationRenderedEntry] {
+        var bundleIDsByRootEpoch: [WorkspaceCodemapRootEpoch: WorkspaceCodemapFrozenPresentationBundleID] = [:]
+        var entries: [WorkspaceCodemapOperationRenderedEntry] = []
+        for record in records {
+            switch record.result {
+            case let .ready(ready):
+                let bundleID = bundleIDsByRootEpoch[ready.ticket.rootEpoch, default: WorkspaceCodemapFrozenPresentationBundleID()]
+                bundleIDsByRootEpoch[ready.ticket.rootEpoch] = bundleID
+                do {
+                    guard let rendered = try ready.handle.renderedCodemap(displayPath: record.logicalPath.displayPath) else {
+                        issues.append(.renderUnavailable(rootEpoch: ready.ticket.rootEpoch, reason: .noRenderableCodemap(record.fileID)))
+                        continue
+                    }
+                    entries.append(WorkspaceCodemapOperationRenderedEntry(
+                        bundleID: bundleID,
+                        fileID: record.fileID,
+                        rootEpoch: ready.ticket.rootEpoch,
+                        artifactKey: ready.snapshot.artifactKey,
+                        logicalPath: record.logicalPath,
+                        text: rendered.text,
+                        tokenCount: rendered.tokenCount
+                    ))
+                } catch {
+                    issues.append(.renderUnavailable(rootEpoch: ready.ticket.rootEpoch, reason: .handleRevoked(record.fileID)))
+                }
+            case let .pending(ticket):
+                issues.append(.pending(fileID: record.fileID, ticket: ticket))
+            case let .unavailable(reason):
+                issues.append(.unavailable(fileID: record.fileID, reason: reason))
+            }
+        }
+        return entries
+    }
+
+    func bundleReceipts(
+        from recordsByRenderedFileID: [UUID: DemandRecord],
+        renderedEntries: [WorkspaceCodemapOperationRenderedEntry]
+    ) -> [WorkspaceCodemapOperationPresentationBundleReceipt] {
+        var grouped: [WorkspaceCodemapRootEpoch: [WorkspaceCodemapFrozenPresentationEntry]] = [:]
+        var bundleIDsByRootEpoch: [WorkspaceCodemapRootEpoch: WorkspaceCodemapFrozenPresentationBundleID] = [:]
+        for entry in renderedEntries {
+            guard let record = recordsByRenderedFileID[entry.fileID],
+                  case let .ready(ready) = record.result
+            else { continue }
+            bundleIDsByRootEpoch[entry.rootEpoch] = entry.bundleID
+            let outcome = (try? ready.handle.outcome()) ?? WorkspaceCodemapLiveArtifactOutcome.decodeFailed
+            grouped[entry.rootEpoch, default: []].append(WorkspaceCodemapFrozenPresentationEntry(
+                ticket: ready.ticket,
+                logicalPath: entry.logicalPath,
+                artifactKey: entry.artifactKey,
+                outcome: outcome
+            ))
+        }
+        return grouped.keys.sorted(by: workspaceCodemapRootEpochPrecedes).map { rootEpoch in
+            WorkspaceCodemapOperationPresentationBundleReceipt(
+                bundleID: bundleIDsByRootEpoch[rootEpoch] ?? WorkspaceCodemapFrozenPresentationBundleID(),
+                rootEpoch: rootEpoch,
+                entries: grouped[rootEpoch] ?? []
+            )
+        }
+    }
+
+    func coverage(
+        entryCount: Int,
+        requestedCount: Int,
+        issues: [WorkspaceCodemapOperationIssue]
+    ) -> WorkspaceCodemapOperationPresentationCoverage {
+        if issues.isEmpty { return .complete }
+        if issues.contains(where: { issue in
+            if case .pending = issue { return true }
+            return false
+        }) {
+            return entryCount > 0 ? .partial(issues) : .pending(issues)
+        }
+        return entryCount > 0 ? .partial(issues) : .unavailable(issues)
+    }
+
+    func publicationStaleIssues(
+        _ receipt: WorkspaceCodemapOperationPresentationPublicationReceipt
+    ) async -> [WorkspaceCodemapOperationIssue] {
+        var issues: [WorkspaceCodemapOperationIssue] = []
+        for ticket in receipt.demandTickets {
+            switch await store.codemapArtifactDemandStatus(ticket) {
+            case .ready:
+                continue
+            case .pending:
+                issues.append(.publicationStale(.demand(ticket)))
+            case .unavailable:
+                issues.append(.publicationStale(.demand(ticket)))
+            }
+        }
+        return issues
+    }
+
+    func presentation(
+        from presentation: WorkspaceCodemapOperationPresentation,
+        adding newIssues: [WorkspaceCodemapOperationIssue],
+        forceUnavailableWhenEmpty: Bool
+    ) -> WorkspaceCodemapOperationPresentation {
+        let issues = presentation.issues + newIssues
+        if forceUnavailableWhenEmpty {
+            return WorkspaceCodemapOperationPresentation(
+                id: presentation.id,
+                orderedEntries: [],
+                coverage: .unavailable(issues),
+                issues: issues,
+                publicationReceipt: nil
+            )
+        }
+        let coverage: WorkspaceCodemapOperationPresentationCoverage = if presentation.orderedEntries.isEmpty {
+            .unavailable(issues)
+        } else {
+            .partial(issues)
+        }
+        return WorkspaceCodemapOperationPresentation(
+            id: presentation.id,
+            orderedEntries: presentation.orderedEntries,
+            coverage: coverage,
+            issues: issues,
+            publicationReceipt: presentation.publicationReceipt
+        )
+    }
+
+    func release(tickets: [WorkspaceCodemapArtifactDemandTicket]) async {
+        for ticket in tickets {
+            _ = await store.cancelCodemapArtifactDemand(ticket)
+        }
+    }
+}
+
+private extension WorkspaceCodemapStructureIssue {
+    static func operation(_ issue: WorkspaceCodemapOperationIssue) -> WorkspaceCodemapStructureIssue {
+        switch issue {
+        case .coordinationUnavailable:
+            .traversalUnavailable(.emptySeeds)
+        case .cancelled:
+            .traversalUnavailable(.emptySeeds)
+        case let .candidate(candidate):
+            .candidate(candidate)
+        case let .pending(fileID, ticket):
+            .artifactPending(fileID: fileID, ticket: ticket)
+        case let .unavailable(fileID, reason):
+            .artifactUnavailable(fileID: fileID, reason: reason)
+        case let .freezeUnavailable(rootEpoch, reason):
+            .freezeUnavailable(rootEpoch: rootEpoch, reason: reason)
+        case let .renderUnavailable(rootEpoch, reason):
+            .renderUnavailable(rootEpoch: rootEpoch, reason: reason)
+        case let .publicationStale(reason):
+            .publicationStale(.presentation(reason))
+        case .automatic:
+            .traversalUnavailable(.emptySeeds)
+        }
     }
 }
