@@ -563,6 +563,16 @@ public struct ClaudeCompatibleHeadlessArgumentsRequest: Codable, Hashable, Senda
     }
 }
 
+public enum ClaudeCompatibleIdentityPreamble {
+    /// Non-empty suffix that makes Claude Code emit its interactive identity preamble for GLM/z.ai.
+    /// Empty values are ignored by the CLI; this value avoids the SDK identity trigger words.
+    public static let glmZAIAppendSystemPrompt = "Running within RepoPrompt CE."
+
+    public static func appendSystemPrompt(for launchEnvironment: ClaudeCompatibleLaunchEnvironment?) -> String? {
+        launchEnvironment?.backendID == .glmZAI ? glmZAIAppendSystemPrompt : nil
+    }
+}
+
 public enum ClaudeCompatibleHeadlessRuntime {
     public static func buildArguments(_ request: ClaudeCompatibleHeadlessArgumentsRequest) -> [String] {
         var args: [String] = [
@@ -579,6 +589,9 @@ public enum ClaudeCompatibleHeadlessRuntime {
         }
         if let systemPromptOverride = request.systemPromptOverride {
             args.append(contentsOf: ["--system-prompt", systemPromptOverride])
+        }
+        if let appendSystemPrompt = ClaudeCompatibleIdentityPreamble.appendSystemPrompt(for: request.launchEnvironment) {
+            args.append(contentsOf: ["--append-system-prompt", appendSystemPrompt])
         }
 
         args.append("--dangerously-skip-permissions")

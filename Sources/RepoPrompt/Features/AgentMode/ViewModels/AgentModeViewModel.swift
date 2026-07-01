@@ -725,6 +725,10 @@ final class AgentModeViewModel: ObservableObject {
             pendingAssistantPresentationByTabID.count
         }
 
+        func test_installLiveSession(_ session: TabSession) {
+            sessions[session.tabID] = session
+        }
+
         func test_installPersistentSessionBinding(
             sessionID: UUID?,
             on session: TabSession,
@@ -1459,6 +1463,7 @@ final class AgentModeViewModel: ObservableObject {
                 shellToolEnabled: permissionProfile.codexBashToolEnabled(),
                 suppressThirdPartyMCPServers: permissionProfile.codexSuppressesThirdPartyMCPServers,
                 goalSupportEnabledProvider: { CodexGoalSupport.isEnabled },
+                reasoningSummariesEnabledProvider: { CodexReasoningSummaries.isEnabled },
                 computerUseEnabledProvider: { computerUseEnabled }
             )
             return CodexNativeSessionController(
@@ -2825,6 +2830,10 @@ final class AgentModeViewModel: ObservableObject {
         await teardownApplyEditsApprovalSessionSync(for: session, cleanupScope: true)
         cancelPendingInstruction(for: session)
         await teardownMCPControl(for: session, cleanupSessionStore: true)
+        if session.runState.isActive {
+            await cancelAgentRun(tabID: session.tabID, completion: .terminalTeardownCompleted)
+        }
+        await cleanupACPStateForDeletedSession(session)
         session.agentTask?.cancel()
         session.agentTask = nil
         let provider = session.provider
@@ -10117,9 +10126,10 @@ final class AgentModeViewModel: ObservableObject {
 
                 // Cancel agent run
                 if session.runState.isActive {
-                    await cancelAgentRun(tabID: tabID)
+                    await cancelAgentRun(tabID: tabID, completion: .terminalTeardownCompleted)
                 }
 
+                await cleanupACPStateForDeletedSession(session)
                 await codexCoordinator.shutdownCodexSession(session)
                 await claudeCoordinator.shutdownClaudeSession(session)
 

@@ -128,6 +128,8 @@ actor CodexAppServerClient {
         /// When nil, falls back to temp directory via CLIProcessConfiguration default.
         let workingDirectory: String?
         let processFeaturePolicy: CodexOverrides.FeaturePolicy
+        /// Nil preserves Codex CLI process defaults; Agent Mode uses per-thread config.
+        let processModelReasoningSummary: CodexOverrides.ReasoningSummary?
 
         init(
             commandName: String = CLILaunchProfiles.codex.commandName,
@@ -135,7 +137,8 @@ actor CodexAppServerClient {
             enableDebugLogging: Bool = false,
             requestTimeout: TimeInterval? = nil,
             workingDirectory: String? = nil,
-            processFeaturePolicy: CodexOverrides.FeaturePolicy = .defaultDisabled
+            processFeaturePolicy: CodexOverrides.FeaturePolicy = .defaultDisabled,
+            processModelReasoningSummary: CodexOverrides.ReasoningSummary? = nil
         ) {
             self.commandName = commandName
             self.additionalPathHints = additionalPathHints
@@ -143,6 +146,7 @@ actor CodexAppServerClient {
             self.requestTimeout = requestTimeout
             self.workingDirectory = workingDirectory
             self.processFeaturePolicy = processFeaturePolicy
+            self.processModelReasoningSummary = processModelReasoningSummary
         }
     }
 
@@ -390,7 +394,8 @@ actor CodexAppServerClient {
             enableDebugLogging: config.enableDebugLogging,
             requestTimeout: config.requestTimeout,
             workingDirectory: normalized,
-            processFeaturePolicy: config.processFeaturePolicy
+            processFeaturePolicy: config.processFeaturePolicy,
+            processModelReasoningSummary: config.processModelReasoningSummary
         )
     }
 
@@ -402,7 +407,8 @@ actor CodexAppServerClient {
             enableDebugLogging: config.enableDebugLogging,
             requestTimeout: config.requestTimeout,
             workingDirectory: config.workingDirectory,
-            processFeaturePolicy: featurePolicy
+            processFeaturePolicy: featurePolicy,
+            processModelReasoningSummary: config.processModelReasoningSummary
         )
         if process != nil {
             await terminateTransport(flushStdout: true, reason: .explicitStop)
@@ -843,7 +849,10 @@ actor CodexAppServerClient {
             throw ClientError.executableUnavailable(resolution.userMessage)
         }
         let processOverrides = CodexOverrides.cliConfigArgs(
-            toolPolicy: .init(toolOutputTokenLimit: MCPIntegrationHelper.desiredCodexToolOutputTokenLimit),
+            toolPolicy: .init(
+                toolOutputTokenLimit: MCPIntegrationHelper.desiredCodexToolOutputTokenLimit,
+                modelReasoningSummary: config.processModelReasoningSummary
+            ),
             featurePolicy: config.processFeaturePolicy
         )
         let args = processOverrides + ["app-server"]

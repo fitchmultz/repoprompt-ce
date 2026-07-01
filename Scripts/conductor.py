@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import dataclasses
+import errno
 import fcntl
 import hashlib
 import json
@@ -34,7 +35,7 @@ from typing import Any, Deque, Dict, List, Optional, Sequence, Set, Tuple
 
 from debug_app_process import ProcessIdentityError, matching_processes, terminate_matching_processes
 
-PROTOCOL_VERSION = 7
+PROTOCOL_VERSION = 8
 TERMINAL_STATES = {"completed", "failed", "canceled"}
 LANE_NAMES = {"build", "debugArtifact", "liveApp", "release", "style"}
 LOG_TAIL_LINES = 30
@@ -174,8 +175,8 @@ Operation commands:
   ./conductor swift-build --product RepoPrompt|repoprompt-mcp|all
   ./conductor build
   ./conductor package debug|release
-  ./conductor test [--filter <filter>] [--xctest-stall-seconds <seconds>] [--xctest-stall-wake-probe]
-  ./conductor provider-test [--filter <filter>] [--xctest-stall-seconds <seconds>] [--xctest-stall-wake-probe]
+  ./conductor test [--list | --filter <filter>] [--xctest-stall-seconds <seconds>] [--xctest-stall-wake-probe]
+  ./conductor provider-test [--list | --filter <filter>] [--xctest-stall-seconds <seconds>] [--xctest-stall-wake-probe]
   ./conductor install-debug-cli
   ./conductor debug-cli-status
   ./conductor run [-- <app args...>]                  # FIFO coordinated run
@@ -233,6 +234,87 @@ class XCTestStallClaim:
     previous_test: Optional[str]
     wake_probe: bool
     triggered_at: float
+
+
+@dataclasses.dataclass
+class ProcessOutputTransport:
+    kind: str
+    master_fd: Optional[int] = None
+    slave_fd: Optional[int] = None
+    pipe_stream: Optional[Any] = None
+    close_lock: threading.Lock = dataclasses.field(default_factory=threading.Lock, repr=False)
+
+    @classmethod
+    def create(cls, kind: str) -> "ProcessOutputTransport":
+        if kind == "pipe":
+            return cls(kind="pipe")
+        if kind != "pty":
+            raise ValueError(f"unsupported process output transport: {kind}")
+        master_fd, slave_fd = os.openpty()
+        return cls(kind="pty", master_fd=master_fd, slave_fd=slave_fd)
+
+    @property
+    def popen_stdout(self) -> Any:
+        return self.slave_fd if self.kind == "pty" else subprocess.PIPE
+
+    @property
+    def popen_stderr(self) -> Any:
+        return self.slave_fd if self.kind == "pty" else subprocess.STDOUT
+
+    def attach_process(self, process: subprocess.Popen[bytes]) -> None:
+        if self.kind == "pty":
+            self.close_slave()
+            return
+        if process.stdout is None:
+            raise ConductorError("pipe-backed process did not expose stdout")
+        with self.close_lock:
+            self.pipe_stream = process.stdout
+
+    def read_chunk(self, process: subprocess.Popen[bytes]) -> bytes:
+        with self.close_lock:
+            master_fd = self.master_fd
+            pipe_stream = self.pipe_stream
+        if self.kind == "pipe":
+            if pipe_stream is None:
+                return b""
+            return pipe_stream.readline()
+        if master_fd is None:
+            return b""
+        try:
+            return os.read(master_fd, 64 * 1024)
+        except OSError as exc:
+            if exc.errno == errno.EIO:
+                return b""
+            if exc.errno == errno.EBADF:
+                with self.close_lock:
+                    if self.master_fd is None:
+                        return b""
+            raise
+
+    def close_slave(self) -> None:
+        with self.close_lock:
+            slave_fd = self.slave_fd
+            self.slave_fd = None
+        if slave_fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(slave_fd)
+
+    def close_reader(self) -> None:
+        with self.close_lock:
+            master_fd = self.master_fd
+            pipe_stream = self.pipe_stream
+            self.master_fd = None
+            self.pipe_stream = None
+        if master_fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(master_fd)
+        if pipe_stream is not None:
+            with contextlib.suppress(OSError):
+                pipe_stream.close()
+
+    def close_all(self) -> None:
+        self.close_slave()
+        self.close_reader()
 
 
 def is_xctest_process_command(command: str) -> bool:
@@ -1046,7 +1128,7 @@ class OperationRegistry:
     @staticmethod
     def normalize_operation_args(operation: Any, args: Dict[str, Any]) -> Dict[str, Any]:
         normalized = dict(args)
-        if operation in {"test", "provider-test"} and "xctestStallSeconds" not in normalized:
+        if operation in {"test", "provider-test"} and not normalized.get("list") and "xctestStallSeconds" not in normalized:
             normalized["xctestStallSeconds"] = DEFAULT_XCTEST_STALL_SECONDS
         return normalized
 
@@ -1107,6 +1189,8 @@ class OperationRegistry:
             lanes = ["build", "debugArtifact"] + (["release"] if config == "release" else [])
             return [script("package_app.sh"), config], lanes, cwd, env, effective_timeout
         if operation == "test":
+            if args.get("list"):
+                return ["swift", "test", "list"], ["build"], cwd, env, effective_timeout
             if args.get("filter") == "WorkspaceFileContextStoreTests":
                 return self._internal_argv("workspace_file_context_store_tests", {}), ["build"], cwd, env, effective_timeout
             if args.get("filter"):
@@ -1114,7 +1198,9 @@ class OperationRegistry:
             return self._internal_argv("root_tests", {}), ["build"], cwd, env, effective_timeout
         if operation == "provider-test":
             argv = ["swift", "test"]
-            if args.get("filter"):
+            if args.get("list"):
+                argv.append("list")
+            elif args.get("filter"):
                 argv.extend(["--filter", str(args["filter"])])
             return argv, ["build"], self.repo_root / "Packages" / "RepoPromptAgentProviders", env, effective_timeout
         if operation == "install-debug-cli":
@@ -1163,8 +1249,13 @@ class OperationRegistry:
 
     @staticmethod
     def _validate_xctest_stall_options(args: Dict[str, Any]) -> None:
+        list_mode = bool(args.get("list"))
         raw_seconds = args.get("xctestStallSeconds")
         wake_probe = bool(args.get("xctestStallWakeProbe"))
+        if list_mode and args.get("filter"):
+            raise ConductorError("test list mode cannot be combined with a filter")
+        if list_mode and (raw_seconds is not None or wake_probe):
+            raise ConductorError("test list mode cannot be combined with XCTest stall diagnostics")
         if raw_seconds is None:
             if wake_probe:
                 raise ConductorError("--xctest-stall-wake-probe requires --xctest-stall-seconds")
@@ -1678,15 +1769,17 @@ class DaemonState:
                     self._append_tail_locked(job, start_line)
                 log_file.write(start_line.encode("utf-8", errors="replace"))
                 log_file.flush()
+                output_transport = self._create_process_output_transport(job)
                 process = subprocess.Popen(
                     argv,
                     cwd=str(cwd),
                     env=env,
                     stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
+                    stdout=output_transport.popen_stdout,
+                    stderr=output_transport.popen_stderr,
                     start_new_session=True,
                 )
+                output_transport.attach_process(process)
                 with self.condition:
                     job.process_pid = process.pid
                     with contextlib.suppress(OSError):
@@ -1703,7 +1796,7 @@ class DaemonState:
 
                 reader = threading.Thread(
                     target=self._read_process_output,
-                    args=(job.ticket, process, log_file),
+                    args=(job.ticket, process, log_file, output_transport),
                     daemon=True,
                 )
                 reader.start()
@@ -1778,8 +1871,7 @@ class DaemonState:
                             if descendants_alive:
                                 raise ConductorError("canceled job descendants remained alive after SIGKILL escalation")
                 reader.join(timeout=2.0)
-                if process.stdout is not None:
-                    process.stdout.close()
+                output_transport.close_all()
                 with self.condition:
                     job.xctest_process_finished = True
                     self.condition.notify_all()
@@ -1817,22 +1909,33 @@ class DaemonState:
             if job is not None and refresh_after_release:
                 threading.Thread(target=self._refresh_output_summary, args=(job,), daemon=True).start()
 
-    def _read_process_output(self, ticket: str, process: subprocess.Popen[bytes], log_file: Any) -> None:
-        assert process.stdout is not None
-        while True:
-            chunk = process.stdout.readline()
-            if not chunk:
-                break
-            log_file.write(chunk)
-            log_file.flush()
-            text = chunk.decode("utf-8", errors="replace")
-            with self.condition:
-                job = self.jobs.get(ticket)
-                if job:
-                    self._append_tail_locked(job, text)
-                    self._record_xctest_startup_locked(job, text)
-                    self._record_xctest_progress_locked(job, text)
-                    self.condition.notify_all()
+    def _create_process_output_transport(self, job: Job) -> ProcessOutputTransport:
+        return ProcessOutputTransport.create("pty" if self._xctest_watchdog_enabled(job) else "pipe")
+
+    def _read_process_output(
+        self,
+        ticket: str,
+        process: subprocess.Popen[bytes],
+        log_file: Any,
+        transport: ProcessOutputTransport,
+    ) -> None:
+        try:
+            while True:
+                chunk = transport.read_chunk(process)
+                if not chunk:
+                    break
+                log_file.write(chunk)
+                log_file.flush()
+                text = chunk.decode("utf-8", errors="replace")
+                with self.condition:
+                    job = self.jobs.get(ticket)
+                    if job:
+                        self._append_tail_locked(job, text)
+                        self._record_xctest_startup_locked(job, text)
+                        self._record_xctest_progress_locked(job, text)
+                        self.condition.notify_all()
+        finally:
+            transport.close_reader()
 
     def _finalize_process_exit_locked(self, job: Job, exit_code: int) -> None:
         if job.cancel_requested:
@@ -1864,7 +1967,11 @@ class DaemonState:
             # The runner owns per-shard startup/stall handling; an outer XCTest watchdog
             # incorrectly carries progress between child processes and can kill a healthy retry.
             return False
-        return job.operation in {"test", "provider-test"} and job.args.get("xctestStallSeconds") is not None
+        return (
+            job.operation in {"test", "provider-test"}
+            and not bool(job.args.get("list"))
+            and job.args.get("xctestStallSeconds") is not None
+        )
 
     def _record_xctest_progress_locked(
         self,
@@ -4061,7 +4168,9 @@ def handle_real_operation(paths: Paths, operation: str, argv: List[str]) -> int:
         args["config"] = ns.config
     elif operation in {"test", "provider-test"}:
         parser = argparse.ArgumentParser(prog=f"conductor {operation}")
-        parser.add_argument("--filter")
+        mode = parser.add_mutually_exclusive_group()
+        mode.add_argument("--list", action="store_true")
+        mode.add_argument("--filter")
         parser.add_argument("--xctest-stall-seconds", type=float)
         parser.add_argument("--xctest-stall-wake-probe", action="store_true")
         ns = parser.parse_args(rest)
@@ -4071,6 +4180,10 @@ def handle_real_operation(paths: Paths, operation: str, argv: List[str]) -> int:
             raise ConductorError("--xctest-stall-seconds must be greater than zero")
         if ns.xctest_stall_wake_probe and ns.xctest_stall_seconds is None:
             raise ConductorError("--xctest-stall-wake-probe requires --xctest-stall-seconds")
+        if ns.list and (ns.xctest_stall_seconds is not None or ns.xctest_stall_wake_probe):
+            raise ConductorError("--list cannot be combined with XCTest stall diagnostics")
+        if ns.list:
+            args["list"] = True
         if ns.filter:
             args["filter"] = ns.filter
         if ns.xctest_stall_seconds is not None:

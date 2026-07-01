@@ -61,6 +61,25 @@ final class CodexGoalSupportDefaultTests: XCTestCase {
         XCTAssertTrue(store.codexGoalSupportEnabled())
     }
 
+    func testMissingCodexReasoningSummariesDefaultOff() throws {
+        let defaults = try makeIsolatedDefaults()
+        let store = try makeStore(document: GlobalSettingsDocument(
+            scalarPreferences: GlobalScalarPreferences(agentMode: .init())
+        ))
+
+        XCTAssertNil(defaults.object(forKey: CodexReasoningSummaries.defaultsKey))
+        XCTAssertFalse(CodexReasoningSummaries.isEnabled(defaults: defaults))
+        XCTAssertFalse(store.codexReasoningSummariesEnabled())
+    }
+
+    func testExplicitGlobalSettingsReasoningSummariesTrueEnablesSupport() throws {
+        let store = try makeStore(document: GlobalSettingsDocument(
+            scalarPreferences: GlobalScalarPreferences(agentMode: .init(codexReasoningSummariesEnabled: true))
+        ))
+
+        XCTAssertTrue(store.codexReasoningSummariesEnabled())
+    }
+
     private func makeIsolatedDefaults() throws -> UserDefaults {
         let suiteName = "CodexGoalSupportDefaultTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))

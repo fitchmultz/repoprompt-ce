@@ -219,6 +219,12 @@ enum ClaudeCompatibleProviderRuntimeBridge {
         pluginPromptDeliveryMode(for: delivery).nativeSystemPromptOverride(instructions: instructions)
     }
 
+    static func identityAppendSystemPrompt(for environment: ClaudeCodeLaunchEnvironment?) -> String? {
+        RepoPromptClaudeCompatibleProvider.ClaudeCompatibleIdentityPreamble.appendSystemPrompt(
+            for: environment.map(launchEnvironment(from:))
+        )
+    }
+
     static func buildHeadlessArguments(
         config: ClaudeCodeAgentConfig,
         context: HeadlessAgentContext,

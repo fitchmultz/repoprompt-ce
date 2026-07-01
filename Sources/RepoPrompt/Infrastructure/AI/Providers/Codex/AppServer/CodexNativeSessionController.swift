@@ -378,6 +378,7 @@ final class CodexNativeSessionController {
         var approvalReviewerProvider: () -> CodexAgentToolPreferences.ApprovalReviewer = { CodexAgentToolPreferences.approvalReviewer() }
         var authTokensRefreshHandler: ChatgptAuthTokensRefreshHandler?
         var goalSupportEnabledProvider: @MainActor () -> Bool = { false }
+        var reasoningSummariesEnabledProvider: @MainActor () -> Bool = { false }
         var computerUseEnabledProvider: @MainActor () -> Bool = { false }
 
         static func agentModeDefault(
@@ -388,6 +389,7 @@ final class CodexNativeSessionController {
             shellToolEnabled: Bool? = nil,
             suppressThirdPartyMCPServers: Bool = false,
             goalSupportEnabledProvider: @escaping @MainActor () -> Bool = { CodexGoalSupport.isEnabled },
+            reasoningSummariesEnabledProvider: @escaping @MainActor () -> Bool = { false },
             computerUseEnabledProvider: @escaping @MainActor () -> Bool = { false }
         ) -> Options {
             Options(
@@ -396,6 +398,7 @@ final class CodexNativeSessionController {
                     let featurePolicy = await MainActor.run {
                         (
                             goalSupportEnabled: goalSupportEnabledProvider(),
+                            reasoningSummariesEnabled: reasoningSummariesEnabledProvider(),
                             computerUseEnabled: computerUseEnabledProvider()
                         )
                     }
@@ -407,6 +410,7 @@ final class CodexNativeSessionController {
                         shellToolEnabled: shellToolEnabled,
                         suppressThirdPartyMCPServers: suppressThirdPartyMCPServers,
                         goalSupportEnabled: featurePolicy.goalSupportEnabled,
+                        reasoningSummariesEnabled: featurePolicy.reasoningSummariesEnabled,
                         computerUseEnabled: featurePolicy.computerUseEnabled
                     )
                 },
@@ -415,6 +419,7 @@ final class CodexNativeSessionController {
                 approvalReviewerProvider: approvalReviewerProvider,
                 authTokensRefreshHandler: nil,
                 goalSupportEnabledProvider: goalSupportEnabledProvider,
+                reasoningSummariesEnabledProvider: reasoningSummariesEnabledProvider,
                 computerUseEnabledProvider: computerUseEnabledProvider
             )
         }
@@ -7326,6 +7331,7 @@ final class CodexNativeSessionController {
         shellToolEnabled: Bool? = nil,
         suppressThirdPartyMCPServers: Bool = false,
         goalSupportEnabled: Bool = false,
+        reasoningSummariesEnabled: Bool? = nil,
         computerUseEnabled: Bool = false
     ) -> [String: Any] {
         let serverEntries = MCPIntegrationHelper.codexMCPServerEntries()
@@ -7339,7 +7345,8 @@ final class CodexNativeSessionController {
             includeApplyPatchTool: false,
             parallelToolCallsEnabled: false,
             multiAgentEnabled: false,
-            experimentalSteeringEnabled: forceExperimentalSteering ? true : nil
+            experimentalSteeringEnabled: forceExperimentalSteering ? true : nil,
+            modelReasoningSummary: reasoningSummariesEnabled.map { $0 ? .auto : .none }
         )
         var overrides = CodexOverrides.appServerConfigMap(
             toolPolicy: toolPolicy,

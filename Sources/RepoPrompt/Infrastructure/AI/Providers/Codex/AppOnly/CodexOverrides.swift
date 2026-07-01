@@ -60,8 +60,8 @@ enum CodexOverrides {
         var parallelToolCallsEnabled: Bool?
         var multiAgentEnabled: Bool?
         var experimentalSteeringEnabled: Bool?
-        /// Keep reasoning summaries enabled for newer Codex models that now default them off.
-        var modelReasoningSummary: ReasoningSummary? = .auto
+        /// Process/thread-level `model_reasoning_summary` override. Nil preserves Codex defaults.
+        var modelReasoningSummary: ReasoningSummary?
     }
 
     enum MCPPolicy {

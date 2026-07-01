@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import io
 import json
 import os
@@ -74,7 +75,7 @@ class LifecycleTestCase(unittest.TestCase):
 
 class LifecycleQueueTests(LifecycleTestCase):
     def test_protocol_version_bump_replaces_older_daemons(self) -> None:
-        self.assertEqual(conductor.PROTOCOL_VERSION, 7)
+        self.assertEqual(conductor.PROTOCOL_VERSION, 8)
 
     def test_ensure_daemon_stops_and_replaces_idle_protocol_3_daemon(self) -> None:
         tmp, state = self.make_state()
@@ -223,6 +224,43 @@ class LifecycleQueueTests(LifecycleTestCase):
             with self.assertRaisesRegex(conductor.ConductorError, "must not exceed 900 seconds"):
                 registry.prepare({"operation": "test", "args": {}, "timeout": conductor.TEST_TIMEOUT_SECONDS + 1})
 
+    def test_test_list_mode_uses_swift_list_without_root_batch_runner_or_watchdog(self) -> None:
+        tmp, state = self.make_state()
+        self.addCleanup(tmp.cleanup)
+        registry = conductor.OperationRegistry(state.paths.repo_root)
+
+        test_argv, test_lanes, test_cwd, _test_env, test_timeout = registry.prepare(
+            {"operation": "test", "args": {"list": True}}
+        )
+        provider_argv, provider_lanes, provider_cwd, _provider_env, provider_timeout = registry.prepare(
+            {"operation": "provider-test", "args": {"list": True}}
+        )
+
+        self.assertEqual(test_argv, ["swift", "test", "list"])
+        self.assertEqual(test_lanes, ["build"])
+        self.assertEqual(test_cwd, state.paths.repo_root)
+        self.assertEqual(test_timeout, conductor.TEST_TIMEOUT_SECONDS)
+        self.assertEqual(provider_argv, ["swift", "test", "list"])
+        self.assertEqual(provider_lanes, ["build"])
+        self.assertEqual(provider_cwd, state.paths.repo_root / "Packages" / "RepoPromptAgentProviders")
+        self.assertEqual(provider_timeout, conductor.TEST_TIMEOUT_SECONDS)
+        self.assertNotIn("xctestStallSeconds", conductor.OperationRegistry.normalize_operation_args("test", {"list": True}))
+        with self.assertRaisesRegex(conductor.ConductorError, "cannot be combined"):
+            registry.prepare({"operation": "test", "args": {"list": True, "filter": "ExampleTests"}})
+        with self.assertRaisesRegex(conductor.ConductorError, "cannot be combined"):
+            registry.prepare({"operation": "test", "args": {"list": True, "xctestStallSeconds": 5.0}})
+
+    def test_test_list_cli_forwards_list_flag(self) -> None:
+        tmp, state = self.make_state()
+        self.addCleanup(tmp.cleanup)
+
+        with mock.patch.object(conductor, "enqueue_and_maybe_wait", return_value=0) as enqueue:
+            code = conductor.handle_real_operation(state.paths, "test", ["--list"])
+
+        self.assertEqual(code, 0)
+        self.assertEqual(enqueue.call_args.args[1], "test")
+        self.assertEqual(enqueue.call_args.args[2], {"list": True})
+
     def test_test_operations_default_to_xctest_stall_watchdog_where_safe(self) -> None:
         tmp, state = self.make_state()
         self.addCleanup(tmp.cleanup)
@@ -241,6 +279,27 @@ class LifecycleQueueTests(LifecycleTestCase):
         self.assertFalse(state._xctest_watchdog_enabled(root_job))
         self.assertTrue(state._xctest_watchdog_enabled(focused_job))
         self.assertTrue(state._xctest_watchdog_enabled(provider_job))
+
+    def test_output_transport_selection_is_pty_only_for_watchdog_tests(self) -> None:
+        tmp, state = self.make_state()
+        self.addCleanup(tmp.cleanup)
+        jobs = [
+            ("build", {}, "pipe"),
+            ("test", {}, "pipe"),
+            ("test", {"list": True}, "pipe"),
+            ("provider-test", {"list": True}, "pipe"),
+            ("test", {"filter": "ExampleTests", "xctestStallSeconds": 5.0}, "pty"),
+            ("provider-test", {"xctestStallSeconds": 5.0}, "pty"),
+        ]
+
+        for index, (operation, args, expected) in enumerate(jobs):
+            with self.subTest(operation=operation, args=args):
+                job = self.make_job(state, f"transport-{index}", operation, args, ["build"], "running")
+                transport = state._create_process_output_transport(job)
+                try:
+                    self.assertEqual(transport.kind, expected)
+                finally:
+                    transport.close_all()
 
     def test_explicit_xctest_stall_timeout_overrides_default(self) -> None:
         tmp, state = self.make_state()
@@ -1165,6 +1224,27 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
         job = self.make_job(state, "xctest-watchdog", "test", args, ["build"], job_state="running")
         state.jobs[job.ticket] = job
         return job
+
+    def test_pty_eio_is_eof_without_waiting_for_popen_to_reap_child(self) -> None:
+        transport = conductor.ProcessOutputTransport(kind="pty", master_fd=123)
+        process = mock.Mock()
+
+        with mock.patch.object(conductor.os, "read", side_effect=OSError(errno.EIO, "fixture EIO")):
+            self.assertEqual(transport.read_chunk(process), b"")
+
+        process.poll.assert_not_called()
+        transport.master_fd = None
+
+    def test_pty_read_does_not_swallow_non_eio_errors(self) -> None:
+        transport = conductor.ProcessOutputTransport(kind="pty", master_fd=123)
+        process = mock.Mock()
+
+        with mock.patch.object(conductor.os, "read", side_effect=OSError(errno.EINVAL, "fixture EINVAL")):
+            with self.assertRaises(OSError) as raised:
+                transport.read_chunk(process)
+
+        self.assertEqual(raised.exception.errno, errno.EINVAL)
+        transport.master_fd = None
 
     def test_watchdog_triggers_at_most_once_after_started_marker(self) -> None:
         tmp, state = self.make_state()

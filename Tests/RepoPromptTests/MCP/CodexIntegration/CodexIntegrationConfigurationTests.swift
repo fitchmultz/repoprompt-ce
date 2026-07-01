@@ -390,4 +390,37 @@ final class CodexIntegrationConfigurationTests: XCTestCase {
         XCTAssertFalse(result.content.contains("tool_timeout_sec = \"10000\""))
         XCTAssertFalse(result.content.contains("supports_parallel_tool_calls = \"false\""))
     }
+
+    func testCodexOverridesReasoningSummaryIsExplicitOnly() {
+        var policy = CodexOverrides.ToolPolicy(
+            toolOutputTokenLimit: MCPIntegrationHelper.desiredCodexToolOutputTokenLimit
+        )
+        XCTAssertFalse(CodexOverrides.cliConfigArgs(toolPolicy: policy).contains { $0.hasPrefix("model_reasoning_summary=") })
+        XCTAssertNil(CodexOverrides.appServerConfigMap(toolPolicy: policy)["model_reasoning_summary"])
+
+        policy.modelReasoningSummary = CodexOverrides.ReasoningSummary.none
+        XCTAssertTrue(CodexOverrides.cliConfigArgs(toolPolicy: policy).contains("model_reasoning_summary=none"))
+        XCTAssertEqual(CodexOverrides.appServerConfigMap(toolPolicy: policy)["model_reasoning_summary"] as? String, "none")
+
+        policy.modelReasoningSummary = .auto
+        XCTAssertTrue(CodexOverrides.cliConfigArgs(toolPolicy: policy).contains("model_reasoning_summary=auto"))
+        XCTAssertEqual(CodexOverrides.appServerConfigMap(toolPolicy: policy)["model_reasoning_summary"] as? String, "auto")
+    }
+
+    func testDefaultAppServerConfigReasoningSummaryFollowsOptionalSetting() {
+        let omitted = CodexNativeSessionController.defaultAppServerConfigOverrides(forceExperimentalSteering: false)
+        XCTAssertNil(omitted["model_reasoning_summary"])
+
+        let disabled = CodexNativeSessionController.defaultAppServerConfigOverrides(
+            forceExperimentalSteering: false,
+            reasoningSummariesEnabled: false
+        )
+        XCTAssertEqual(disabled["model_reasoning_summary"] as? String, "none")
+
+        let enabled = CodexNativeSessionController.defaultAppServerConfigOverrides(
+            forceExperimentalSteering: false,
+            reasoningSummariesEnabled: true
+        )
+        XCTAssertEqual(enabled["model_reasoning_summary"] as? String, "auto")
+    }
 }

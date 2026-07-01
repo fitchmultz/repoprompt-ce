@@ -132,6 +132,53 @@ final class ClaudeCompatibleRuntimeSupportTests: XCTestCase {
         ])
     }
 
+    func testGLMHeadlessArgumentsAppendIdentityPreambleFromLaunchEnvironment() {
+        let runtimeConfig = ClaudeCompatibleRuntimeConfig(
+            pluginID: .zaiClaudeCode,
+            mode: .discovery,
+            commandName: "claude",
+            additionalPathHints: [],
+            modelString: nil,
+            enableDebugLogging: false,
+            sdkConnectTimeoutSeconds: 10,
+            sdkRelaunchMaxAttempts: 1,
+            permissionMode: "bypassPermissions",
+            allowNativeBashTool: false,
+            toolContext: .discoverRun,
+            disallowedBuiltInTools: [],
+            mcpStrictMode: false,
+            toolSearchEnabled: false,
+            effortLevel: nil,
+            processEnvironmentOverrides: [:],
+            effortEnvironmentOverrides: [:],
+            backendConfig: nil
+        )
+        let glmEnvironment = ClaudeCompatibleLaunchEnvironment(
+            effectiveModel: "sonnet",
+            environmentOverrides: [:],
+            backendID: .glmZAI
+        )
+        let args = ClaudeCompatibleHeadlessRuntime.buildArguments(.init(
+            runtimeConfig: runtimeConfig,
+            mcpConfigPath: nil,
+            launchEnvironment: glmEnvironment
+        ))
+
+        let flagIndex = args.firstIndex(of: "--append-system-prompt")
+        XCTAssertNotNil(flagIndex)
+        let value = flagIndex.map { args[args.index(after: $0)] }
+        XCTAssertEqual(value, ClaudeCompatibleIdentityPreamble.glmZAIAppendSystemPrompt)
+        XCTAssertFalse(value?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        XCTAssertNil(["claude", "anthropic", "agent", "sdk"].first { value?.lowercased().contains($0) == true })
+
+        let kimiArgs = ClaudeCompatibleHeadlessRuntime.buildArguments(.init(
+            runtimeConfig: runtimeConfig,
+            mcpConfigPath: nil,
+            launchEnvironment: .init(effectiveModel: nil, environmentOverrides: [:], backendID: .kimi)
+        ))
+        XCTAssertFalse(kimiArgs.contains("--append-system-prompt"))
+    }
+
     func testProviderCatalogDefaultsExposeStableRawValues() {
         XCTAssertEqual(ClaudeCompatibleProviderPluginID.allCases.map(\.rawValue), [
             "claude-code",

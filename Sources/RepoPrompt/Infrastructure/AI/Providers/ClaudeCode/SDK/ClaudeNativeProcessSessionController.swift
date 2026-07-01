@@ -502,7 +502,8 @@ final actor ClaudeNativeProcessSessionController {
         storeFlagSettingsRequest(resolvedFlags.request)
         let arguments = buildArguments(
             existingSessionID: existingSessionID,
-            model: nil
+            model: nil,
+            launchEnvironment: launchEnvironment
         )
 
         let workingDirectory = resolvedWorkingDirectory()
@@ -1603,9 +1604,10 @@ final actor ClaudeNativeProcessSessionController {
         /// Build CLI arguments for testing (verifies prompt flags are absent).
         func test_buildArguments(
             existingSessionID: String?,
-            model: String?
+            model: String?,
+            launchEnvironment: ClaudeCodeLaunchEnvironment? = nil
         ) -> [String] {
-            buildArguments(existingSessionID: existingSessionID, model: model)
+            buildArguments(existingSessionID: existingSessionID, model: model, launchEnvironment: launchEnvironment)
         }
 
         @discardableResult
@@ -1855,7 +1857,8 @@ final actor ClaudeNativeProcessSessionController {
 
     private func buildArguments(
         existingSessionID: String?,
-        model: String?
+        model: String?,
+        launchEnvironment: ClaudeCodeLaunchEnvironment?
     ) -> [String] {
         var args: [String] = [
             "-p",
@@ -1865,6 +1868,9 @@ final actor ClaudeNativeProcessSessionController {
         ]
 
         args.append(contentsOf: ["--permission-prompt-tool", "stdio"])
+        if let appendSystemPrompt = ClaudeCompatibleProviderRuntimeBridge.identityAppendSystemPrompt(for: launchEnvironment) {
+            args.append(contentsOf: ["--append-system-prompt", appendSystemPrompt])
+        }
 
         if let existingSessionID, !existingSessionID.isEmpty {
             args.append(contentsOf: ["--resume", existingSessionID])
