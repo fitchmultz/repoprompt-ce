@@ -29,7 +29,7 @@ final class WorkspaceFileContextStoreCodemapSeamTests: XCTestCase {
         }
     }
 
-    func testCheckoutMutationClearsPendingCodemapRepairsForUnsnapshottedFiles() async throws {
+    func testCheckoutMutationClearsPendingCodemapDemandForUnsnapshottedFiles() async throws {
         let root = try temporaryDirectory()
         let sourceURL = root.appendingPathComponent("App.swift")
         try "struct App { func run() {} }".write(
@@ -46,19 +46,19 @@ final class WorkspaceFileContextStoreCodemapSeamTests: XCTestCase {
         let catalogedFile = await store.file(rootID: record.id, relativePath: "App.swift")
         let file = try XCTUnwrap(catalogedFile)
 
-        let repair = await store.enqueueMissingCodemapSnapshotRepairs(for: [file])
+        let repair = try await store.repairCodemapArtifacts(for: [file], timeout: .zero)
         XCTAssertEqual(repair.pendingFileIDs, [file.id])
         try await gate.waitUntilStarted()
-        let pendingBeforeCancel = await store.codemapMemoryCounters().pendingRepairFileCount
+        let pendingBeforeCancel = await store.codemapMemoryCounters().pendingDemandCount
         XCTAssertEqual(pendingBeforeCancel, 1)
 
         let cancellation = Task { await store.cancelCodemapScansForCheckoutMutation(rootIDs: [record.id]) }
-        try await waitForPendingRepairCount(0, in: store)
+        try await waitForPendingDemandCount(0, in: store)
         await gate.release()
         await cancellation.value
         await store.setCodemapScanWillStartHandlerForTesting(nil)
 
-        let pendingAfterCancel = await store.codemapMemoryCounters().pendingRepairFileCount
+        let pendingAfterCancel = await store.codemapMemoryCounters().pendingDemandCount
         XCTAssertEqual(pendingAfterCancel, 0)
     }
 
@@ -101,7 +101,7 @@ final class WorkspaceFileContextStoreCodemapSeamTests: XCTestCase {
         }
     }
 
-    private func waitForPendingRepairCount(
+    private func waitForPendingDemandCount(
         _ expected: Int,
         in store: WorkspaceFileContextStore,
         timeout: Duration = .seconds(2)
@@ -109,12 +109,12 @@ final class WorkspaceFileContextStoreCodemapSeamTests: XCTestCase {
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: timeout)
         while clock.now < deadline {
-            if await store.codemapMemoryCounters().pendingRepairFileCount == expected {
+            if await store.codemapMemoryCounters().pendingDemandCount == expected {
                 return
             }
             try await Task.sleep(for: .milliseconds(20))
         }
-        let pendingCount = await store.codemapMemoryCounters().pendingRepairFileCount
+        let pendingCount = await store.codemapMemoryCounters().pendingDemandCount
         XCTAssertEqual(pendingCount, expected)
     }
 

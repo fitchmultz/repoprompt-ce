@@ -26,7 +26,6 @@ struct WorkspaceCodemapMemoryCounters {
     let setupTaskCount: Int
     let pendingDemandCount: Int
     let activeDemandTaskCount: Int
-    let pendingRepairFileCount: Int
 }
 
 enum WorkspaceFileTreeSnapshotMode: String {
@@ -1296,7 +1295,6 @@ actor WorkspaceFileContextStore {
     private var internalModernCodemapRetainIDs = Set<UUID>()
     private var codemapSnapshotsByFileID: [UUID: WorkspaceCodemapSnapshot] = [:]
     private var codemapFileIDsByRootID: [UUID: Set<UUID>] = [:]
-    private var pendingCodemapRepairFileIDs = Set<UUID>()
     private var initializingSessionWorktreeCodemapRootIDs = Set<UUID>()
     private var initializedSessionWorktreeCodemapRootIDs = Set<UUID>()
     private var codemapUpdateContinuations: [UUID: AsyncStream<WorkspaceCodemapUpdateEvent>.Continuation] = [:]
@@ -4373,7 +4371,6 @@ actor WorkspaceFileContextStore {
     }
 
     func cancelAllCodemapScans() async {
-        pendingCodemapRepairFileIDs.removeAll()
         let flights = detachModernCodemapSessionsAndReturnFlights(
             rootIDs: Set(rootStatesByID.keys)
         )
@@ -4383,10 +4380,6 @@ actor WorkspaceFileContextStore {
 
     func cancelCodemapScansForCheckoutMutation(rootIDs: [UUID]) async {
         let rootIDSet = Set(rootIDs)
-        let catalogedFileIDs = rootIDSet.flatMap { rootID in
-            rootStatesByID[rootID].map { Array($0.fileIDsByRelativePath.values) } ?? []
-        }
-        pendingCodemapRepairFileIDs.subtract(catalogedFileIDs)
         let flights = detachModernCodemapSessionsAndReturnFlights(rootIDs: rootIDSet)
         yieldCodemapScanProgress()
         await waitForModernCodemapCleanup(flights)
@@ -4442,8 +4435,7 @@ actor WorkspaceFileContextStore {
                 cleanupFlightCount: modernCodemapCleanupFlightsByRootID.count,
                 setupTaskCount: sessions.count(where: { $0.setupTask != nil }),
                 pendingDemandCount: pendingCount,
-                activeDemandTaskCount: activeCount,
-                pendingRepairFileCount: pendingCodemapRepairFileIDs.count
+                activeDemandTaskCount: activeCount
             )
         }
 
@@ -4939,8 +4931,6 @@ actor WorkspaceFileContextStore {
         #endif
 
         let removedRootIDSet = Set(statesToUnload.map(\.rootID))
-        let removedFileIDs = statesToUnload.flatMap(\.state.fileIDsByRelativePath.values)
-        pendingCodemapRepairFileIDs.subtract(removedFileIDs)
         initializingSessionWorktreeCodemapRootIDs.subtract(removedRootIDSet)
         initializedSessionWorktreeCodemapRootIDs.subtract(removedRootIDSet)
         rootLoadOrder.removeAll { removedRootIDSet.contains($0) }
@@ -6568,10 +6558,8 @@ actor WorkspaceFileContextStore {
         switch result {
         case let .ready(ready):
             publishModernCodemapCompatibilitySnapshot(ready)
-            pendingCodemapRepairFileIDs.remove(ticket.fileID)
             releaseInternalModernCodemapRetain(ticket)
         case .unavailable:
-            pendingCodemapRepairFileIDs.remove(ticket.fileID)
             releaseInternalModernCodemapRetain(ticket)
         case .pending:
             break
@@ -6649,7 +6637,6 @@ actor WorkspaceFileContextStore {
         )
         codemapSnapshotsByFileID[file.id] = snapshot
         codemapFileIDsByRootID[file.rootID, default: []].insert(file.id)
-        pendingCodemapRepairFileIDs.remove(file.id)
         yieldCodemapUpdate(WorkspaceCodemapUpdateEvent(
             rootID: file.rootID,
             rootPath: root.standardizedFullPath,
@@ -6691,7 +6678,6 @@ actor WorkspaceFileContextStore {
         )
         codemapSnapshotsByFileID[file.id] = snapshot
         codemapFileIDsByRootID[file.rootID, default: []].insert(file.id)
-        pendingCodemapRepairFileIDs.remove(file.id)
         yieldCodemapUpdate(WorkspaceCodemapUpdateEvent(
             rootID: file.rootID,
             rootPath: state.root.standardizedFullPath,
@@ -7146,63 +7132,6 @@ actor WorkspaceFileContextStore {
             }
         }
         return pendingRootIDs
-    }
-
-    func enqueueMissingCodemapSnapshotRepairs(
-        for files: [WorkspaceFileRecord]
-    ) -> WorkspaceCodemapRepairResult {
-        let snapshots = codemapSnapshotDictionary()
-        var missingFiles: [WorkspaceFileRecord] = []
-        var seenFileIDs = Set<UUID>()
-
-        for file in files {
-            guard seenFileIDs.insert(file.id).inserted,
-                  isDiscoverableFileID(file.id),
-                  filesByID[file.id] != nil,
-                  snapshots[file.id] == nil
-            else { continue }
-            missingFiles.append(file)
-        }
-
-        var newlyQueuedFiles: [WorkspaceFileRecord] = []
-        for file in missingFiles where pendingCodemapRepairFileIDs.insert(file.id).inserted {
-            newlyQueuedFiles.append(file)
-        }
-
-        if !newlyQueuedFiles.isEmpty {
-            Task.detached(priority: .utility) { [store = self, newlyQueuedFiles] in
-                await store.performEnqueuedCodemapSnapshotRepairs(for: newlyQueuedFiles)
-            }
-        }
-
-        return WorkspaceCodemapRepairResult(
-            snapshotsByFileID: snapshots,
-            pendingFileIDs: Set(missingFiles.map(\.id))
-        )
-    }
-
-    private func performEnqueuedCodemapSnapshotRepairs(
-        for files: [WorkspaceFileRecord]
-    ) async {
-        let currentFiles = files.filter { file in
-            pendingCodemapRepairFileIDs.contains(file.id)
-                && isDiscoverableFileID(file.id)
-                && filesByID[file.id] != nil
-                && codemapSnapshotsByFileID[file.id] == nil
-        }
-        guard !currentFiles.isEmpty else {
-            pendingCodemapRepairFileIDs.subtract(files.map(\.id))
-            return
-        }
-
-        do {
-            let submittedFileIDs = try await requestModernCodemapArtifacts(for: currentFiles)
-            let readyFileIDs = submittedFileIDs.filter { codemapSnapshotsByFileID[$0] != nil }
-            pendingCodemapRepairFileIDs.subtract(readyFileIDs)
-            pendingCodemapRepairFileIDs.subtract(Set(currentFiles.map(\.id)).subtracting(submittedFileIDs))
-        } catch {
-            pendingCodemapRepairFileIDs.subtract(currentFiles.map(\.id))
-        }
     }
 
     func repairCodemapArtifacts(
@@ -9617,7 +9546,6 @@ actor WorkspaceFileContextStore {
         searchContentInvalidationEpochsByFileID.removeValue(forKey: fileID)
         fileIDsByStandardizedFullPath.removeValue(forKey: file.standardizedFullPath)
         managedOnlyFileIDs.remove(fileID)
-        pendingCodemapRepairFileIDs.remove(fileID)
         codemapSnapshotsByFileID.removeValue(forKey: fileID)
         codemapFileIDsByRootID[file.rootID]?.remove(fileID)
         if let parentID = file.parentFolderID {

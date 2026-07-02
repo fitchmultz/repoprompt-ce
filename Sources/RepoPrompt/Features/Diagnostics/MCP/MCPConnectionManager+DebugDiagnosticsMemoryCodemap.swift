@@ -176,8 +176,7 @@ import MCP
                 cleanupFlightCount: 0,
                 setupTaskCount: 0,
                 pendingDemandCount: 0,
-                activeDemandTaskCount: 0,
-                pendingRepairFileCount: 0
+                activeDemandTaskCount: 0
             )
         }
 
@@ -196,8 +195,7 @@ import MCP
                 cleanupFlightCount: lhs.cleanupFlightCount + rhs.cleanupFlightCount,
                 setupTaskCount: lhs.setupTaskCount + rhs.setupTaskCount,
                 pendingDemandCount: lhs.pendingDemandCount + rhs.pendingDemandCount,
-                activeDemandTaskCount: lhs.activeDemandTaskCount + rhs.activeDemandTaskCount,
-                pendingRepairFileCount: lhs.pendingRepairFileCount + rhs.pendingRepairFileCount
+                activeDemandTaskCount: lhs.activeDemandTaskCount + rhs.activeDemandTaskCount
             )
         }
 
@@ -213,8 +211,7 @@ import MCP
                 "cleanup_flights": counters.cleanupFlightCount,
                 "setup_tasks": counters.setupTaskCount,
                 "pending_demands": counters.pendingDemandCount,
-                "active_demand_tasks": counters.activeDemandTaskCount,
-                "pending_repair_files": counters.pendingRepairFileCount
+                "active_demand_tasks": counters.activeDemandTaskCount
             ]
         }
     }
