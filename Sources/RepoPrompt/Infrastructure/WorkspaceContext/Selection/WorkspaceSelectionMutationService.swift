@@ -113,7 +113,7 @@ struct WorkspaceSelectionMutationService {
         }
         slicesByPath = normalizeSlices(slicesByPath)
 
-        var finalCodemapPaths = existing.autoCodemapPaths
+        var finalCodemapPaths = existing.manualCodemapPaths
         if !selectedPaths.isEmpty {
             let selectedSet = Set(selectedPaths)
             finalCodemapPaths.removeAll { selectedSet.contains($0) }
@@ -130,7 +130,7 @@ struct WorkspaceSelectionMutationService {
 
         var selection = StoredSelection(
             selectedPaths: selectedPaths,
-            autoCodemapPaths: initialCodemapPaths,
+            manualCodemapPaths: initialCodemapPaths,
             slices: slicesByPath,
             codemapAutoEnabled: autoEnabled
         )
@@ -242,7 +242,7 @@ struct WorkspaceSelectionMutationService {
         var resolved: [String: String] = [:]
         let originalSlices = StoredSelectionPathNormalization.standardizedSlices(base.slices)
         let baseSelectedPaths = StoredSelectionPathNormalization.standardizedPaths(base.selectedPaths)
-        let baseCodemapPaths = StoredSelectionPathNormalization.standardizedPaths(base.autoCodemapPaths)
+        let baseCodemapPaths = StoredSelectionPathNormalization.standardizedPaths(base.manualCodemapPaths)
         var slices = originalSlices
         var selectedPaths = baseSelectedPaths
         var selectedSet = Set(selectedPaths)
@@ -312,7 +312,7 @@ struct WorkspaceSelectionMutationService {
         let selectedStd = Set(selectedPaths)
         codemapPaths.removeAll { selectedStd.contains($0) }
 
-        var nextSelection = StoredSelection(selectedPaths: selectedPaths, autoCodemapPaths: codemapPaths, slices: slices, codemapAutoEnabled: base.codemapAutoEnabled)
+        var nextSelection = StoredSelection(selectedPaths: selectedPaths, manualCodemapPaths: codemapPaths, slices: slices, codemapAutoEnabled: base.codemapAutoEnabled)
         let mutated = slices != originalSlices || selectedPaths != baseSelectedPaths || codemapPaths != baseCodemapPaths
         if mutated, nextSelection.codemapAutoEnabled {
             nextSelection = await recomputeAutoCodemaps(nextSelection, rootScope: rootScope)
@@ -344,7 +344,7 @@ struct WorkspaceSelectionMutationService {
 
         let structuralMerge = EditFlowPerf.begin(EditFlowPerf.Stage.ReadFile.AutoSelect.structuralMerge)
         var selectedPaths = existing.selectedPaths
-        var codemapPaths = existing.autoCodemapPaths
+        var codemapPaths = existing.manualCodemapPaths
         var slices = existing.slices
         var selectedSet = Set(selectedPaths)
         var codemapSet = Set(codemapPaths)
@@ -380,7 +380,7 @@ struct WorkspaceSelectionMutationService {
 
         var selection = StoredSelection(
             selectedPaths: selectedPaths,
-            autoCodemapPaths: codemapPaths,
+            manualCodemapPaths: codemapPaths,
             slices: slices,
             codemapAutoEnabled: codemapOnly ? false : existing.codemapAutoEnabled
         )
@@ -414,7 +414,7 @@ struct WorkspaceSelectionMutationService {
         let resolution = await resolveSelectionCandidates(paths: paths, rawPaths: rawPaths, expandFolders: true, allowEmptyFolderExpansion: true, rootScope: rootScope)
         let codemapOnly = mode == "codemap_only"
         var selectedPaths = existing.selectedPaths
-        var codemapPaths = existing.autoCodemapPaths
+        var codemapPaths = existing.manualCodemapPaths
         var slices = existing.slices
         var selectedSet = Set(selectedPaths)
         var codemapSet = Set(codemapPaths)
@@ -438,7 +438,7 @@ struct WorkspaceSelectionMutationService {
         let disableAuto = codemapOnly && mutated
         var selection = StoredSelection(
             selectedPaths: selectedPaths,
-            autoCodemapPaths: codemapPaths,
+            manualCodemapPaths: codemapPaths,
             slices: slices,
             codemapAutoEnabled: disableAuto ? false : existing.codemapAutoEnabled
         )
@@ -461,7 +461,7 @@ struct WorkspaceSelectionMutationService {
     ) async -> (selection: StoredSelection, invalidPaths: [String], mutated: Bool) {
         let resolution = await resolveSelectionCandidates(paths: paths, rawPaths: rawPaths, expandFolders: false, rootScope: rootScope)
         var selectedPaths = existing.selectedPaths
-        var codemapPaths = existing.autoCodemapPaths
+        var codemapPaths = existing.manualCodemapPaths
         var slices = existing.slices
         var selectedSet = Set(selectedPaths)
         var codemapSet = Set(codemapPaths)
@@ -482,7 +482,7 @@ struct WorkspaceSelectionMutationService {
             if removeSliceEntries(for: file, in: &slices) { mutated = true }
         }
 
-        return (StoredSelection(selectedPaths: selectedPaths, autoCodemapPaths: codemapPaths, slices: slices, codemapAutoEnabled: false), resolution.invalidPaths, mutated)
+        return (StoredSelection(selectedPaths: selectedPaths, manualCodemapPaths: codemapPaths, slices: slices, codemapAutoEnabled: false), resolution.invalidPaths, mutated)
     }
 
     func demotePaths(
@@ -496,7 +496,7 @@ struct WorkspaceSelectionMutationService {
         }
         let resolution = await resolveSelectionCandidates(paths: paths, rawPaths: rawPaths, expandFolders: false, rootScope: rootScope)
         var selectedPaths = existing.selectedPaths
-        var codemapPaths = existing.autoCodemapPaths
+        var codemapPaths = existing.manualCodemapPaths
         var slices = existing.slices
         var selectedSet = Set(selectedPaths)
         var codemapSet = Set(codemapPaths)
@@ -522,7 +522,7 @@ struct WorkspaceSelectionMutationService {
             }
         }
 
-        let selection = StoredSelection(selectedPaths: selectedPaths, autoCodemapPaths: codemapPaths, slices: slices, codemapAutoEnabled: false)
+        let selection = StoredSelection(selectedPaths: selectedPaths, manualCodemapPaths: codemapPaths, slices: slices, codemapAutoEnabled: false)
         return WorkspaceDemoteSelectionResult(selection: selection, invalidPaths: resolution.invalidPaths, codemapUnavailable: unavailable, mutated: mutated)
     }
 
@@ -660,31 +660,7 @@ struct WorkspaceSelectionMutationService {
         _ base: StoredSelection,
         rootScope: WorkspaceLookupRootScope = .visibleWorkspace
     ) async -> StoredSelection {
-        guard base.codemapAutoEnabled else { return base }
-        guard !codemapsGloballyDisabled else {
-            return StoredSelection(selectedPaths: base.selectedPaths, autoCodemapPaths: [], slices: base.slices, codemapAutoEnabled: base.codemapAutoEnabled)
-        }
-        let selectedFileLookup = EditFlowPerf.begin(EditFlowPerf.Stage.ReadFile.AutoSelect.selectedFileLookup)
-        let resolved = await store.lookupFiles(atPaths: base.selectedPaths, rootScope: rootScope)
-        EditFlowPerf.end(EditFlowPerf.Stage.ReadFile.AutoSelect.selectedFileLookup, selectedFileLookup)
-        let selected = base.selectedPaths.compactMap { resolved[$0] }
-        guard !selected.isEmpty else {
-            return StoredSelection(selectedPaths: base.selectedPaths, autoCodemapPaths: [], slices: base.slices, codemapAutoEnabled: base.codemapAutoEnabled)
-        }
-        let codemapAPILoad = EditFlowPerf.begin(EditFlowPerf.Stage.ReadFile.AutoSelect.codemapAPILoad)
-        let aggregate = await store.codemapFileAPIAggregate(rootScope: rootScope)
-        EditFlowPerf.end(EditFlowPerf.Stage.ReadFile.AutoSelect.codemapAPILoad, codemapAPILoad)
-        guard !aggregate.orderedFileAPIs.isEmpty else {
-            return StoredSelection(selectedPaths: base.selectedPaths, autoCodemapPaths: [], slices: base.slices, codemapAutoEnabled: base.codemapAutoEnabled)
-        }
-        let referencedPathResolution = EditFlowPerf.begin(EditFlowPerf.Stage.ReadFile.AutoSelect.referencedPathResolution)
-        let referenced = CodeMapExtractor.resolveReferencedFilePaths(
-            from: selected,
-            among: aggregate.orderedFileAPIs,
-            firstFileAPIByStandardizedNestedPath: aggregate.firstFileAPIByStandardizedNestedPath
-        )
-        EditFlowPerf.end(EditFlowPerf.Stage.ReadFile.AutoSelect.referencedPathResolution, referencedPathResolution)
-        return StoredSelection(selectedPaths: base.selectedPaths, autoCodemapPaths: referenced, slices: base.slices, codemapAutoEnabled: base.codemapAutoEnabled)
+        base
     }
 
     private func orderedInputs(_ paths: [String]) -> [String] {

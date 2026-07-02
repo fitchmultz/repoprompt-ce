@@ -229,51 +229,35 @@ private extension WorkspaceCodemapPresentationCoordinator {
                 logicalRootDisplayNamesByRootID: logicalRootDisplayNamesByRootID
             )
         case let .automatic(sourceFileIDs):
-            let targetFileIDs = await automaticTargetFileIDs(
+            let hasSources = await automaticHasSources(
                 sourceFileIDs: sourceFileIDs,
                 rootScope: rootScope
             )
+            let automaticCoverage: WorkspaceCodemapAutomaticSelectionAggregateCoverage = hasSources
+                ? .pending([])
+                : .unavailable(.noReadySources)
             return try await makeExactPresentation(
-                fileIDs: targetFileIDs,
+                fileIDs: [],
                 completeRootSet: false,
-                automaticIssue: nil,
+                automaticIssue: .automatic(automaticCoverage),
                 rootScope: rootScope,
                 logicalRootDisplayNamesByRootID: logicalRootDisplayNamesByRootID
             )
         }
     }
 
-    func automaticTargetFileIDs(
+    func automaticHasSources(
         sourceFileIDs: [UUID],
         rootScope: WorkspaceLookupRootScope
-    ) async -> [UUID] {
-        guard !sourceFileIDs.isEmpty else { return [] }
-        let roots = await store.rootRefs(scope: rootScope)
-        var filesByID: [UUID: WorkspaceFileRecord] = [:]
-        var fileIDsByFullPath: [String: UUID] = [:]
-        for root in roots {
-            for file in await store.files(inRoot: root.id) {
-                filesByID[file.id] = file
-                fileIDsByFullPath[file.standardizedFullPath] = file.id
+    ) async -> Bool {
+        guard !sourceFileIDs.isEmpty else { return false }
+        let sourceIDSet = Set(sourceFileIDs)
+        for root in await store.rootRefs(scope: rootScope) {
+            if await store.files(inRoot: root.id).contains(where: { sourceIDSet.contains($0.id) }) {
+                return true
             }
         }
-        let sourceFiles = sourceFileIDs.compactMap { filesByID[$0] }
-        guard !sourceFiles.isEmpty else { return [] }
-        let aggregate = await store.codemapFileAPIAggregate(rootScope: rootScope)
-        let paths = CodeMapExtractor.resolveReferencedFilePaths(
-            from: sourceFiles,
-            among: aggregate.orderedFileAPIs,
-            firstFileAPIByStandardizedNestedPath: aggregate.firstFileAPIByStandardizedNestedPath
-        )
-        var seen = Set<UUID>()
-        var ordered: [UUID] = []
-        for path in paths {
-            guard let fileID = fileIDsByFullPath[StandardizedPath.absolute(path)],
-                  seen.insert(fileID).inserted
-            else { continue }
-            ordered.append(fileID)
-        }
-        return ordered
+        return false
     }
 
     func makeExactPresentation(

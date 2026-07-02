@@ -2,6 +2,41 @@
 import XCTest
 
 final class WorkspaceSelectionAutoCodemapInvariantTests: XCTestCase {
+    func testStoredSelectionPersistsManualCodemapPathsAndWritesEmptyLegacyAlias() throws {
+        let selection = StoredSelection(
+            selectedPaths: ["/tmp/Selected.swift"],
+            manualCodemapPaths: ["/tmp/Manual.swift"],
+            slices: [:],
+            codemapAutoEnabled: false
+        )
+
+        let data = try JSONEncoder().encode(selection)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(object["manualCodemapPaths"] as? [String], ["/tmp/Manual.swift"])
+        XCTAssertEqual(object["autoCodemapPaths"] as? [String], [])
+
+        let decoded = try JSONDecoder().decode(StoredSelection.self, from: data)
+        XCTAssertEqual(decoded.manualCodemapPaths, ["/tmp/Manual.swift"])
+        XCTAssertEqual(decoded.autoCodemapPaths, ["/tmp/Manual.swift"])
+    }
+
+    func testStoredSelectionIgnoresLegacyAutoCodemapPathsOnDecode() throws {
+        let legacy = """
+        {
+          "selectedPaths": ["/tmp/Selected.swift"],
+          "autoCodemapPaths": ["/tmp/Legacy.swift"],
+          "slices": {},
+          "codemapAutoEnabled": false
+        }
+        """.data(using: .utf8)!
+
+        let decoded = try JSONDecoder().decode(StoredSelection.self, from: legacy)
+        XCTAssertEqual(decoded.selectedPaths, ["/tmp/Selected.swift"])
+        XCTAssertTrue(decoded.manualCodemapPaths.isEmpty)
+        XCTAssertTrue(decoded.autoCodemapPaths.isEmpty)
+        XCTAssertFalse(decoded.codemapAutoEnabled)
+    }
+
     func testAutoCodemapInvariantAcrossSelectionMutations() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("WorkspaceSelectionAutoCodemapInvariantTests", isDirectory: true)
@@ -44,7 +79,8 @@ final class WorkspaceSelectionAutoCodemapInvariantTests: XCTestCase {
             mode: "full"
         ).selection
         XCTAssertEqual(fullSelection.selectedPaths, [selectedA.path])
-        XCTAssertEqual(fullSelection.autoCodemapPaths, [target.path])
+        XCTAssertTrue(fullSelection.manualCodemapPaths.isEmpty)
+        XCTAssertTrue(fullSelection.autoCodemapPaths.isEmpty)
         XCTAssertTrue(fullSelection.codemapAutoEnabled)
 
         let slicedSelection = await service.mutateSlices(
@@ -58,17 +94,26 @@ final class WorkspaceSelectionAutoCodemapInvariantTests: XCTestCase {
             mode: .add
         ).selection
         XCTAssertEqual(slicedSelection.selectedPaths, [selectedA.path])
-        XCTAssertEqual(slicedSelection.autoCodemapPaths, [target.path])
+        XCTAssertTrue(slicedSelection.manualCodemapPaths.isEmpty)
+        XCTAssertTrue(slicedSelection.autoCodemapPaths.isEmpty)
         XCTAssertEqual(slicedSelection.slices[selectedA.path], [LineRange(start: 1, end: 1)])
         XCTAssertTrue(slicedSelection.codemapAutoEnabled)
 
-        let manualSelection = await service.removePaths(
+        let explicitManualSelection = await service.demotePaths(
             existing: fullSelection,
+            paths: [target.path],
+            rawPaths: [target.path]
+        ).selection
+        XCTAssertEqual(explicitManualSelection.manualCodemapPaths, [target.path])
+        XCTAssertFalse(explicitManualSelection.codemapAutoEnabled)
+
+        let manualSelection = await service.removePaths(
+            existing: explicitManualSelection,
             paths: [target.path],
             rawPaths: [target.path],
             mode: "codemap_only"
         ).selection
-        XCTAssertTrue(manualSelection.autoCodemapPaths.isEmpty)
+        XCTAssertTrue(manualSelection.manualCodemapPaths.isEmpty)
         XCTAssertFalse(manualSelection.codemapAutoEnabled)
 
         let manualAfterAdd = await service.addPaths(
@@ -78,7 +123,7 @@ final class WorkspaceSelectionAutoCodemapInvariantTests: XCTestCase {
             mode: "full"
         ).selection
         XCTAssertEqual(manualAfterAdd.selectedPaths, [selectedA.path, selectedB.path])
-        XCTAssertTrue(manualAfterAdd.autoCodemapPaths.isEmpty)
+        XCTAssertTrue(manualAfterAdd.manualCodemapPaths.isEmpty)
         XCTAssertFalse(manualAfterAdd.codemapAutoEnabled)
 
         let destructiveReplacement = await service.buildManageSelectionSet(
@@ -87,7 +132,7 @@ final class WorkspaceSelectionAutoCodemapInvariantTests: XCTestCase {
             existing: manualAfterAdd
         ).selection
         XCTAssertEqual(destructiveReplacement.selectedPaths, [selectedB.path])
-        XCTAssertTrue(destructiveReplacement.autoCodemapPaths.isEmpty)
+        XCTAssertTrue(destructiveReplacement.manualCodemapPaths.isEmpty)
         XCTAssertFalse(destructiveReplacement.codemapAutoEnabled)
 
         let ordinaryRemoval = await service.removePaths(
@@ -96,7 +141,7 @@ final class WorkspaceSelectionAutoCodemapInvariantTests: XCTestCase {
             rawPaths: [selectedA.path]
         ).selection
         XCTAssertTrue(ordinaryRemoval.selectedPaths.isEmpty)
-        XCTAssertTrue(ordinaryRemoval.autoCodemapPaths.isEmpty)
+        XCTAssertTrue(ordinaryRemoval.manualCodemapPaths.isEmpty)
         XCTAssertTrue(ordinaryRemoval.codemapAutoEnabled)
     }
 
@@ -162,13 +207,14 @@ final class WorkspaceSelectionAutoCodemapInvariantTests: XCTestCase {
             StoredSelection(selectedPaths: [selected.path]),
             rootScope: scopeA
         )
-        XCTAssertEqual(selectedOnly.autoCodemapPaths, [selectedDependency.path])
-        XCTAssertEqual(Set(selectedOnly.autoCodemapPaths).count, selectedOnly.autoCodemapPaths.count)
+        XCTAssertTrue(selectedOnly.manualCodemapPaths.isEmpty)
+        XCTAssertTrue(selectedOnly.autoCodemapPaths.isEmpty)
 
         let dependencyAlreadySelected = await service.recomputeAutoCodemaps(
             StoredSelection(selectedPaths: [selected.path, selectedDependency.path]),
             rootScope: scopeA
         )
+        XCTAssertTrue(dependencyAlreadySelected.manualCodemapPaths.isEmpty)
         XCTAssertTrue(dependencyAlreadySelected.autoCodemapPaths.isEmpty)
     }
 
@@ -213,16 +259,16 @@ final class WorkspaceSelectionAutoCodemapInvariantTests: XCTestCase {
             rawPaths: [selected.path],
             mode: "full"
         )
-        XCTAssertTrue(refreshedByAdd.mutated)
-        XCTAssertEqual(refreshedByAdd.selection.autoCodemapPaths, [target.path])
+        XCTAssertFalse(refreshedByAdd.mutated)
+        XCTAssertTrue(refreshedByAdd.selection.manualCodemapPaths.isEmpty)
 
         let refreshedByRemove = await service.removePaths(
             existing: stale,
             paths: [unrelated.path],
             rawPaths: [unrelated.path]
         )
-        XCTAssertTrue(refreshedByRemove.mutated)
-        XCTAssertEqual(refreshedByRemove.selection.autoCodemapPaths, [target.path])
+        XCTAssertFalse(refreshedByRemove.mutated)
+        XCTAssertTrue(refreshedByRemove.selection.manualCodemapPaths.isEmpty)
 
         let alreadyFreshAdd = await service.addPaths(
             existing: refreshedByAdd.selection,

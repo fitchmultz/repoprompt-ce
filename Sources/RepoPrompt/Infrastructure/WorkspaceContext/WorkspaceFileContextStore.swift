@@ -177,6 +177,8 @@ actor WorkspaceFileContextStore {
         var setupDisposition: ModernCodemapSetupDisposition?
         var demandsByFileID: [UUID: ModernCodemapDemandRecord] = [:]
         var bundlesByRequestID: [UUID: WorkspaceCodemapLiveOverlayBundle] = [:]
+        var markerReadinessByFileID: [UUID: WorkspaceCodemapMarkerReadinessChange] = [:]
+        var markerReadinessRevision: UInt64 = 0
     }
 
     private struct DetachedModernCodemapSession: @unchecked Sendable {
@@ -1306,6 +1308,8 @@ actor WorkspaceFileContextStore {
     private var cachedCodemapFileAPIAggregatesByScope: [WorkspaceLookupRootScope: WorkspaceCodemapFileAPIAggregate] = [:]
     private var codemapUpdateContinuations: [UUID: AsyncStream<WorkspaceCodemapUpdateEvent>.Continuation] = [:]
     private var codemapScanProgressContinuations: [UUID: AsyncStream<(Int, Int)>.Continuation] = [:]
+    private var codemapSelectionGraphReadinessContinuations: [UUID: AsyncStream<WorkspaceCodemapSelectionGraphReadinessEvent>.Continuation] = [:]
+    private var codemapMarkerReadinessContinuations: [UUID: AsyncStream<WorkspaceCodemapMarkerReadinessEvent>.Continuation] = [:]
     #if DEBUG
         private var codemapScanWillStartHandlerForTesting: (@Sendable (UUID) async -> Void)?
     #endif
@@ -1425,6 +1429,12 @@ actor WorkspaceFileContextStore {
             cancellable.cancel()
         }
         for continuation in codemapUpdateContinuations.values {
+            continuation.finish()
+        }
+        for continuation in codemapSelectionGraphReadinessContinuations.values {
+            continuation.finish()
+        }
+        for continuation in codemapMarkerReadinessContinuations.values {
             continuation.finish()
         }
         for continuation in fileSystemDeltaContinuations.values {
@@ -4353,6 +4363,26 @@ actor WorkspaceFileContextStore {
         }
     }
 
+    func codemapSelectionGraphReadinessUpdates() -> AsyncStream<WorkspaceCodemapSelectionGraphReadinessEvent> {
+        let id = UUID()
+        return AsyncStream { continuation in
+            codemapSelectionGraphReadinessContinuations[id] = continuation
+            continuation.onTermination = { _ in
+                Task { await self.removeCodemapSelectionGraphReadinessContinuation(id) }
+            }
+        }
+    }
+
+    func codemapMarkerReadinessUpdates() -> AsyncStream<WorkspaceCodemapMarkerReadinessEvent> {
+        let id = UUID()
+        return AsyncStream { continuation in
+            codemapMarkerReadinessContinuations[id] = continuation
+            continuation.onTermination = { _ in
+                Task { await self.removeCodemapMarkerReadinessContinuation(id) }
+            }
+        }
+    }
+
     func cancelAllCodemapScans() async {
         pendingCodemapRepairFileIDs.removeAll()
         let flights = detachModernCodemapSessionsAndReturnFlights(
@@ -4441,6 +4471,14 @@ actor WorkspaceFileContextStore {
 
     private func removeCodemapScanProgressContinuation(_ id: UUID) {
         codemapScanProgressContinuations.removeValue(forKey: id)
+    }
+
+    private func removeCodemapSelectionGraphReadinessContinuation(_ id: UUID) {
+        codemapSelectionGraphReadinessContinuations.removeValue(forKey: id)
+    }
+
+    private func removeCodemapMarkerReadinessContinuation(_ id: UUID) {
+        codemapMarkerReadinessContinuations.removeValue(forKey: id)
     }
 
     private func codemapScanProgressSnapshot() -> (Int, Int) {
@@ -5849,6 +5887,15 @@ actor WorkspaceFileContextStore {
                     relativePath: relativePath,
                     authority: authority
                 )
+            } readProjectionCatalogPage: {
+                _ in .unavailable(.catalogUnavailable)
+            } revalidateProjectionCatalogToken: {
+                _, _ in .unavailable(.catalogUnavailable)
+            } publishProjection: {
+                _ in .superseded
+            } publishMarkerReadiness: { [weak self] update in
+                guard let self else { return false }
+                return await acceptCodemapMarkerReadinessUpdate(update, authority: authority)
             }
         )
         let registry = runtime.bindingIntegrationRegistry
@@ -6081,6 +6128,7 @@ actor WorkspaceFileContextStore {
             )),
             ticket: ticket
         )
+        yieldCodemapSelectionGraphReadiness(rootEpoch: ticket.rootEpoch)
     }
 
     private func publishModernCodemapSetupDisposition(
@@ -9206,6 +9254,69 @@ actor WorkspaceFileContextStore {
         for continuation in codemapUpdateContinuations.values {
             continuation.yield(event)
         }
+    }
+
+    private func yieldCodemapSelectionGraphReadiness(rootEpoch: WorkspaceCodemapRootEpoch) {
+        let event = WorkspaceCodemapSelectionGraphReadinessEvent(rootEpoch: rootEpoch)
+        for continuation in codemapSelectionGraphReadinessContinuations.values {
+            continuation.yield(event)
+        }
+    }
+
+    private func acceptCodemapMarkerReadinessUpdate(
+        _ update: WorkspaceCodemapMarkerReadinessUpdate,
+        authority: ModernCodemapRootAuthority
+    ) -> Bool {
+        guard update.rootEpoch == authority.rootEpoch,
+              modernCodemapAuthorityIsCurrent(authority),
+              var session = modernCodemapSessionsByRootEpoch[authority.rootEpoch],
+              session.authority == authority
+        else { return false }
+
+        var appliedChanges: [WorkspaceCodemapMarkerReadinessChange] = []
+        for change in update.changes {
+            guard change.standardizedRelativePath == StandardizedPath.relative(change.standardizedRelativePath),
+                  !change.standardizedRelativePath.isEmpty,
+                  let state = rootStatesByID[authority.rootEpoch.rootID],
+                  state.fileIDsByRelativePath[change.standardizedRelativePath] == change.fileID,
+                  let file = filesByID[change.fileID],
+                  file.rootID == authority.rootEpoch.rootID,
+                  file.standardizedRelativePath == change.standardizedRelativePath,
+                  change.requestGeneration == authority.ingressGeneration,
+                  change.pathGeneration == authority.ingressGeneration
+            else { continue }
+
+            switch change.state {
+            case .ready:
+                guard session.markerReadinessByFileID[change.fileID] != change else { continue }
+                session.markerReadinessByFileID[change.fileID] = change
+                appliedChanges.append(change)
+            case .unavailable:
+                guard let removed = session.markerReadinessByFileID.removeValue(forKey: change.fileID) else {
+                    continue
+                }
+                appliedChanges.append(WorkspaceCodemapMarkerReadinessChange(
+                    fileID: removed.fileID,
+                    standardizedRelativePath: removed.standardizedRelativePath,
+                    requestGeneration: change.requestGeneration,
+                    pathGeneration: change.pathGeneration,
+                    state: .unavailable
+                ))
+            }
+        }
+
+        guard !appliedChanges.isEmpty else { return true }
+        session.markerReadinessRevision &+= 1
+        let event = WorkspaceCodemapMarkerReadinessEvent(
+            rootEpoch: authority.rootEpoch,
+            revision: session.markerReadinessRevision,
+            changes: appliedChanges
+        )
+        modernCodemapSessionsByRootEpoch[authority.rootEpoch] = session
+        for continuation in codemapMarkerReadinessContinuations.values {
+            continuation.yield(event)
+        }
+        return true
     }
 
     private func isRootLifetimeCurrent(rootID: UUID, expectedLifetimeID: UUID?) -> Bool {

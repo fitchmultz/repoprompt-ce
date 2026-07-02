@@ -14,13 +14,15 @@ final class WorkspaceFilesAutoCodemapModeTests: XCTestCase {
         do {
             let fixture = makeFixture(fileName: "Present.swift")
             fixture.viewModel.setFileAsCodemap(fixture.file)
-            fixture.viewModel.codemapAutoEnabled = true
+            XCTAssertTrue(fixture.viewModel.isManualCodemapFile(fixture.file))
 
             fixture.viewModel.removeCodemapFile(fixture.file)
 
             XCTAssertFalse(fixture.viewModel.codemapAutoEnabled)
             XCTAssertTrue(fixture.viewModel.autoCodemapFiles.isEmpty)
+            XCTAssertTrue(fixture.viewModel.manualCodemapFiles.isEmpty)
             XCTAssertFalse(fixture.viewModel.isAutoCodemapFile(fixture.file))
+            XCTAssertFalse(fixture.viewModel.isManualCodemapFile(fixture.file))
         }
 
         do {
@@ -60,12 +62,13 @@ final class WorkspaceFilesAutoCodemapModeTests: XCTestCase {
             let fixture = makeFixture(fileName: "Clear.swift")
             fixture.viewModel.setFileAsCodemap(fixture.file)
             XCTAssertFalse(fixture.viewModel.codemapAutoEnabled)
-            XCTAssertEqual(fixture.viewModel.autoCodemapFiles.map(\.id), [fixture.file.id])
+            XCTAssertEqual(fixture.viewModel.manualCodemapFiles.map(\.id), [fixture.file.id])
 
             await fixture.viewModel.clearSelection()
 
             XCTAssertTrue(fixture.viewModel.selectedFiles.isEmpty)
             XCTAssertTrue(fixture.viewModel.autoCodemapFiles.isEmpty)
+            XCTAssertTrue(fixture.viewModel.manualCodemapFiles.isEmpty)
             XCTAssertTrue(fixture.viewModel.codemapAutoEnabled)
         }
     }
@@ -138,8 +141,8 @@ final class WorkspaceFilesAutoCodemapModeTests: XCTestCase {
             await manager.flushAutoCodemapSyncNowIfNeeded()
 
             let automatic = manager.snapshotSelection()
-            XCTAssertEqual(automatic.autoCodemapPaths, [visibleDependency.standardizedFullPath])
-            XCTAssertFalse(automatic.autoCodemapPaths.contains(hiddenDependency.standardizedFullPath))
+            XCTAssertFalse(manager.autoCodemapFiles.map(\.standardizedFullPath).contains(hiddenDependency.standardizedFullPath))
+            XCTAssertTrue(automatic.manualCodemapPaths.isEmpty)
             XCTAssertEqual(automatic.slices[selected.standardizedFullPath], [slice])
             XCTAssertTrue(automatic.codemapAutoEnabled)
 
@@ -148,7 +151,8 @@ final class WorkspaceFilesAutoCodemapModeTests: XCTestCase {
             await manager.flushAutoCodemapSyncNowIfNeeded()
             let manualAfterFlush = manager.snapshotSelection()
             XCTAssertFalse(manualAfterFlush.codemapAutoEnabled)
-            XCTAssertEqual(manualAfterFlush.autoCodemapPaths, manualBeforeFlush.autoCodemapPaths)
+            XCTAssertEqual(manualAfterFlush.manualCodemapPaths, [visibleDependency.standardizedFullPath])
+            XCTAssertEqual(manualAfterFlush.manualCodemapPaths, manualBeforeFlush.manualCodemapPaths)
             XCTAssertEqual(manualAfterFlush.slices, manualBeforeFlush.slices)
 
             await manager.unloadAllRootFolders()
