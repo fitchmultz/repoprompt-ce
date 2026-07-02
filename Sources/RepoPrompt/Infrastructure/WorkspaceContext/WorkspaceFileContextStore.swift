@@ -7208,18 +7208,22 @@ actor WorkspaceFileContextStore {
     func repairCodemapArtifacts(
         for files: [WorkspaceFileRecord],
         timeout: Duration = .seconds(5),
-        pollInterval: Duration = .milliseconds(25)
+        pollInterval: Duration = .milliseconds(25),
+        missingLimit: Int? = nil
     ) async throws -> WorkspaceCodemapRepairResult {
         try Task.checkCancellation()
 
         var seenFileIDs = Set<UUID>()
-        let missingFiles = files.filter { file in
+        let limit = missingLimit.map { max(0, $0) }
+        var missingFiles: [WorkspaceFileRecord] = []
+        for file in files {
+            guard limit.map({ missingFiles.count < $0 }) ?? true else { break }
             guard seenFileIDs.insert(file.id).inserted,
                   isDiscoverableFileID(file.id),
                   filesByID[file.id] != nil,
                   codemapSnapshotsByFileID[file.id] == nil
-            else { return false }
-            return true
+            else { continue }
+            missingFiles.append(file)
         }
         guard !missingFiles.isEmpty else {
             return WorkspaceCodemapRepairResult(

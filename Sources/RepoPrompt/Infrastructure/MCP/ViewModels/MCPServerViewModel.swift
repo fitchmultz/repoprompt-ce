@@ -4632,22 +4632,16 @@ final class MCPServerViewModel: ObservableObject {
             return lhs.displayPath < rhs.displayPath
         }
 
-        let initialSnapshots = await store.codemapSnapshotDictionary()
-        try Task.checkCancellation()
         let repairLimit = min(max(0, maxResults), Self.maxCodeStructureSelfHealingFiles)
-        let repairFiles = Array(codeStructureFiles.lazy.filter { item in
-            guard initialSnapshots[item.file.id] == nil else { return false }
+        let repairFiles = codeStructureFiles.compactMap { item -> WorkspaceFileRecord? in
             let ext = (item.file.name as NSString).pathExtension
-            return SyntaxManager.isSupportedFileExtension(ext)
-        }.prefix(repairLimit).map(\.file))
-        let repairResult: WorkspaceCodemapRepairResult = if repairFiles.isEmpty {
-            WorkspaceCodemapRepairResult(
-                snapshotsByFileID: initialSnapshots,
-                pendingFileIDs: []
-            )
-        } else {
-            await store.enqueueMissingCodemapSnapshotRepairs(for: repairFiles)
+            return SyntaxManager.isSupportedFileExtension(ext) ? item.file : nil
         }
+        let repairResult = try await store.repairCodemapArtifacts(
+            for: repairFiles,
+            timeout: .zero,
+            missingLimit: repairLimit
+        )
         try Task.checkCancellation()
         let snapshots = repairResult.snapshotsByFileID
 
@@ -6052,51 +6046,6 @@ final class MCPServerViewModel: ObservableObject {
     }
 
     // MARK: - Tab workspace helpers
-
-    private func getCodeMaps(
-        for paths: [String],
-        maxResults: Int = 25,
-        lookupRootScope: WorkspaceLookupRootScope = .visibleWorkspace
-    ) async -> (maps: [String: FileAPI], omitted: Int) {
-        let store = promptVM.workspaceFileContextStore
-        let snapshots = await store.codemapSnapshotDictionary()
-        let directFiles = await store.lookupFiles(atPaths: paths, profile: .mcpRead, rootScope: lookupRootScope)
-        var results: [String: FileAPI] = [:]
-        var seenFileIDs = Set<UUID>()
-        var collected = 0
-        let cap = max(0, maxResults)
-        var omitted = 0
-
-        func consider(_ file: WorkspaceFileRecord) {
-            guard seenFileIDs.insert(file.id).inserted, let api = snapshots[file.id]?.fileAPI else { return }
-            if collected < cap {
-                results[file.standardizedFullPath] = api
-                collected += 1
-            } else {
-                omitted += 1
-            }
-        }
-
-        for path in paths {
-            if let file = directFiles[path] { consider(file) }
-        }
-        guard collected < cap else { return (results, omitted) }
-
-        let matchedFileInputs = Set(directFiles.keys)
-        for raw in paths where !matchedFileInputs.contains(raw) {
-            let folderResolution = await store.expandFolderInputToFiles(raw, rootScope: lookupRootScope, profile: .mcpSelection)
-            guard folderResolution.handled else { continue }
-            for file in folderResolution.files {
-                consider(file)
-            }
-        }
-
-        return (results, omitted)
-    }
-
-    func tabCodeMaps(for paths: [String], maxResults: Int = 25) async -> (maps: [String: FileAPI], omitted: Int) {
-        await getCodeMaps(for: paths, maxResults: maxResults)
-    }
 
     @MainActor
     func tabWorkspaceContextMessage(forOperation op: String? = nil, path: String? = nil) async -> String {
