@@ -59,7 +59,6 @@ struct PromptContextAccountingResult {
     let missingPaths: [String]
     let invalidPaths: [String]
     let codemapPresentation: WorkspaceCodemapOperationPresentation
-    let codemapSnapshotBundle: WorkspaceCodemapSnapshotBundle
     let codemapFileIDsUsed: Set<UUID>
 }
 
@@ -150,24 +149,8 @@ actor PromptContextAccountingService {
     func calculatePromptStats(
         request: PromptContextAccountingRequest,
         store: WorkspaceFileContextStore,
-        codemapSnapshotBundle frozenCodemaps: WorkspaceCodemapSnapshotBundle?,
-        codemapDisplayPathResolver: ((ResolvedPromptFileEntry) -> String?)? = nil
-    ) async -> PromptContextAccountingResult {
-        await calculatePromptStats(
-            request: request,
-            store: store,
-            codemapPresentation: frozenCodemaps.map(WorkspaceCodemapOperationPresentation.legacyCompatibility(from:)),
-            codemapDisplayPathResolver: codemapDisplayPathResolver,
-            compatibilityCodemapSnapshotBundle: frozenCodemaps
-        )
-    }
-
-    func calculatePromptStats(
-        request: PromptContextAccountingRequest,
-        store: WorkspaceFileContextStore,
         codemapPresentation frozenPresentation: WorkspaceCodemapOperationPresentation? = nil,
-        codemapDisplayPathResolver: ((ResolvedPromptFileEntry) -> String?)? = nil,
-        compatibilityCodemapSnapshotBundle frozenSnapshotBundle: WorkspaceCodemapSnapshotBundle? = nil
+        codemapDisplayPathResolver: ((ResolvedPromptFileEntry) -> String?)? = nil
     ) async -> PromptContextAccountingResult {
         #if DEBUG
             let calculateStartMS = PromptTokenRecountDiagnostics.start()
@@ -184,11 +167,6 @@ actor PromptContextAccountingService {
             frozenPresentation
         } else {
             await resolveCodemapPresentation(request: request, store: store, logicalRootDisplayNamesByRootID: [:])
-        }
-        let codemapSnapshotBundle = if let frozenSnapshotBundle {
-            frozenSnapshotBundle
-        } else {
-            await store.codemapSnapshotBundle(rootScope: request.rootScope)
         }
         let codemapEntries = codemapPresentation.renderedEntriesByFileID
         #if DEBUG
@@ -282,28 +260,7 @@ actor PromptContextAccountingService {
             missingPaths: resolution.missingPaths,
             invalidPaths: resolution.invalidPaths,
             codemapPresentation: codemapPresentation,
-            codemapSnapshotBundle: codemapSnapshotBundle,
             codemapFileIDsUsed: usedCodemaps
-        )
-    }
-
-    func resolveEntries(
-        selection: StoredSelection,
-        store: WorkspaceFileContextStore,
-        rootScope: WorkspaceLookupRootScope = .allLoaded,
-        profile: PathLocateProfile = .uiAssisted,
-        codeMapUsage: CodeMapUsage = .auto,
-        codemapSnapshotBundle frozenCodemaps: WorkspaceCodemapSnapshotBundle?,
-        contentPolicy: PromptContextAccountingContentPolicy = .loadContent
-    ) async -> PromptContextEntryResolution {
-        await resolveEntries(
-            selection: selection,
-            store: store,
-            rootScope: rootScope,
-            profile: profile,
-            codeMapUsage: codeMapUsage,
-            codemapPresentation: frozenCodemaps.map(WorkspaceCodemapOperationPresentation.legacyCompatibility(from:)) ?? .empty,
-            contentPolicy: contentPolicy
         )
     }
 
@@ -880,20 +837,6 @@ actor PromptContextAccountingService {
             )
         #endif
         return PromptContextEntryResolution(entries: entries, missingPaths: uniqueMissingPaths, invalidPaths: uniqueInvalidPaths, codemapPresentation: codemapPresentation)
-    }
-
-    func makePromptFileEntrySnapshots(
-        from entries: [ResolvedPromptFileEntry],
-        codemapSnapshotBundle: WorkspaceCodemapSnapshotBundle,
-        filePathDisplay: FilePathDisplay = .relative,
-        displayPathResolver: ((ResolvedPromptFileEntry) -> String?)? = nil
-    ) -> [PromptFileEntrySnapshot] {
-        makePromptFileEntrySnapshots(
-            from: entries,
-            codemapPresentation: WorkspaceCodemapOperationPresentation.legacyCompatibility(from: codemapSnapshotBundle),
-            filePathDisplay: filePathDisplay,
-            displayPathResolver: displayPathResolver
-        )
     }
 
     func makePromptFileEntrySnapshots(

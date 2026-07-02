@@ -287,16 +287,6 @@ enum PromptPackagingService {
     static func generateFileContents(
         _ files: [ResolvedPromptFileEntry],
         filePathDisplay: FilePathDisplay = .full,
-        codemapSnapshotBundle: WorkspaceCodemapSnapshotBundle,
-        displayPathResolver: ((ResolvedPromptFileEntry) -> String?)? = nil
-    ) -> [String] {
-        let (_, contentBlocks) = generatePartitionedFileBlocks(files, filePathDisplay: filePathDisplay, codemapSnapshotBundle: codemapSnapshotBundle, displayPathResolver: displayPathResolver)
-        return contentBlocks
-    }
-
-    static func generateFileContents(
-        _ files: [ResolvedPromptFileEntry],
-        filePathDisplay: FilePathDisplay = .full,
         codemapPresentation: WorkspaceCodemapOperationPresentation,
         displayPathResolver: ((ResolvedPromptFileEntry) -> String?)? = nil
     ) -> [String] {
@@ -313,29 +303,6 @@ enum PromptPackagingService {
             .filter { !$0.isEmpty }
             .joined(separator: "\n\n")
         return combined.isEmpty ? nil : combined
-    }
-
-    static func generatePartitionedFileBlocks(
-        _ files: [ResolvedPromptFileEntry],
-        filePathDisplay: FilePathDisplay,
-        codemapSnapshotBundle: WorkspaceCodemapSnapshotBundle,
-        displayPathResolver: ((ResolvedPromptFileEntry) -> String?)? = nil
-    ) -> (codemapBlocks: [String], contentBlocks: [String]) {
-        let (_, codeEntries) = partitionPromptEntriesForGitDiff(files)
-        let detailed = generateFileBlocksDetailed(files: codeEntries, filePathDisplay: filePathDisplay, codemapSnapshotBundle: codemapSnapshotBundle, displayPathResolver: displayPathResolver)
-        var codemapBlocks: [String] = []
-        var contentBlocks: [String] = []
-
-        for record in detailed {
-            if record.text.isEmpty { continue }
-            if record.isCodemap {
-                codemapBlocks.append(record.text)
-            } else {
-                contentBlocks.append(record.text)
-            }
-        }
-
-        return (codemapBlocks, contentBlocks)
     }
 
     static func generatePartitionedFileBlocks(
@@ -359,44 +326,6 @@ enum PromptPackagingService {
         }
 
         return (codemapBlocks, contentBlocks)
-    }
-
-    static func generateFileBlocksDetailed(
-        files: [ResolvedPromptFileEntry],
-        filePathDisplay: FilePathDisplay,
-        codemapSnapshotBundle: WorkspaceCodemapSnapshotBundle,
-        displayPathResolver: ((ResolvedPromptFileEntry) -> String?)? = nil
-    ) -> [ResolvedPromptFileBlockRecord] {
-        var blocks: [ResolvedPromptFileBlockRecord] = []
-        guard !files.isEmpty else { return blocks }
-
-        let hasMultipleRoots = Set(files.map(\.file.rootID)).count > 1
-
-        for entry in files {
-            let file = entry.file
-            let selectedPath = displayPathResolver?(entry)
-                ?? selectedPath(for: entry, filePathDisplay: filePathDisplay, hasMultipleRoots: hasMultipleRoots)
-
-            if entry.isCodemap {
-                if let rendered = codemapSnapshotBundle.renderedCodemap(for: file, displayPath: selectedPath) {
-                    blocks.append(ResolvedPromptFileBlockRecord(entry: entry, file: file, text: rendered.text, isCodemap: true))
-                }
-                continue
-            }
-
-            guard let content = entry.loadedContent else { continue }
-            let startFence = codeFenceStart(for: file.name)
-            let text: String
-            if let ranges = entry.lineRanges, !ranges.isEmpty {
-                let assembly = SliceAssemblyBuilder.build(from: content, ranges: ranges)
-                text = renderFileBlock(selectedPath: selectedPath, startFence: startFence, content: content, assembly: assembly)
-            } else {
-                text = renderFullFileBlock(selectedPath: selectedPath, startFence: startFence, content: content)
-            }
-            blocks.append(ResolvedPromptFileBlockRecord(entry: entry, file: file, text: text, isCodemap: false))
-        }
-
-        return blocks
     }
 
     static func generateFileBlocksDetailed(
@@ -721,44 +650,6 @@ enum PromptPackagingService {
         // NEW: Prepend title block if provided and not generic
         let prefix = Self.titleSnippet(for: tabTitle) ?? ""
         return prefix + clipboardContent
-    }
-
-    static func generateClipboardContent(
-        metaInstructions: [MetaInstruction],
-        userInstructions: String,
-        files: [ResolvedPromptFileEntry],
-        fileTreeContent: String?,
-        gitDiff: String? = nil,
-        includeSavedPrompts: Bool,
-        includeFiles: Bool,
-        includeUserPrompt: Bool,
-        filePathDisplay: FilePathDisplay,
-        codemapSnapshotBundle: WorkspaceCodemapSnapshotBundle,
-        includeDatetimeInUserInstructions: Bool = false,
-        promptSectionsOrder: [PromptSection],
-        disabledPromptSections: Set<PromptSection>,
-        duplicateUserInstructionsAtTop: Bool,
-        tabTitle: String? = nil,
-        displayPathResolver: ((ResolvedPromptFileEntry) -> String?)? = nil
-    ) async -> String {
-        await generateClipboardContent(
-            metaInstructions: metaInstructions,
-            userInstructions: userInstructions,
-            files: files,
-            fileTreeContent: fileTreeContent,
-            gitDiff: gitDiff,
-            includeSavedPrompts: includeSavedPrompts,
-            includeFiles: includeFiles,
-            includeUserPrompt: includeUserPrompt,
-            filePathDisplay: filePathDisplay,
-            codemapPresentation: WorkspaceCodemapOperationPresentation.legacyCompatibility(from: codemapSnapshotBundle),
-            includeDatetimeInUserInstructions: includeDatetimeInUserInstructions,
-            promptSectionsOrder: promptSectionsOrder,
-            disabledPromptSections: disabledPromptSections,
-            duplicateUserInstructionsAtTop: duplicateUserInstructionsAtTop,
-            tabTitle: tabTitle,
-            displayPathResolver: displayPathResolver
-        )
     }
 
     static func generateClipboardContent(

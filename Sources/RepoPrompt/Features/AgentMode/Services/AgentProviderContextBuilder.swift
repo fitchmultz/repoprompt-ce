@@ -53,8 +53,7 @@ enum AgentProviderContextBuilder {
             request: request,
             store: store,
             codemapPresentation: frozenCodemapPresentation,
-            codemapDisplayPathResolver: displayPathResolver,
-            compatibilityCodemapSnapshotBundle: .empty
+            codemapDisplayPathResolver: displayPathResolver
         )
         let entries = accounting.resolvedEntries
         let selectionTokens = accounting.tokenResult.totalTokenCountFilesOnly
