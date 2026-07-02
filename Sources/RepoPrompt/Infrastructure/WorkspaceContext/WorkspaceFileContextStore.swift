@@ -15,8 +15,8 @@ private extension CodeMapArtifactBuildPriority {
 }
 
 struct WorkspaceCodemapMemoryCounters {
-    let compatibilitySnapshotCount: Int
-    let compatibilitySnapshotRootCount: Int
+    let codemapSnapshotCount: Int
+    let codemapSnapshotRootCount: Int
     let modernSessionCount: Int
     let modernDemandCount: Int
     let retainedDemandCount: Int
@@ -82,17 +82,19 @@ struct WorkspaceFileTreeSnapshotRequest {
     }
 }
 
-struct WorkspaceObservedCodemapResult: @unchecked Sendable {
-    let fullPath: String
-    let modificationDate: Date
-    let fileAPI: FileAPI?
+#if DEBUG
+    struct WorkspaceObservedCodemapResult: @unchecked Sendable {
+        let fullPath: String
+        let modificationDate: Date
+        let fileAPI: FileAPI?
 
-    init(fullPath: String, modificationDate: Date, fileAPI: FileAPI?) {
-        self.fullPath = StandardizedPath.absolute(fullPath)
-        self.modificationDate = modificationDate
-        self.fileAPI = fileAPI
+        init(fullPath: String, modificationDate: Date, fileAPI: FileAPI?) {
+            self.fullPath = StandardizedPath.absolute(fullPath)
+            self.modificationDate = modificationDate
+            self.fileAPI = fileAPI
+        }
     }
-}
+#endif
 
 enum WorkspaceFileCatalogMaterializationResult: Equatable {
     case materialized(WorkspaceFileRecord)
@@ -3855,12 +3857,6 @@ actor WorkspaceFileContextStore {
         return await state.service.takePendingIgnoreRulesChange() != nil
     }
 
-    func allCodemapSnapshots() -> [WorkspaceCodemapSnapshot] {
-        codemapSnapshotsByFileID.values
-            .filter { isDiscoverableFileID($0.fileID) }
-            .sorted { $0.fullPath < $1.fullPath }
-    }
-
     private func codemapSnapshotsByID(rootScope: WorkspaceLookupRootScope = .allLoaded) -> [UUID: WorkspaceCodemapSnapshot] {
         let allowedRootIDs = Set(rootsForPathLookup(scope: rootScope).map(\.id))
         return Dictionary(uniqueKeysWithValues: codemapSnapshotsByFileID.values.compactMap { snapshot in
@@ -3919,24 +3915,26 @@ actor WorkspaceFileContextStore {
         }
     #endif
 
-    func codemapSnapshots(inRoot rootID: UUID) -> [WorkspaceCodemapSnapshot] {
-        guard let fileIDs = codemapFileIDsByRootID[rootID] else { return [] }
-        return fileIDs
-            .filter(isDiscoverableFileID)
-            .compactMap { codemapSnapshotsByFileID[$0] }
-            .sorted { $0.relativePath < $1.relativePath }
-    }
+    #if DEBUG
+        func codemapSnapshots(inRoot rootID: UUID) -> [WorkspaceCodemapSnapshot] {
+            guard let fileIDs = codemapFileIDsByRootID[rootID] else { return [] }
+            return fileIDs
+                .filter(isDiscoverableFileID)
+                .compactMap { codemapSnapshotsByFileID[$0] }
+                .sorted { $0.relativePath < $1.relativePath }
+        }
 
-    func codemapSnapshot(fileID: UUID) -> WorkspaceCodemapSnapshot? {
-        guard isDiscoverableFileID(fileID) else { return nil }
-        return codemapSnapshotsByFileID[fileID]
-    }
+        func codemapSnapshot(fileID: UUID) -> WorkspaceCodemapSnapshot? {
+            guard isDiscoverableFileID(fileID) else { return nil }
+            return codemapSnapshotsByFileID[fileID]
+        }
 
-    func codemapSnapshot(rootID: UUID, relativePath: String) -> WorkspaceCodemapSnapshot? {
-        guard let file = file(rootID: rootID, relativePath: relativePath), isDiscoverableFileID(file.id) else { return nil }
-        return codemapSnapshotsByFileID[file.id]
-    }
+        func codemapSnapshot(rootID: UUID, relativePath: String) -> WorkspaceCodemapSnapshot? {
+            guard let file = file(rootID: rootID, relativePath: relativePath), isDiscoverableFileID(file.id) else { return nil }
+            return codemapSnapshotsByFileID[file.id]
+        }
 
+    #endif
     @discardableResult
     func invalidateCodemapSnapshotsForCheckoutMutation(rootIDs: [UUID]) -> [UUID] {
         var removedFileIDs: [UUID] = []
@@ -3946,45 +3944,47 @@ actor WorkspaceFileContextStore {
         return removedFileIDs
     }
 
-    @discardableResult
-    func applyObservedCodemapResults(_ results: [WorkspaceObservedCodemapResult]) -> [String] {
-        var snapshotsByRootID: [UUID: [WorkspaceCodemapSnapshot]] = [:]
-        var droppedPaths: [String] = []
-        for result in results {
-            guard let fileID = fileIDsByStandardizedFullPath[result.fullPath],
-                  isDiscoverableFileID(fileID),
-                  let file = filesByID[fileID],
-                  let state = rootStatesByID[file.rootID]
-            else {
-                droppedPaths.append(result.fullPath)
-                continue
+    #if DEBUG
+        @discardableResult
+        func applyObservedCodemapResults(_ results: [WorkspaceObservedCodemapResult]) -> [String] {
+            var snapshotsByRootID: [UUID: [WorkspaceCodemapSnapshot]] = [:]
+            var droppedPaths: [String] = []
+            for result in results {
+                guard let fileID = fileIDsByStandardizedFullPath[result.fullPath],
+                      isDiscoverableFileID(fileID),
+                      let file = filesByID[fileID],
+                      let state = rootStatesByID[file.rootID]
+                else {
+                    droppedPaths.append(result.fullPath)
+                    continue
+                }
+
+                let snapshot = WorkspaceCodemapSnapshot(
+                    fileID: file.id,
+                    rootID: file.rootID,
+                    rootPath: state.root.standardizedFullPath,
+                    relativePath: file.standardizedRelativePath,
+                    fullPath: file.standardizedFullPath,
+                    modificationDate: result.modificationDate,
+                    fileAPI: result.fileAPI
+                )
+                codemapSnapshotsByFileID[file.id] = snapshot
+                codemapFileIDsByRootID[file.rootID, default: []].insert(file.id)
+                snapshotsByRootID[file.rootID, default: []].append(snapshot)
             }
 
-            let snapshot = WorkspaceCodemapSnapshot(
-                fileID: file.id,
-                rootID: file.rootID,
-                rootPath: state.root.standardizedFullPath,
-                relativePath: file.standardizedRelativePath,
-                fullPath: file.standardizedFullPath,
-                modificationDate: result.modificationDate,
-                fileAPI: result.fileAPI
-            )
-            codemapSnapshotsByFileID[file.id] = snapshot
-            codemapFileIDsByRootID[file.rootID, default: []].insert(file.id)
-            snapshotsByRootID[file.rootID, default: []].append(snapshot)
+            for (rootID, snapshots) in snapshotsByRootID {
+                guard let root = rootStatesByID[rootID]?.root else { continue }
+                yieldCodemapUpdate(WorkspaceCodemapUpdateEvent(
+                    rootID: rootID,
+                    rootPath: root.standardizedFullPath,
+                    snapshots: snapshots.sorted { $0.relativePath < $1.relativePath }
+                ))
+            }
+            return Array(Set(droppedPaths)).sorted()
         }
 
-        for (rootID, snapshots) in snapshotsByRootID {
-            guard let root = rootStatesByID[rootID]?.root else { continue }
-            yieldCodemapUpdate(WorkspaceCodemapUpdateEvent(
-                rootID: rootID,
-                rootPath: root.standardizedFullPath,
-                snapshots: snapshots.sorted { $0.relativePath < $1.relativePath }
-            ))
-        }
-        return Array(Set(droppedPaths)).sorted()
-    }
-
+    #endif
     @discardableResult
     func reconcileLoadedRootCatalogWithDisk(rootID: UUID) async -> [FileSystemDelta] {
         guard let state = rootStatesByID[rootID] else { return [] }
@@ -4440,8 +4440,8 @@ actor WorkspaceFileContextStore {
                 return false
             })
             return WorkspaceCodemapMemoryCounters(
-                compatibilitySnapshotCount: codemapSnapshotsByFileID.count,
-                compatibilitySnapshotRootCount: codemapFileIDsByRootID.count,
+                codemapSnapshotCount: codemapSnapshotsByFileID.count,
+                codemapSnapshotRootCount: codemapFileIDsByRootID.count,
                 modernSessionCount: sessions.count,
                 modernDemandCount: records.count,
                 retainedDemandCount: records.reduce(0) { $0 + $1.retainIDs.count },
@@ -6572,7 +6572,7 @@ actor WorkspaceFileContextStore {
         modernCodemapSessionsByRootEpoch[ticket.rootEpoch] = session
         switch result {
         case let .ready(ready):
-            publishModernCodemapCompatibilitySnapshot(ready)
+            publishModernCodemapSnapshot(ready)
             releaseInternalModernCodemapRetain(ticket)
         case .unavailable:
             releaseInternalModernCodemapRetain(ticket)
@@ -6659,7 +6659,7 @@ actor WorkspaceFileContextStore {
         ))
     }
 
-    private func publishModernCodemapCompatibilitySnapshot(
+    private func publishModernCodemapSnapshot(
         _ ready: WorkspaceCodemapArtifactDemandReady
     ) {
         guard let file = filesByID[ready.ticket.fileID],
@@ -7385,7 +7385,7 @@ actor WorkspaceFileContextStore {
             switch demand.result {
             case let .ready(ready):
                 submittedFileIDs.insert(file.id)
-                publishModernCodemapCompatibilitySnapshot(ready)
+                publishModernCodemapSnapshot(ready)
                 releaseInternalModernCodemapRetain(ready.ticket)
             case let .pending(ticket):
                 submittedFileIDs.insert(file.id)

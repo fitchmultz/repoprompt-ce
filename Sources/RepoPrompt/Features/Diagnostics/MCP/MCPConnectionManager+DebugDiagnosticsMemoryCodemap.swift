@@ -166,8 +166,8 @@ import MCP
 
         private static func debugEmptyCodemapMemoryCounters() -> WorkspaceCodemapMemoryCounters {
             WorkspaceCodemapMemoryCounters(
-                compatibilitySnapshotCount: 0,
-                compatibilitySnapshotRootCount: 0,
+                codemapSnapshotCount: 0,
+                codemapSnapshotRootCount: 0,
                 modernSessionCount: 0,
                 modernDemandCount: 0,
                 retainedDemandCount: 0,
@@ -185,8 +185,8 @@ import MCP
             _ rhs: WorkspaceCodemapMemoryCounters
         ) -> WorkspaceCodemapMemoryCounters {
             WorkspaceCodemapMemoryCounters(
-                compatibilitySnapshotCount: lhs.compatibilitySnapshotCount + rhs.compatibilitySnapshotCount,
-                compatibilitySnapshotRootCount: lhs.compatibilitySnapshotRootCount + rhs.compatibilitySnapshotRootCount,
+                codemapSnapshotCount: lhs.codemapSnapshotCount + rhs.codemapSnapshotCount,
+                codemapSnapshotRootCount: lhs.codemapSnapshotRootCount + rhs.codemapSnapshotRootCount,
                 modernSessionCount: lhs.modernSessionCount + rhs.modernSessionCount,
                 modernDemandCount: lhs.modernDemandCount + rhs.modernDemandCount,
                 retainedDemandCount: lhs.retainedDemandCount + rhs.retainedDemandCount,
@@ -201,8 +201,8 @@ import MCP
 
         private static func debugCodemapCountersDictionary(_ counters: WorkspaceCodemapMemoryCounters) -> [String: Any] {
             [
-                "compatibility_snapshots": counters.compatibilitySnapshotCount,
-                "compatibility_snapshot_roots": counters.compatibilitySnapshotRootCount,
+                "codemap_snapshots": counters.codemapSnapshotCount,
+                "codemap_snapshot_roots": counters.codemapSnapshotRootCount,
                 "modern_sessions": counters.modernSessionCount,
                 "modern_demands": counters.modernDemandCount,
                 "retained_demands": counters.retainedDemandCount,
