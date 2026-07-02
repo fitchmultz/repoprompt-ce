@@ -138,47 +138,4 @@ struct WorkspaceCodemapOperationPresentation: Equatable {
             publicationReceipt: nil
         )
     }
-
-    static func legacyCompatibility(from bundle: WorkspaceCodemapSnapshotBundle) -> WorkspaceCodemapOperationPresentation {
-        let zeroDigest = try! CodeMapSHA256Digest(bytes: Data(repeating: 0, count: CodeMapSHA256Digest.byteCount))
-        let pipeline = try! CodeMapPipelineIdentity(
-            languageID: .swift,
-            decoderPolicy: .workspaceAutomaticV1,
-            grammarRevision: String(repeating: "0", count: 40),
-            treeSitterABIVersion: 14,
-            codeMapQuerySHA256: zeroDigest,
-            extractorVersion: CodeMapSemanticVersion(major: 1, minor: 0, patch: 0),
-            generatorVersion: CodeMapSemanticVersion(major: 1, minor: 0, patch: 0),
-            artifactSchemaVersion: 1,
-            oversizeParsePolicyVersion: 1,
-            limits: CodeMapPipelineIdentity.requiredLimitNames.map { CodeMapPipelineNamedLimit(name: $0, value: 0) },
-            flags: CodeMapPipelineIdentity.requiredFlagNames.map { CodeMapPipelineNamedFlag(name: $0, enabled: false) }
-        )
-        let key = CodeMapArtifactKey(rawSHA256: CodeMapRawSourceDigest(bytes: zeroDigest.bytes), rawByteCount: 0, pipelineIdentity: pipeline)
-        let entries = bundle.orderedSnapshots.compactMap { snapshot -> WorkspaceCodemapOperationRenderedEntry? in
-            guard let api = snapshot.fileAPI else { return nil }
-            let rootName = (StandardizedPath.absolute(snapshot.rootPath) as NSString).lastPathComponent
-            guard let logicalPath = WorkspaceCodemapLogicalPresentationPath(
-                rootDisplayName: rootName.isEmpty ? "Root" : rootName,
-                standardizedRelativePath: StandardizedPath.relative(snapshot.relativePath)
-            ) else { return nil }
-            let text = api.getFullAPIDescription(displayPath: snapshot.relativePath)
-            guard !text.isEmpty else { return nil }
-            return WorkspaceCodemapOperationRenderedEntry(
-                bundleID: WorkspaceCodemapFrozenPresentationBundleID(),
-                fileID: snapshot.fileID,
-                rootEpoch: WorkspaceCodemapRootEpoch(rootID: snapshot.rootID, rootLifetimeID: snapshot.rootID),
-                artifactKey: key,
-                logicalPath: logicalPath,
-                text: text,
-                tokenCount: TokenCalculationService.estimateTokens(for: text)
-            )
-        }
-        return WorkspaceCodemapOperationPresentation(
-            orderedEntries: entries,
-            coverage: .complete,
-            issues: [],
-            publicationReceipt: nil
-        )
-    }
 }

@@ -275,9 +275,7 @@ class WorkspaceFileContextStoreTestCase: XCTestCase {
             slices: [:],
             codemapAutoEnabled: false
         )
-        let codemapPresentation = await WorkspaceCodemapOperationPresentation.legacyCompatibility(
-            from: store.codemapSnapshotBundle()
-        )
+        let codemapPresentation = await store.codemapPresentationForTesting()
         let resolution = await service.resolveEntries(
             selection: selection,
             store: store,

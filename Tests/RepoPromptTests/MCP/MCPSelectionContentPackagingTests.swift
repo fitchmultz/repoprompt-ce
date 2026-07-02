@@ -127,10 +127,9 @@ final class MCPSelectionContentPackagingTests: XCTestCase {
             autoCodemapPaths: [codemapURL.path],
             codemapAutoEnabled: true
         )
-        let frozenBundle = await window.workspaceFileContextStore.codemapSnapshotBundle(
+        let frozenPresentation = await window.workspaceFileContextStore.codemapPresentationForTesting(
             rootScope: .visibleWorkspace
         )
-        let frozenPresentation = WorkspaceCodemapOperationPresentation.legacyCompatibility(from: frozenBundle)
         let source = MCPServerViewModel.StoredSelectionSource(
             stored: selection,
             codeMapUsage: .auto

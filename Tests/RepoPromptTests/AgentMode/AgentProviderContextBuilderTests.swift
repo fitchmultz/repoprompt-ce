@@ -69,9 +69,7 @@ final class AgentProviderContextBuilderTests: XCTestCase {
                 fileAPI: makeFileAPI(path: worktreeCodemapURL.path, symbolName: "branchOnlyCodemapSymbol")
             )
         ])
-        let codemapPresentation = await WorkspaceCodemapOperationPresentation.legacyCompatibility(
-            from: fixture.store.codemapSnapshotBundle(rootScope: lookupContext.rootScope)
-        )
+        let codemapPresentation = await fixture.store.codemapPresentationForTesting(rootScope: lookupContext.rootScope)
 
         let block = await AgentProviderContextBuilder.forkFileContentsBlock(
             selection: StoredSelection(
@@ -117,9 +115,7 @@ final class AgentProviderContextBuilderTests: XCTestCase {
         )
         let rendered = api.getFullAPIDescription(displayPath: "Sources/BranchOnly.swift")
         let renderedTokens = TokenCalculationService.estimateTokens(for: rendered)
-        let codemapPresentation = await WorkspaceCodemapOperationPresentation.legacyCompatibility(
-            from: fixture.store.codemapSnapshotBundle(rootScope: lookupContext.rootScope)
-        )
+        let codemapPresentation = await fixture.store.codemapPresentationForTesting(rootScope: lookupContext.rootScope)
 
         let atCap = await AgentProviderContextBuilder.forkFileContentsBlock(
             selection: selection,

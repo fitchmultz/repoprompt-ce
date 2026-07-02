@@ -62,9 +62,7 @@ final class AgentContextExportResolverTests: XCTestCase {
             let store = WorkspaceFileContextStore()
             _ = try await store.loadRoot(path: root.path)
             await store.applyObservedCodemapResults(observed)
-            let codemapPresentation = await WorkspaceCodemapOperationPresentation.legacyCompatibility(
-                from: store.codemapSnapshotBundle()
-            )
+            let codemapPresentation = await store.codemapPresentationForTesting()
             let source = AgentContextExportSource(
                 tabID: UUID(),
                 promptText: "Review",

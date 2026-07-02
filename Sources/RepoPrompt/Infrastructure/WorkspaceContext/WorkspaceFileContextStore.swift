@@ -3861,12 +3861,6 @@ actor WorkspaceFileContextStore {
             .sorted { $0.fullPath < $1.fullPath }
     }
 
-    func codemapSnapshotBundle(
-        rootScope: WorkspaceLookupRootScope = .allLoaded
-    ) -> WorkspaceCodemapSnapshotBundle {
-        WorkspaceCodemapSnapshotBundle(snapshots: Array(codemapSnapshotsByID(rootScope: rootScope).values))
-    }
-
     private func codemapSnapshotsByID(rootScope: WorkspaceLookupRootScope = .allLoaded) -> [UUID: WorkspaceCodemapSnapshot] {
         let allowedRootIDs = Set(rootsForPathLookup(scope: rootScope).map(\.id))
         return Dictionary(uniqueKeysWithValues: codemapSnapshotsByFileID.values.compactMap { snapshot in
@@ -3874,6 +3868,56 @@ actor WorkspaceFileContextStore {
             return (snapshot.fileID, snapshot)
         })
     }
+
+    #if DEBUG
+        func codemapPresentationForTesting(
+            rootScope: WorkspaceLookupRootScope = .allLoaded
+        ) -> WorkspaceCodemapOperationPresentation {
+            let zeroDigest = try! CodeMapSHA256Digest(bytes: Data(repeating: 0, count: CodeMapSHA256Digest.byteCount))
+            let pipeline = try! CodeMapPipelineIdentity(
+                languageID: .swift,
+                decoderPolicy: .workspaceAutomaticV1,
+                grammarRevision: String(repeating: "0", count: 40),
+                treeSitterABIVersion: 14,
+                codeMapQuerySHA256: zeroDigest,
+                extractorVersion: CodeMapSemanticVersion(major: 1, minor: 0, patch: 0),
+                generatorVersion: CodeMapSemanticVersion(major: 1, minor: 0, patch: 0),
+                artifactSchemaVersion: 1,
+                oversizeParsePolicyVersion: 1,
+                limits: CodeMapPipelineIdentity.requiredLimitNames.map { CodeMapPipelineNamedLimit(name: $0, value: 0) },
+                flags: CodeMapPipelineIdentity.requiredFlagNames.map { CodeMapPipelineNamedFlag(name: $0, enabled: false) }
+            )
+            let key = CodeMapArtifactKey(rawSHA256: CodeMapRawSourceDigest(bytes: zeroDigest.bytes), rawByteCount: 0, pipelineIdentity: pipeline)
+            let entries = codemapSnapshotsByID(rootScope: rootScope).values.sorted {
+                if $0.fullPath != $1.fullPath { return $0.fullPath < $1.fullPath }
+                return $0.fileID.uuidString < $1.fileID.uuidString
+            }.compactMap { snapshot -> WorkspaceCodemapOperationRenderedEntry? in
+                guard let api = snapshot.fileAPI else { return nil }
+                let rootName = (StandardizedPath.absolute(snapshot.rootPath) as NSString).lastPathComponent
+                guard let logicalPath = WorkspaceCodemapLogicalPresentationPath(
+                    rootDisplayName: rootName.isEmpty ? "Root" : rootName,
+                    standardizedRelativePath: StandardizedPath.relative(snapshot.relativePath)
+                ) else { return nil }
+                let text = api.getFullAPIDescription(displayPath: snapshot.relativePath)
+                guard !text.isEmpty else { return nil }
+                return WorkspaceCodemapOperationRenderedEntry(
+                    bundleID: WorkspaceCodemapFrozenPresentationBundleID(),
+                    fileID: snapshot.fileID,
+                    rootEpoch: WorkspaceCodemapRootEpoch(rootID: snapshot.rootID, rootLifetimeID: snapshot.rootID),
+                    artifactKey: key,
+                    logicalPath: logicalPath,
+                    text: text,
+                    tokenCount: TokenCalculationService.estimateTokens(for: text)
+                )
+            }
+            return WorkspaceCodemapOperationPresentation(
+                orderedEntries: entries,
+                coverage: .complete,
+                issues: [],
+                publicationReceipt: nil
+            )
+        }
+    #endif
 
     func codemapSnapshots(inRoot rootID: UUID) -> [WorkspaceCodemapSnapshot] {
         guard let fileIDs = codemapFileIDsByRootID[rootID] else { return [] }
