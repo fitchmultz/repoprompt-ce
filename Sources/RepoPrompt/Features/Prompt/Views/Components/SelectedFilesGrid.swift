@@ -364,6 +364,7 @@ private struct PromptFileTagRow: View {
                 file: entry.file,
                 fileSlices: entry.ranges,
                 showCodeMap: entry.isCodemap,
+                codemapText: entry.codemap?.text,
                 showPreview: $showPopover
             )
         }
@@ -372,8 +373,7 @@ private struct PromptFileTagRow: View {
     private func copyToClipboard() {
         NSPasteboard.general.clearContents()
         if entry.isCodemap {
-            let codemap = entry.file.fileAPI?.getFullAPIDescription(displayPath: entry.file.uniqueRelativePath) ?? ""
-            NSPasteboard.general.setString(codemap, forType: .string)
+            NSPasteboard.general.setString(entry.codemap?.text ?? "", forType: .string)
         } else if let content = entry.file.cachedContent {
             NSPasteboard.general.setString(content, forType: .string)
         } else {

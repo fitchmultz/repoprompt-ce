@@ -415,13 +415,11 @@ enum PromptPackagingService {
             }
 
             if entry.isCodemap {
-                // Fallback: If codemap not available, fall through to full content
-                if let api = file.fileAPI {
-                    let description = api.getFullAPIDescription(displayPath: selectedPath)
-                    blocks.append((file, description, true))
+                if let codemapText = entry.codemap?.text, !codemapText.isEmpty {
+                    blocks.append((file, codemapText, true))
                     continue
                 }
-                // No codemap available, fall through to treat as full content entry
+                // No codemap available, fall through to treat as full content entry.
             }
 
             let startFence = codeFenceStart(for: file.name)

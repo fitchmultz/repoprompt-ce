@@ -4,7 +4,8 @@ import SwiftUI
 struct FilePreviewPopover: View {
     let file: FileViewModel
     let fileSlices: [LineRange]?
-    let showCodeMap: Bool // New parameter to indicate codemap mode
+    let showCodeMap: Bool
+    let codemapText: String?
     @Binding var showPreview: Bool
 
     @State private var previewContent: String = "Loading..."
@@ -143,7 +144,7 @@ struct FilePreviewPopover: View {
         loadingTask = Task {
             // If showing codemap, display the API description
             if showCodeMap {
-                let codeMapText = file.fileAPI?.apiDescription ?? "No codemap available for this file"
+                let codeMapText = codemapText ?? "No codemap available for this file"
                 if !Task.isCancelled {
                     await MainActor.run {
                         previewContent = codeMapText

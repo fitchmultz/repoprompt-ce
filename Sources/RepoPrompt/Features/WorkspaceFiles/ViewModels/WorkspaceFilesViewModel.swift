@@ -5827,16 +5827,6 @@ class WorkspaceFilesViewModel: ObservableObject {
         }
     }
 
-    /// Collect all files that have codemaps available
-    @MainActor
-    func collectAllFilesWithCodemaps() -> [FileViewModel] {
-        let indexedFiles = allFilesSnapshot(sorted: true)
-        if !indexedFiles.isEmpty || rootFolders.isEmpty {
-            return indexedFiles.filter { $0.fileAPI != nil }
-        }
-        return getAllFileViewModels().filter { $0.fileAPI != nil }
-    }
-
     /// 4) Helper to gather FileViewModels recursively
     private func gatherAllFileViewModels(in folder: FolderViewModel) -> [FileViewModel] {
         var visitedFolderIDs = Set<UUID>()
@@ -8946,12 +8936,6 @@ class WorkspaceFilesViewModel: ObservableObject {
         }
 
         @MainActor
-        func cachedCodeMapAPIForTesting(fullPath: String) -> FileAPI? {
-            guard let file = findFileByFullPath(StandardizedPath.absolute(fullPath)) else { return nil }
-            return validatedFileAPI(for: file)
-        }
-
-        @MainActor
         func enqueuePendingDeltasForTesting(_ deltas: [FileSystemDelta], forRootFolder folder: FolderViewModel) async {
             _ = await workspaceFileContextStore.enqueueDeferredReplayDeltas(deltas, forRootKey: folder.standardizedFullPath)
         }
@@ -9536,10 +9520,6 @@ class WorkspaceFilesViewModel: ObservableObject {
             return (files, ranges)
         }
     #endif
-
-    private func standardizedAPIFilePath(_ api: FileAPI) -> String {
-        StandardizedPath.absolute(api.filePath)
-    }
 
     @MainActor
     func hydrateSlicesForActiveTab(from tabSelection: StoredSelection) async {
@@ -11558,34 +11538,6 @@ extension WorkspaceFilesViewModel {
     }
 
     @MainActor
-    func validatedFileAPI(for file: FileViewModel) -> FileAPI? {
-        guard file.hasAcceptedCodeMap, let api = file.fileAPI else { return nil }
-        return api
-    }
-
-    @MainActor
-    func validatedCurrentFileAPIs(from apis: [FileAPI]) -> [FileAPI] {
-        guard !apis.isEmpty else { return [] }
-
-        var seen = Set<String>()
-        var validated: [FileAPI] = []
-        validated.reserveCapacity(apis.count)
-
-        for api in apis {
-            let standardized = standardizedAPIFilePath(api)
-            guard seen.insert(standardized).inserted,
-                  let file = findFileByFullPath(standardized),
-                  let attachedAPI = validatedFileAPI(for: file),
-                  standardizedAPIFilePath(attachedAPI) == standardized
-            else { continue }
-
-            validated.append(attachedAPI)
-        }
-
-        return validated
-    }
-
-    @MainActor
     private func scheduleAutoCodemapSync(readinessTriggered: Bool = false) {
         guard codemapAutoEnabled else { return }
         if readinessTriggered {
@@ -12485,9 +12437,7 @@ extension WorkspaceFilesViewModel {
                     didResolveAny = true
                 }
                 if seen.insert(file.id).inserted {
-                    if file.fileAPI == nil {
-                        filesToScan.append(file)
-                    }
+                    filesToScan.append(file)
                     setFileAsCodemap(file)
                 }
             } else {
@@ -12501,9 +12451,7 @@ extension WorkspaceFilesViewModel {
                 }
                 for file in folderResolution.files {
                     if seen.insert(file.id).inserted {
-                        if file.fileAPI == nil {
-                            filesToScan.append(file)
-                        }
+                        filesToScan.append(file)
                         setFileAsCodemap(file)
                     }
                 }

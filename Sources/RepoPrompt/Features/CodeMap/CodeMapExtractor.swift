@@ -47,27 +47,6 @@ enum CodeMapExtractor {
     private static let selectedLegend = "(* denotes selected files)"
     private static let codeMapLegend = "(+ denotes code-map available)"
 
-    /// Collect FileViewModel IDs that have an already-accepted code-map.
-    private static func collectCodeMapIDs(from roots: [FolderViewModel]) -> Set<UUID> {
-        var ids = Set<UUID>()
-        var visited = Set<UUID>()
-        var stack = roots
-        while let folder = stack.popLast() {
-            if Task.isCancelled { break }
-            if !visited.insert(folder.id).inserted { continue }
-            for child in folder.children {
-                if Task.isCancelled { break }
-                switch child {
-                case let .file(f):
-                    if f.hasAcceptedCodeMap { ids.insert(f.id) }
-                case let .folder(sub):
-                    stack.append(sub)
-                }
-            }
-        }
-        return ids
-    }
-
     // REPOMARK:SCOPE: 1 - Remove includeHidden from BuildSettings and VCCacheKey; rely on RepoPrompt visibility (top-level helpers)
     // Lightweight settings passed around during a single build
     private struct BuildSettings {
@@ -147,8 +126,7 @@ enum CodeMapExtractor {
         let m = settings.mode.lowercased()
         // Precompute selectedFolderIDs once to avoid escaping the thunk
         let selectedFolderIDsSet = fetchSelectedFolderIDs()
-        // Precompute code-map IDs once for all roots in this pass when markers are enabled.
-        let codeMapIDs = settings.showCodeMapMarkers ? collectCodeMapIDs(from: roots) : []
+        let codeMapIDs: Set<UUID> = []
 
         /// Local helper to emit only selected descendants (used when expanding beyond depth cap)
         func emitSelectedOnlyLocal(
@@ -929,8 +907,7 @@ enum CodeMapExtractor {
                     maxDepth: depthCap
                 )
                 outcome = {
-                    // Precompute code-map IDs for all effective roots in this pass when markers are enabled.
-                    let codeMapIDs = ctx.settings.showCodeMapMarkers ? collectCodeMapIDs(from: effectiveRoots) : []
+                    let codeMapIDs: Set<UUID> = []
                     for (idx, root) in effectiveRoots.enumerated() {
                         if let budget = ctx.tokenBudget, sb.estimatedTokens >= budget { return .tooLarge }
                         /// Use the same emitter as in generateFileTreeWithDepth by defining a minimal local version
@@ -1262,8 +1239,7 @@ enum CodeMapExtractor {
     ) -> (String, Bool, Bool) {
         if Task.isCancelled { return ("", false, false) }
         var usedSelectedMarker = false
-        // Precompute code-map IDs for this subtree when markers are enabled.
-        let codeMapIDs = showCodeMapMarkers ? collectCodeMapIDs(from: [rootFolder]) : []
+        let codeMapIDs: Set<UUID> = []
 
         let rootIdentity = FileTreeRenderedRootIdentity(root: rootFolder)
 

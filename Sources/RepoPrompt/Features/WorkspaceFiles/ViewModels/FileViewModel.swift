@@ -213,9 +213,6 @@ class FileViewModel: ObservableObject, Identifiable, FileSystemItemViewModel, Eq
     /// (file, isChecked)
     var onCheckStateChanged: ((FileViewModel, Bool) -> Void)?
 
-    /// Keeps track of ongoing CodeMap loading so we can cancel or await it.
-    private var codeMapLoadingTask: Task<FileAPI?, Never>?
-
     // MARK: - Single-flight gate (atomic start-or-join)
 
     private actor ContentLoadGate {
@@ -302,7 +299,6 @@ class FileViewModel: ObservableObject, Identifiable, FileSystemItemViewModel, Eq
 
     /// Cached line counts for quick UI access
     @Published private(set) var contentLineCount: Int? = nil
-    @Published private(set) var codemapLineCount: Int? = nil
 
     /// Cached syntax tokens for highlighting (loaded on demand)
     private var cachedNamedRanges: [NamedRange]?
@@ -334,8 +330,6 @@ class FileViewModel: ObservableObject, Identifiable, FileSystemItemViewModel, Eq
 
     let chunkSize = 50000
     let hierarchyLevel: Int
-    private(set) var fileAPI: FileAPI?
-    @Published private(set) var hasAcceptedCodeMap: Bool
 
     // MARK: - Preview limits
 
@@ -573,7 +567,6 @@ class FileViewModel: ObservableObject, Identifiable, FileSystemItemViewModel, Eq
         loadingState = .notLoaded
         cachedContent = nil
         cachedNamedRanges = nil
-        hasAcceptedCodeMap = false
         self.hierarchyLevel = hierarchyLevel
         self.fileSystemService = fileSystemService
         if let contentProvider {
@@ -631,7 +624,6 @@ class FileViewModel: ObservableObject, Identifiable, FileSystemItemViewModel, Eq
         loadingState = .notLoaded
         cachedContent = nil
         cachedNamedRanges = nil
-        hasAcceptedCodeMap = false
         self.hierarchyLevel = hierarchyLevel
         self.fileSystemService = fileSystemService
         if let contentProvider {
@@ -689,7 +681,6 @@ class FileViewModel: ObservableObject, Identifiable, FileSystemItemViewModel, Eq
         // Invalidate UI-visible caches (but keep cachedContent as a fallback)
         cachedNamedRanges = nil
         cachedTokenCount = nil
-        clearCodeMapState()
         lastLoadedDate = nil
         loadingState = .notLoaded
         error = nil
@@ -699,8 +690,6 @@ class FileViewModel: ObservableObject, Identifiable, FileSystemItemViewModel, Eq
 
         // Cancel ongoing work
         await contentLoadGate.cancel()
-        codeMapLoadingTask?.cancel()
-        codeMapLoadingTask = nil
         isCodeMapLoading = false
 
         // One-hop atomic snapshot update (bump version & clear freshness)
@@ -708,44 +697,6 @@ class FileViewModel: ObservableObject, Identifiable, FileSystemItemViewModel, Eq
 
         // Reposition in parent if sorted by modification date.
         parentFolder?.childDidUpdateModificationDate(self)
-    }
-
-    func acceptsCodeMap(_ codeMap: FileAPI) -> Bool {
-        StandardizedPath.absolute(codeMap.filePath) == standardizedFullPath
-    }
-
-    @MainActor
-    func setCodeMap(_ newCodeMap: FileAPI?) {
-        guard let newCodeMap else {
-            clearCodeMapState()
-            return
-        }
-
-        let isAccepted = acceptsCodeMap(newCodeMap)
-        guard isAccepted else {
-            clearCodeMapState()
-            return
-        }
-
-        if hasAcceptedCodeMap,
-           let existingAPI = fileAPI,
-           StandardizedPath.absolute(existingAPI.filePath) == StandardizedPath.absolute(newCodeMap.filePath),
-           existingAPI.apiDescription == newCodeMap.apiDescription,
-           codemapLineCount != nil
-        {
-            return
-        }
-
-        fileAPI = newCodeMap
-        hasAcceptedCodeMap = true
-        // Count lines using line-ending-aware utility (handles LF/CRLF/CR uniformly)
-        codemapLineCount = String.splitContentPreservingAllLineEndings(newCodeMap.apiDescription).count
-    }
-
-    private func clearCodeMapState() {
-        fileAPI = nil
-        hasAcceptedCodeMap = false
-        codemapLineCount = nil
     }
 
     /// Set whether this file is currently checked; calls the optional callback.
