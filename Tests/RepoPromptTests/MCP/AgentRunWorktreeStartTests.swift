@@ -1878,7 +1878,7 @@ final class AgentRunWorktreeStartTests: XCTestCase {
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: timeout)
         while clock.now < deadline {
-            if let snapshot = await store.codemapSnapshot(fileID: fileID) {
+            if let snapshot = await store.codemapSnapshotForTesting(fileID: fileID) {
                 return snapshot
             }
             try await Task.sleep(for: .milliseconds(25))

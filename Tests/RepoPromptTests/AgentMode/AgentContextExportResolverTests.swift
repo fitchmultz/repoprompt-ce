@@ -46,12 +46,12 @@ final class AgentContextExportResolverTests: XCTestCase {
             }
 
             let codemapCount = 44
-            var observed: [WorkspaceObservedCodemapResult] = []
+            var observed: [WorkspaceCodemapFixtureResult] = []
             for index in 0 ..< codemapCount {
                 let fileURL = root.appendingPathComponent("Dependency\(index).swift")
                 try write("struct Dependency\(index) {}", to: fileURL)
                 observed.append(
-                    WorkspaceObservedCodemapResult(
+                    WorkspaceCodemapFixtureResult(
                         fullPath: fileURL.path,
                         modificationDate: Date(),
                         fileAPI: makeFileAPI(path: fileURL.path, symbol: "dependency\(index)")
@@ -61,8 +61,8 @@ final class AgentContextExportResolverTests: XCTestCase {
 
             let store = WorkspaceFileContextStore()
             _ = try await store.loadRoot(path: root.path)
-            await store.applyObservedCodemapResults(observed)
-            let codemapPresentation = await store.codemapPresentationForTesting()
+            await store.applyCodemapFixturesForTesting(observed)
+            let codemapPresentation = await store.codemapPresentationFixtureForTesting()
             let source = AgentContextExportSource(
                 tabID: UUID(),
                 promptText: "Review",

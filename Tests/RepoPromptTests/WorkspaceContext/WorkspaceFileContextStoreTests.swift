@@ -264,8 +264,8 @@ class WorkspaceFileContextStoreTestCase: XCTestCase {
 
         let store = WorkspaceFileContextStore()
         _ = try await store.loadRoot(path: root.path)
-        await store.applyObservedCodemapResults([
-            WorkspaceObservedCodemapResult(fullPath: fileURL.path, modificationDate: Date(), fileAPI: makeFileAPI(path: fileURL.path))
+        await store.applyCodemapFixturesForTesting([
+            WorkspaceCodemapFixtureResult(fullPath: fileURL.path, modificationDate: Date(), fileAPI: makeFileAPI(path: fileURL.path))
         ])
 
         let service = PromptContextAccountingService()
@@ -275,7 +275,7 @@ class WorkspaceFileContextStoreTestCase: XCTestCase {
             slices: [:],
             codemapAutoEnabled: false
         )
-        let codemapPresentation = await store.codemapPresentationForTesting()
+        let codemapPresentation = await store.codemapPresentationFixtureForTesting()
         let resolution = await service.resolveEntries(
             selection: selection,
             store: store,
@@ -322,16 +322,16 @@ class WorkspaceFileContextStoreTestCase: XCTestCase {
         XCTAssertNotNil(addedFile)
 
         let existingURL = root.appendingPathComponent("Existing.swift")
-        await store.applyObservedCodemapResults([
-            WorkspaceObservedCodemapResult(fullPath: existingURL.path, modificationDate: Date(), fileAPI: makeFileAPI(path: existingURL.path))
+        await store.applyCodemapFixturesForTesting([
+            WorkspaceCodemapFixtureResult(fullPath: existingURL.path, modificationDate: Date(), fileAPI: makeFileAPI(path: existingURL.path))
         ])
-        let initialCodemap = await store.codemapSnapshot(rootID: record.id, relativePath: "Existing.swift")
+        let initialCodemap = await store.codemapSnapshotForTesting(rootID: record.id, relativePath: "Existing.swift")
         XCTAssertNotNil(initialCodemap)
         try write("new", to: existingURL)
         await store.replayObservedFileSystemDeltas(rootID: record.id, deltas: [.fileModified("Existing.swift", Date())])
         event = await events.next()
         XCTAssertEqual(event?.modifiedFileIDs.count, 1)
-        let invalidatedCodemap = await store.codemapSnapshot(rootID: record.id, relativePath: "Existing.swift")
+        let invalidatedCodemap = await store.codemapSnapshotForTesting(rootID: record.id, relativePath: "Existing.swift")
         XCTAssertNil(invalidatedCodemap)
 
         try FileManager.default.removeItem(at: root.appendingPathComponent("Added.swift"))
@@ -4024,8 +4024,8 @@ class WorkspaceFileContextStoreTestCase: XCTestCase {
             let maybeFileA = await store.file(rootID: recordA.id, relativePath: "Shared.swift")
             let fileA = try XCTUnwrap(maybeFileA)
             _ = try await store.searchContentSnapshot(for: fileA)
-            await store.applyObservedCodemapResults([
-                WorkspaceObservedCodemapResult(
+            await store.applyCodemapFixturesForTesting([
+                WorkspaceCodemapFixtureResult(
                     fullPath: fileAURL.path,
                     modificationDate: Date(),
                     fileAPI: makeFileAPI(path: fileAURL.path, symbolName: "oldStoreSymbol")
@@ -4047,7 +4047,7 @@ class WorkspaceFileContextStoreTestCase: XCTestCase {
             XCTAssertEqual(pendingAfterCanonicalEdit, 0, caseLabel)
             let editedSearch = try await store.searchContentSnapshot(for: fileA)
             XCTAssertEqual(editedSearch.content, "struct NewA {}\n", caseLabel)
-            let codemapSnapshotAfterEdit = await store.codemapSnapshot(fileID: fileA.id)
+            let codemapSnapshotAfterEdit = await store.codemapSnapshotForTesting(fileID: fileA.id)
             XCTAssertNil(codemapSnapshotAfterEdit, caseLabel)
             XCTAssertEqual(try String(contentsOf: fileBURL, encoding: .utf8), "struct OldB {}\n", caseLabel)
 
@@ -4910,17 +4910,17 @@ class WorkspaceFileContextStoreTestCase: XCTestCase {
 
         let store = WorkspaceFileContextStore()
         let record = try await store.loadRoot(path: root.path)
-        await store.applyObservedCodemapResults([
-            WorkspaceObservedCodemapResult(fullPath: fileURL.path, modificationDate: Date(), fileAPI: makeFileAPI(path: fileURL.path))
+        await store.applyCodemapFixturesForTesting([
+            WorkspaceCodemapFixtureResult(fullPath: fileURL.path, modificationDate: Date(), fileAPI: makeFileAPI(path: fileURL.path))
         ])
-        let codemapBeforeDelete = await store.codemapSnapshot(rootID: record.id, relativePath: "Deleted.swift")
+        let codemapBeforeDelete = await store.codemapSnapshotForTesting(rootID: record.id, relativePath: "Deleted.swift")
         XCTAssertNotNil(codemapBeforeDelete)
 
         try await store.deleteFile(rootID: record.id, relativePath: "Deleted.swift")
 
         let deletedFile = await store.file(rootID: record.id, relativePath: "Deleted.swift")
         XCTAssertNil(deletedFile)
-        let codemapAfterDelete = await store.codemapSnapshot(rootID: record.id, relativePath: "Deleted.swift")
+        let codemapAfterDelete = await store.codemapSnapshotForTesting(rootID: record.id, relativePath: "Deleted.swift")
         XCTAssertNil(codemapAfterDelete)
         let snapshot = await store.makeFileTreeSelectionSnapshot(
             selection: StoredSelection(selectedPaths: [fileURL.path], autoCodemapPaths: [fileURL.path], slices: [fileURL.path: [LineRange(start: 1, end: 1)]], codemapAutoEnabled: true),
@@ -5292,10 +5292,10 @@ class WorkspaceFileContextStoreTestCase: XCTestCase {
         let storeFiles = await store.files(inRoot: rootRecord.id)
         let swiftFileRecord = try XCTUnwrap(storeFiles.first { $0.standardizedRelativePath == "Sources/Nested/A.swift" })
 
-        await store.applyObservedCodemapResults([
-            WorkspaceObservedCodemapResult(fullPath: fileURL.path, modificationDate: Date(), fileAPI: makeFileAPI(path: fileURL.path))
+        await store.applyCodemapFixturesForTesting([
+            WorkspaceCodemapFixtureResult(fullPath: fileURL.path, modificationDate: Date(), fileAPI: makeFileAPI(path: fileURL.path))
         ])
-        let codemapSnapshot = await store.codemapSnapshot(rootID: rootRecord.id, relativePath: "Sources/Nested/A.swift")
+        let codemapSnapshot = await store.codemapSnapshotForTesting(rootID: rootRecord.id, relativePath: "Sources/Nested/A.swift")
         let snapshot = try XCTUnwrap(codemapSnapshot)
 
         let rootVM = try XCTUnwrap(manager.rootFolders.first)

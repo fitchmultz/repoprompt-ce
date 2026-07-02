@@ -126,10 +126,10 @@ final class WorkspaceFilesAutoCodemapModeTests: XCTestCase {
                 symbolName: "hiddenDependencySymbol",
                 className: "DependencyType"
             )
-            await store.applyObservedCodemapResults([
-                WorkspaceObservedCodemapResult(fullPath: selectedURL.path, modificationDate: Date(), fileAPI: selectedAPI),
-                WorkspaceObservedCodemapResult(fullPath: visibleDependencyURL.path, modificationDate: Date(), fileAPI: visibleAPI),
-                WorkspaceObservedCodemapResult(fullPath: hiddenDependencyURL.path, modificationDate: Date(), fileAPI: hiddenAPI)
+            await store.applyCodemapFixturesForTesting([
+                WorkspaceCodemapFixtureResult(fullPath: selectedURL.path, modificationDate: Date(), fileAPI: selectedAPI),
+                WorkspaceCodemapFixtureResult(fullPath: visibleDependencyURL.path, modificationDate: Date(), fileAPI: visibleAPI),
+                WorkspaceCodemapFixtureResult(fullPath: hiddenDependencyURL.path, modificationDate: Date(), fileAPI: hiddenAPI)
             ])
 
             manager.selectFileForTesting(selected)

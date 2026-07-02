@@ -47,7 +47,7 @@ final class MCPCodeStructureWorktreeTests: XCTestCase {
             rootScope: projection.lookupRootScope
         )
 
-        let snapshotBeforeRepair = await store.codemapSnapshot(fileID: file.id)
+        let snapshotBeforeRepair = await store.codemapSnapshotForTesting(fileID: file.id)
         XCTAssertNil(snapshotBeforeRepair)
         let pendingDTO = try await window.mcpServer.buildCodeStructureDTO(
             fromRecords: [file],
@@ -449,7 +449,7 @@ final class MCPCodeStructureWorktreeTests: XCTestCase {
         XCTAssertEqual(pendingDTO.pendingPaths, ["Sources/File1.swift"])
         XCTAssertEqual(pendingDTO.unmappedPaths, ["Sources/File2.swift", "Sources/File3.swift"])
         _ = try await waitForCodemapSnapshot(store: store, fileID: files[0].id)
-        let firstSnapshot = await store.codemapSnapshot(fileID: files[0].id)
+        let firstSnapshot = await store.codemapSnapshotForTesting(fileID: files[0].id)
         XCTAssertNotNil(firstSnapshot)
     }
 
@@ -505,7 +505,7 @@ final class MCPCodeStructureWorktreeTests: XCTestCase {
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: timeout)
         while clock.now < deadline {
-            if let snapshot = await store.codemapSnapshot(fileID: fileID) {
+            if let snapshot = await store.codemapSnapshotForTesting(fileID: fileID) {
                 return snapshot
             }
             try await Task.sleep(for: .milliseconds(25))

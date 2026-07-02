@@ -411,7 +411,7 @@ final class WorkspaceRootBindingProjectionTests: XCTestCase {
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: timeout)
         while clock.now < deadline {
-            if let snapshot = await store.codemapSnapshot(rootID: rootID, relativePath: relativePath) {
+            if let snapshot = await store.codemapSnapshotForTesting(rootID: rootID, relativePath: relativePath) {
                 return snapshot
             }
             try await Task.sleep(for: .milliseconds(25))

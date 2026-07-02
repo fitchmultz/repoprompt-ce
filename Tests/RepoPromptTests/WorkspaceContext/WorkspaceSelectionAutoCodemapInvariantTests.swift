@@ -52,18 +52,18 @@ final class WorkspaceSelectionAutoCodemapInvariantTests: XCTestCase {
 
         let store = WorkspaceFileContextStore()
         _ = try await store.loadRoot(path: root.path)
-        await store.applyObservedCodemapResults([
-            WorkspaceObservedCodemapResult(
+        await store.applyCodemapFixturesForTesting([
+            WorkspaceCodemapFixtureResult(
                 fullPath: selectedA.path,
                 modificationDate: Date(),
                 fileAPI: makeFileAPI(path: selectedA.path, symbolName: "aSymbol", referencedTypes: ["TargetType"])
             ),
-            WorkspaceObservedCodemapResult(
+            WorkspaceCodemapFixtureResult(
                 fullPath: selectedB.path,
                 modificationDate: Date(),
                 fileAPI: makeFileAPI(path: selectedB.path, symbolName: "bSymbol", referencedTypes: ["TargetType"])
             ),
-            WorkspaceObservedCodemapResult(
+            WorkspaceCodemapFixtureResult(
                 fullPath: target.path,
                 modificationDate: Date(),
                 fileAPI: makeFileAPI(path: target.path, symbolName: "targetSymbol", className: "TargetType")
@@ -163,8 +163,8 @@ final class WorkspaceSelectionAutoCodemapInvariantTests: XCTestCase {
         let store = WorkspaceFileContextStore()
         _ = try await store.loadRoot(path: worktreeA.path, kind: .sessionWorktree)
         _ = try await store.loadRoot(path: worktreeB.path, kind: .sessionWorktree)
-        await store.applyObservedCodemapResults([
-            WorkspaceObservedCodemapResult(
+        await store.applyCodemapFixturesForTesting([
+            WorkspaceCodemapFixtureResult(
                 fullPath: selected.path,
                 modificationDate: Date(),
                 fileAPI: makeFileAPI(
@@ -177,7 +177,7 @@ final class WorkspaceSelectionAutoCodemapInvariantTests: XCTestCase {
                     ]
                 )
             ),
-            WorkspaceObservedCodemapResult(
+            WorkspaceCodemapFixtureResult(
                 fullPath: selectedDependency.path,
                 modificationDate: Date(),
                 fileAPI: makeFileAPI(
@@ -187,7 +187,7 @@ final class WorkspaceSelectionAutoCodemapInvariantTests: XCTestCase {
                     additionalClassNames: ["SelectedDependencyAlias"]
                 )
             ),
-            WorkspaceObservedCodemapResult(
+            WorkspaceCodemapFixtureResult(
                 fullPath: foreignDependency.path,
                 modificationDate: Date(),
                 fileAPI: makeFileAPI(
@@ -233,8 +233,8 @@ final class WorkspaceSelectionAutoCodemapInvariantTests: XCTestCase {
 
         let store = WorkspaceFileContextStore()
         _ = try await store.loadRoot(path: root.path)
-        await store.applyObservedCodemapResults([
-            WorkspaceObservedCodemapResult(
+        await store.applyCodemapFixturesForTesting([
+            WorkspaceCodemapFixtureResult(
                 fullPath: selected.path,
                 modificationDate: Date(),
                 fileAPI: makeFileAPI(
@@ -243,7 +243,7 @@ final class WorkspaceSelectionAutoCodemapInvariantTests: XCTestCase {
                     referencedTypes: ["TargetType"]
                 )
             ),
-            WorkspaceObservedCodemapResult(
+            WorkspaceCodemapFixtureResult(
                 fullPath: target.path,
                 modificationDate: Date(),
                 fileAPI: makeFileAPI(path: target.path, symbolName: "targetSymbol", className: "TargetType")

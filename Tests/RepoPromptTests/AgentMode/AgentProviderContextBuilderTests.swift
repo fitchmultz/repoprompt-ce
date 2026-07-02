@@ -62,14 +62,14 @@ final class AgentProviderContextBuilderTests: XCTestCase {
         XCTAssertFalse(missingSnapshotBlock.contains("let branchOnly = true"), missingSnapshotBlock)
         XCTAssertFalse(missingSnapshotBlock.contains("<file_map>"), missingSnapshotBlock)
 
-        await fixture.store.applyObservedCodemapResults([
-            WorkspaceObservedCodemapResult(
+        await fixture.store.applyCodemapFixturesForTesting([
+            WorkspaceCodemapFixtureResult(
                 fullPath: worktreeCodemapURL.path,
                 modificationDate: Date(),
                 fileAPI: makeFileAPI(path: worktreeCodemapURL.path, symbolName: "branchOnlyCodemapSymbol")
             )
         ])
-        let codemapPresentation = await fixture.store.codemapPresentationForTesting(rootScope: lookupContext.rootScope)
+        let codemapPresentation = await fixture.store.codemapPresentationFixtureForTesting(rootScope: lookupContext.rootScope)
 
         let block = await AgentProviderContextBuilder.forkFileContentsBlock(
             selection: StoredSelection(
@@ -102,8 +102,8 @@ final class AgentProviderContextBuilderTests: XCTestCase {
             symbolName: "forkCapCodemapSentinel",
             imports: ["Foundation", "Combine"]
         )
-        await fixture.store.applyObservedCodemapResults([
-            WorkspaceObservedCodemapResult(
+        await fixture.store.applyCodemapFixturesForTesting([
+            WorkspaceCodemapFixtureResult(
                 fullPath: worktreeURL.path,
                 modificationDate: Date(),
                 fileAPI: api
@@ -115,7 +115,7 @@ final class AgentProviderContextBuilderTests: XCTestCase {
         )
         let rendered = api.getFullAPIDescription(displayPath: "Sources/BranchOnly.swift")
         let renderedTokens = TokenCalculationService.estimateTokens(for: rendered)
-        let codemapPresentation = await fixture.store.codemapPresentationForTesting(rootScope: lookupContext.rootScope)
+        let codemapPresentation = await fixture.store.codemapPresentationFixtureForTesting(rootScope: lookupContext.rootScope)
 
         let atCap = await AgentProviderContextBuilder.forkFileContentsBlock(
             selection: selection,
@@ -135,8 +135,8 @@ final class AgentProviderContextBuilderTests: XCTestCase {
             lookupContext: lookupContext,
             codemapPresentation: codemapPresentation,
             overTokenCapSummaryProvider: { _, _, presentation in
-                await fixture.store.applyObservedCodemapResults([
-                    WorkspaceObservedCodemapResult(
+                await fixture.store.applyCodemapFixturesForTesting([
+                    WorkspaceCodemapFixtureResult(
                         fullPath: worktreeURL.path,
                         modificationDate: Date(),
                         fileAPI: nil

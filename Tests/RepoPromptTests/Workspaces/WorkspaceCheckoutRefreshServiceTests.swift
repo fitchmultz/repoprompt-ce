@@ -2,6 +2,7 @@ import Foundation
 @testable import RepoPrompt
 import XCTest
 
+@MainActor
 final class WorkspaceCheckoutRefreshServiceTests: XCTestCase {
     private var temporaryRoots: [URL] = []
 
@@ -16,17 +17,20 @@ final class WorkspaceCheckoutRefreshServiceTests: XCTestCase {
     func testCodemapStaleSnapshotsAreRemovedBeforeFreshScanCompletes() async throws {
         let root = try makeTemporaryRoot(name: "CheckoutRefreshCodemap")
         let file = root.appendingPathComponent("Sources/App.swift")
-        try write("func branchBSymbol() {}\n", to: file)
+        try write("func branchASymbol() {}\n", to: file)
+
+        let previousCodeMapsDisabled = GlobalSettingsStore.shared.globalCodeMapsDisabled()
+        GlobalSettingsStore.shared.setCodeMapsGloballyDisabled(false, commit: false)
+        defer { GlobalSettingsStore.shared.setCodeMapsGloballyDisabled(previousCodeMapsDisabled, commit: false) }
 
         let store = makeStore()
         let record = try await store.loadRoot(path: root.path)
-        let staleAPI = makeFileAPI(path: file.path, symbolName: "branchASymbol")
-        await store.applyObservedCodemapResults([
-            WorkspaceObservedCodemapResult(fullPath: file.path, modificationDate: Date(), fileAPI: staleAPI)
-        ])
-        let snapshotBeforeRefresh = await store.codemapSnapshot(rootID: record.id, relativePath: "Sources/App.swift")
-        XCTAssertNotNil(snapshotBeforeRefresh)
+        let repairResult = try await repairCodemapArtifactsForTesting(store, paths: [file.path])
+        let resolvedFileIDBeforeRefresh = await storeFileID(in: record.id, relativePath: "Sources/App.swift", store: store)
+        let fileIDBeforeRefresh = try XCTUnwrap(resolvedFileIDBeforeRefresh)
+        XCTAssertNotNil(repairResult.snapshotsByFileID[fileIDBeforeRefresh])
 
+        try write("func branchBSymbol() {}\n", to: file)
         let service = makeService(store: store, searchService: makeSearchService())
         let result = await service.refreshAfterCheckoutMutation(rootPath: root.path)
 
@@ -35,10 +39,9 @@ final class WorkspaceCheckoutRefreshServiceTests: XCTestCase {
         XCTAssertTrue(result.didRefreshLoadedRoot)
         XCTAssertEqual(result.refreshedRootIDs, [record.id])
         XCTAssertTrue(result.removedStaleCodemapFileIDs.contains(fileID))
-        let snapshotAfterRefresh = await store.codemapSnapshot(rootID: record.id, relativePath: "Sources/App.swift")
-        XCTAssertNil(snapshotAfterRefresh)
-        let snapshots = await store.codemapSnapshots(inRoot: record.id)
-        XCTAssertFalse(snapshots.contains { snapshot in
+        let snapshotsAfterRefresh = try await currentCodemapArtifactSnapshotsForTesting(store)
+        XCTAssertNil(snapshotsAfterRefresh[fileID])
+        XCTAssertFalse(snapshotsAfterRefresh.values.contains { snapshot in
             snapshot.fileAPI?.apiDescription.contains("branchASymbol") == true
         })
     }

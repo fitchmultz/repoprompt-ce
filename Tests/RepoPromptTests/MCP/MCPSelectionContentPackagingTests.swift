@@ -65,8 +65,8 @@ final class MCPSelectionContentPackagingTests: XCTestCase {
         )
         XCTAssertTrue(failClosedBlocks.isEmpty)
 
-        await window.workspaceFileContextStore.applyObservedCodemapResults([
-            WorkspaceObservedCodemapResult(
+        await window.workspaceFileContextStore.applyCodemapFixturesForTesting([
+            WorkspaceCodemapFixtureResult(
                 fullPath: codemapURL.path,
                 modificationDate: Date(),
                 fileAPI: makeFileAPI(path: codemapURL.path, symbolName: "canonicalCodemapSymbol")
@@ -101,14 +101,19 @@ final class MCPSelectionContentPackagingTests: XCTestCase {
 
         let codemapURL = root.appendingPathComponent("Nested/Frozen.swift")
         try FileManager.default.createDirectory(at: codemapURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try "func fullContentMustNotAffectTokens() {}\n".write(to: codemapURL, atomically: true, encoding: .utf8)
+        try "func frozenReplyTokenSentinel() {}\nfunc fullContentMustNotAffectTokens() {}\n".write(to: codemapURL, atomically: true, encoding: .utf8)
 
         let previousAutoStart = GlobalSettingsStore.shared.mcpAutoStart()
+        let previousCodeMapsDisabled = GlobalSettingsStore.shared.globalCodeMapsDisabled()
         GlobalSettingsStore.shared.setMCPAutoStart(false, commit: false)
+        GlobalSettingsStore.shared.setCodeMapsGloballyDisabled(false, commit: false)
         let window = WindowState()
         WindowStatesManager.shared.registerWindowState(window)
         GlobalSettingsStore.shared.setMCPAutoStart(previousAutoStart, commit: false)
-        defer { WindowStatesManager.shared.unregisterWindowState(window) }
+        defer {
+            WindowStatesManager.shared.unregisterWindowState(window)
+            GlobalSettingsStore.shared.setCodeMapsGloballyDisabled(previousCodeMapsDisabled, commit: false)
+        }
 
         _ = try await window.workspaceFileContextStore.loadRoot(path: root.path)
         let api = makeFileAPI(
@@ -116,39 +121,36 @@ final class MCPSelectionContentPackagingTests: XCTestCase {
             symbolName: "frozenReplyTokenSentinel",
             imports: ["Foundation", "Combine"]
         )
-        await window.workspaceFileContextStore.applyObservedCodemapResults([
-            WorkspaceObservedCodemapResult(
+        await window.workspaceFileContextStore.applyCodemapFixturesForTesting([
+            WorkspaceCodemapFixtureResult(
                 fullPath: codemapURL.path,
                 modificationDate: Date(),
                 fileAPI: api
             )
         ])
-        let selection = StoredSelection(
-            autoCodemapPaths: [codemapURL.path],
-            codemapAutoEnabled: true
-        )
-        let frozenPresentation = await window.workspaceFileContextStore.codemapPresentationForTesting(
+        let frozenPresentation = await window.workspaceFileContextStore.codemapPresentationFixtureForTesting(
             rootScope: .visibleWorkspace
         )
-        let source = MCPServerViewModel.StoredSelectionSource(
-            stored: selection,
-            codeMapUsage: .auto
+        let codemapLookup = await window.workspaceFileContextStore.lookupPath(codemapURL.path)
+        let codemapRecord = try XCTUnwrap(codemapLookup?.file)
+        let codemapEntry = MCPServerViewModel.CodemapEntry(
+            entry: ResolvedPromptFileEntry(
+                file: codemapRecord,
+                isCodemap: true,
+                mode: .codemap,
+                loadedContent: nil,
+                rootFolderPath: root.path
+            ),
+            origin: .auto
         )
-        let collections = await MCPServerViewModel.SelectionReplyAssembler.collect(
-            from: source,
-            owner: window.mcpServer,
-            rootScope: .visibleWorkspace,
-            codemapPresentation: frozenPresentation,
-            contentPolicy: .cachedOnly
+        let collections = MCPServerViewModel.SelectionReplyAssembler.SelectionCollections(
+            selected: [],
+            codemap: [codemapEntry],
+            codemapAutoEnabled: true,
+            codeMapUsage: .auto,
+            invalid: [],
+            codemapPresentation: frozenPresentation
         )
-        let codemapEntry = try XCTUnwrap(collections.codemap.first)
-        await window.workspaceFileContextStore.applyObservedCodemapResults([
-            WorkspaceObservedCodemapResult(
-                fullPath: codemapURL.path,
-                modificationDate: Date(),
-                fileAPI: nil
-            )
-        ])
         let staleResult = PromptEntriesEvaluation.EntryResult(
             fileID: codemapEntry.file.id,
             renderMode: .codemap,

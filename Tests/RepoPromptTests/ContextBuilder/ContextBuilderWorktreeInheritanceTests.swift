@@ -478,7 +478,7 @@ import XCTest
             let clock = ContinuousClock()
             let deadline = clock.now.advanced(by: timeout)
             while clock.now < deadline {
-                if let snapshot = await store.codemapSnapshot(rootID: rootID, relativePath: relativePath),
+                if let snapshot = await store.codemapSnapshotForTesting(rootID: rootID, relativePath: relativePath),
                    snapshot.fileAPI?.apiDescription.contains(expectedText) == true
                 {
                     return

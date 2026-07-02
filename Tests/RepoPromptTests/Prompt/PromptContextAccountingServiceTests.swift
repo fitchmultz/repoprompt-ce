@@ -187,8 +187,8 @@ final class PromptContextAccountingServiceTests: XCTestCase {
 
         let store = WorkspaceFileContextStore()
         _ = try await store.loadRoot(path: root.path)
-        await store.applyObservedCodemapResults([
-            WorkspaceObservedCodemapResult(
+        await store.applyCodemapFixturesForTesting([
+            WorkspaceCodemapFixtureResult(
                 fullPath: fileURL.path,
                 modificationDate: Date(),
                 fileAPI: makeFileAPI(path: fileURL.path, symbolName: "legacyCacheOnlySymbol")

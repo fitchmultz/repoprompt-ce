@@ -32,8 +32,8 @@ final class PromptCanonicalCodemapPackagingTests: XCTestCase {
 
         let store = WorkspaceFileContextStore()
         _ = try await store.loadRoot(path: root.path)
-        await store.applyObservedCodemapResults([
-            WorkspaceObservedCodemapResult(
+        await store.applyCodemapFixturesForTesting([
+            WorkspaceCodemapFixtureResult(
                 fullPath: selectedURL.path,
                 modificationDate: Date(),
                 fileAPI: makeFileAPI(
@@ -42,7 +42,7 @@ final class PromptCanonicalCodemapPackagingTests: XCTestCase {
                     referencedTypes: ["TargetType"]
                 )
             ),
-            WorkspaceObservedCodemapResult(
+            WorkspaceCodemapFixtureResult(
                 fullPath: targetURL.path,
                 modificationDate: Date(),
                 fileAPI: makeFileAPI(
@@ -125,8 +125,8 @@ final class PromptCanonicalCodemapPackagingTests: XCTestCase {
             in: window,
             path: root.path
         )
-        await window.workspaceFileContextStore.applyObservedCodemapResults([
-            WorkspaceObservedCodemapResult(
+        await window.workspaceFileContextStore.applyCodemapFixturesForTesting([
+            WorkspaceCodemapFixtureResult(
                 fullPath: selectedURL.path,
                 modificationDate: Date(),
                 fileAPI: makeFileAPI(
@@ -135,7 +135,7 @@ final class PromptCanonicalCodemapPackagingTests: XCTestCase {
                     referencedTypes: ["TargetType"]
                 )
             ),
-            WorkspaceObservedCodemapResult(
+            WorkspaceCodemapFixtureResult(
                 fullPath: targetURL.path,
                 modificationDate: Date(),
                 fileAPI: makeFileAPI(
@@ -234,8 +234,8 @@ final class PromptCanonicalCodemapPackagingTests: XCTestCase {
         let store = WorkspaceFileContextStore()
         let logicalRecord = try await store.loadRoot(path: logicalRoot.path)
         let worktreeRecord = try await store.loadRoot(path: worktreeRoot.path, kind: .sessionWorktree)
-        await store.applyObservedCodemapResults([
-            WorkspaceObservedCodemapResult(
+        await store.applyCodemapFixturesForTesting([
+            WorkspaceCodemapFixtureResult(
                 fullPath: worktreeTargetURL.path,
                 modificationDate: Date(),
                 fileAPI: makeFileAPI(
