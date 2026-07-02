@@ -7205,7 +7205,7 @@ actor WorkspaceFileContextStore {
         }
     }
 
-    func repairMissingCodemapSnapshots(
+    func repairCodemapArtifacts(
         for files: [WorkspaceFileRecord],
         timeout: Duration = .seconds(5),
         pollInterval: Duration = .milliseconds(25)

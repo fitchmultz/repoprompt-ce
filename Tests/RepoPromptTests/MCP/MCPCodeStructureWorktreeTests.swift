@@ -17,7 +17,7 @@ final class MCPCodeStructureWorktreeTests: XCTestCase {
         let loadedFile = await store.file(rootID: root.id, relativePath: "App.swift")
         let file = try XCTUnwrap(loadedFile)
 
-        let repair = try await store.repairMissingCodemapSnapshots(for: [file], timeout: .seconds(6))
+        let repair = try await store.repairCodemapArtifacts(for: [file], timeout: .seconds(6))
         XCTAssertTrue(repair.pendingFileIDs.isEmpty)
         XCTAssertTrue(repair.snapshotsByFileID[file.id]?.fileAPI?.apiDescription.contains("DirectSessionWorktreeType") == true)
     }
@@ -383,7 +383,7 @@ final class MCPCodeStructureWorktreeTests: XCTestCase {
             rootScope: projection.lookupRootScope
         )
 
-        _ = try await store.repairMissingCodemapSnapshots(for: [file], timeout: .seconds(12))
+        _ = try await store.repairCodemapArtifacts(for: [file], timeout: .seconds(12))
         let primed = try await window.mcpServer.buildCodeStructureDTO(
             fromRecords: [file],
             maxResults: 10,

@@ -536,7 +536,7 @@ final class AgentRunWorktreeStartTests: XCTestCase {
             rootScope: projection.lookupRootScope
         )
         let file = try XCTUnwrap(result?.file)
-        let repair = try await window.workspaceFileContextStore.repairMissingCodemapSnapshots(
+        let repair = try await window.workspaceFileContextStore.repairCodemapArtifacts(
             for: [file],
             timeout: .seconds(6)
         )
