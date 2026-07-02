@@ -1146,7 +1146,7 @@ class PromptViewModel: ObservableObject {
         let selectionVersion: UInt64
         let slicesVersion: UInt64
         let autoCodemapVersion: UInt64
-        let fileAPIsVersion: UInt64
+        let codemapAuthorityVersion: UInt64
     }
 
     private struct ChatPresetTokenBaselineKey: Equatable {
@@ -1210,7 +1210,7 @@ class PromptViewModel: ObservableObject {
         let selectionVersion: UInt64
         let slicesVersion: UInt64
         let autoCodemapVersion: UInt64
-        let fileAPIsVersion: UInt64
+        let codemapAuthorityVersion: UInt64
         let fileSystemDeltaVersion: UInt64
     }
 
@@ -1225,11 +1225,10 @@ class PromptViewModel: ObservableObject {
     }
 
     var chatPromptEntriesCache: (key: ChatPromptEntriesCacheKey, entries: [PromptFileEntry])?
-    var chatCodemapFileAPIs: [FileAPI] = []
     var chatSelectionVersion: UInt64 = 0
     var chatSlicesVersion: UInt64 = 0
     var chatAutoCodemapVersion: UInt64 = 0
-    var chatFileAPIsVersion: UInt64 = 0
+    var chatCodemapAuthorityVersion: UInt64 = 0
     private var chatFileSystemDeltaVersion: UInt64 = 0
     private var chatContextTokenBaselineCache: ChatContextTokenBaselineCache?
 
@@ -1269,10 +1268,6 @@ class PromptViewModel: ObservableObject {
 
     var codeMapTokenCount: Int {
         tokenCountingViewModel.codeMapTokenCount
-    }
-
-    var cachedFileAPIs: [FileAPI] {
-        tokenCountingViewModel.cachedFileAPIs
     }
 
     var fileTreeContent: String {
@@ -2181,11 +2176,16 @@ class PromptViewModel: ObservableObject {
                 self?.tokenCountingViewModel.markDirty(.codeMap)
                 self?.workspaceManager?.markWorkspaceDirty()
                 self?.updateActiveTabDirtyState()
-                self?.refreshChatCodemapFileAPIsFromStore()
+                self?.bumpChatPromptEntriesCodemapAuthorityVersion()
             }
             .store(in: &cancellables)
 
-        refreshChatCodemapFileAPIsFromStore()
+        tokenCountingViewModel.tokenCalculationCompletedPublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] in
+                self?.bumpChatPromptEntriesCodemapAuthorityVersion()
+            }
+            .store(in: &cancellables)
 
         fileManager.fileSystemDeltasAppliedPublisher
             .receive(on: DispatchQueue.main)
@@ -2265,21 +2265,9 @@ class PromptViewModel: ObservableObject {
         invalidateChatPromptEntriesCache()
     }
 
-    private func bumpChatPromptEntriesFileAPIsVersion() {
-        chatFileAPIsVersion &+= 1
+    private func bumpChatPromptEntriesCodemapAuthorityVersion() {
+        chatCodemapAuthorityVersion &+= 1
         invalidateChatPromptEntriesCache()
-    }
-
-    private func refreshChatCodemapFileAPIsFromStore() {
-        Task { [weak self] in
-            guard let self else { return }
-            let apis = await workspaceFileContextStore.allCodemapFileAPIs()
-            await MainActor.run { [weak self] in
-                guard let self else { return }
-                chatCodemapFileAPIs = apis
-                bumpChatPromptEntriesFileAPIsVersion()
-            }
-        }
     }
 
     // MARK: - Compose Tab Management
@@ -4094,7 +4082,7 @@ class PromptViewModel: ObservableObject {
                 includeFiles: includeFiles,
                 includeUserPrompt: includeUserPrompt,
                 filePathDisplay: filePathDisplayOption,
-                codemapSnapshotBundle: preAssembly.codemapSnapshotBundle,
+                codemapPresentation: preAssembly.codemapPresentation,
                 includeDatetimeInUserInstructions: includeDatetime,
                 promptSectionsOrder: promptSectionsOrder,
                 disabledPromptSections: disabledPromptSections,
@@ -4920,7 +4908,7 @@ class PromptViewModel: ObservableObject {
         let partitionedBlocks = PromptPackagingService.generatePartitionedFileBlocks(
             codeEntries,
             filePathDisplay: filePathDisplay,
-            codemapSnapshotBundle: preAssembly.codemapSnapshotBundle,
+            codemapPresentation: preAssembly.codemapPresentation,
             displayPathResolver: { entry in
                 preAssembly.displayPath(for: entry)
             }
@@ -5520,7 +5508,7 @@ extension PromptViewModel {
             includeFiles: cfg.includeFiles,
             includeUserPrompt: cfg.includeUserPrompt,
             filePathDisplay: filePathDisplayOption,
-            codemapSnapshotBundle: preAssembly.codemapSnapshotBundle,
+            codemapPresentation: preAssembly.codemapPresentation,
             includeDatetimeInUserInstructions: includeDatetimeInUserInstructions,
             promptSectionsOrder: promptSectionsOrder,
             disabledPromptSections: disabledPromptSections,
@@ -5615,7 +5603,7 @@ extension PromptViewModel {
             selectionVersion: chatSelectionVersion,
             slicesVersion: chatSlicesVersion,
             autoCodemapVersion: chatAutoCodemapVersion,
-            fileAPIsVersion: chatFileAPIsVersion,
+            codemapAuthorityVersion: chatCodemapAuthorityVersion,
             fileSystemDeltaVersion: chatFileSystemDeltaVersion
         )
     }

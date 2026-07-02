@@ -158,10 +158,9 @@ extension MCPServerViewModel {
 
         func codemapTokens(
             for file: WorkspaceFileRecord,
-            displayPath: String,
-            codemapSnapshotBundle: WorkspaceCodemapSnapshotBundle
+            codemapPresentation: WorkspaceCodemapOperationPresentation
         ) -> Int {
-            codemapSnapshotBundle.renderedCodemap(for: file, displayPath: displayPath)?.tokenCount ?? 0
+            codemapPresentation.renderedEntriesByFileID[file.id]?.tokenCount ?? 0
         }
     }
 
@@ -183,7 +182,7 @@ extension MCPServerViewModel {
             let codemapAutoEnabled: Bool
             let codeMapUsage: CodeMapUsage
             let invalid: [String]
-            let codemapSnapshotBundle: WorkspaceCodemapSnapshotBundle
+            let codemapPresentation: WorkspaceCodemapOperationPresentation
 
             static func empty(codeMapUsage: CodeMapUsage) -> SelectionCollections {
                 SelectionCollections(
@@ -192,7 +191,7 @@ extension MCPServerViewModel {
                     codemapAutoEnabled: false,
                     codeMapUsage: codeMapUsage,
                     invalid: [],
-                    codemapSnapshotBundle: .empty
+                    codemapPresentation: .empty
                 )
             }
         }
@@ -213,17 +212,12 @@ extension MCPServerViewModel {
             from source: SelectionSource,
             owner: MCPServerViewModel,
             rootScope: WorkspaceLookupRootScope = .allLoaded,
-            codemapSnapshotBundle frozenCodemaps: WorkspaceCodemapSnapshotBundle? = nil,
+            codemapPresentation frozenPresentation: WorkspaceCodemapOperationPresentation? = nil,
             contentPolicy: PromptContextAccountingContentPolicy = .loadContent
         ) async -> SelectionCollections {
             let selection = await source.resolvedSelection()
             let usage = await source.currentCodeMapUsage()
             let store = await MainActor.run { owner.promptVM.workspaceFileContextStore }
-            let codemapSnapshotBundle: WorkspaceCodemapSnapshotBundle = if let frozenCodemaps {
-                frozenCodemaps
-            } else {
-                await store.codemapSnapshotBundle(rootScope: rootScope)
-            }
             let accounting = PromptContextAccountingService()
             let resolution = await accounting.resolveEntries(
                 selection: selection,
@@ -231,7 +225,7 @@ extension MCPServerViewModel {
                 rootScope: rootScope,
                 profile: .uiAssisted,
                 codeMapUsage: usage,
-                codemapSnapshotBundle: codemapSnapshotBundle,
+                codemapPresentation: frozenPresentation,
                 contentPolicy: contentPolicy
             )
 
@@ -254,7 +248,7 @@ extension MCPServerViewModel {
                 codemapAutoEnabled: selection.codemapAutoEnabled,
                 codeMapUsage: usage,
                 invalid: resolution.missingPaths + resolution.invalidPaths,
-                codemapSnapshotBundle: codemapSnapshotBundle
+                codemapPresentation: resolution.codemapPresentation
             )
         }
 
@@ -403,12 +397,11 @@ extension MCPServerViewModel {
                 // Compute copy preset projection if copy usage differs from auto
                 var copyPreset: ToolResultDTOs.SelectedFileInfo.CopyPresetProjection? = nil
                 if let copyUsage, copyUsage != .auto {
-                    let hasCodemap = collections.codemapSnapshotBundle.hasRenderableCodemap(for: file)
+                    let hasCodemap = collections.codemapPresentation.renderedEntriesByFileID[file.id] != nil
                     let codemapTokenCount = if hasCodemap {
                         tokens.codemapTokens(
                             for: file,
-                            displayPath: displayPath,
-                            codemapSnapshotBundle: collections.codemapSnapshotBundle
+                            codemapPresentation: collections.codemapPresentation
                         )
                     } else {
                         0
@@ -460,8 +453,7 @@ extension MCPServerViewModel {
                 let metadata = pathMetadata(for: file, entry: entry.entry, projection: formatter.projection)
                 let rawCodemapTokens = tokens.codemapTokens(
                     for: file,
-                    displayPath: displayPath,
-                    codemapSnapshotBundle: collections.codemapSnapshotBundle
+                    codemapPresentation: collections.codemapPresentation
                 )
                 let tokenCount = if rawCodemapTokens == 0, collections.codeMapUsage == .selected {
                     tokens.fullTokens(for: entry.entry)
@@ -631,7 +623,7 @@ extension MCPServerViewModel {
                 let generated = generateBlocks(
                     selected: collections.selected,
                     codemap: collections.codemap,
-                    codemapSnapshotBundle: collections.codemapSnapshotBundle,
+                    codemapPresentation: collections.codemapPresentation,
                     display: display,
                     projection: pathProjection
                 )
@@ -691,7 +683,7 @@ extension MCPServerViewModel {
             return PromptPackagingService.generateFileContents(
                 selected.map(\.entry),
                 filePathDisplay: display,
-                codemapSnapshotBundle: .empty,
+                codemapPresentation: .empty,
                 displayPathResolver: { entry in
                     projection?.projectedLogicalDisplayPath(forPhysicalPath: entry.file.standardizedFullPath, display: display)
                 }
@@ -701,12 +693,12 @@ extension MCPServerViewModel {
         static func generateBlocks(
             selected: [SelectedEntry],
             codemap: [CodemapEntry],
-            codemapSnapshotBundle: WorkspaceCodemapSnapshotBundle,
+            codemapPresentation: WorkspaceCodemapOperationPresentation,
             display: FilePathDisplay,
             projection: WorkspaceRootBindingProjection? = nil
         ) -> [String] {
             let renderableCodemaps = codemap.compactMap { item -> ResolvedPromptFileEntry? in
-                if item.origin == .selectedMode || codemapSnapshotBundle.hasRenderableCodemap(for: item.file) {
+                if codemapPresentation.renderedEntriesByFileID[item.file.id] != nil {
                     return item.entry
                 }
                 return nil
@@ -716,7 +708,7 @@ extension MCPServerViewModel {
             let (codemapBlocks, contentBlocks) = PromptPackagingService.generatePartitionedFileBlocks(
                 entries,
                 filePathDisplay: display,
-                codemapSnapshotBundle: codemapSnapshotBundle,
+                codemapPresentation: codemapPresentation,
                 displayPathResolver: { entry in
                     projection?.projectedLogicalDisplayPath(forPhysicalPath: entry.file.standardizedFullPath, display: display)
                 }

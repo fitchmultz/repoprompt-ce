@@ -11,7 +11,7 @@ final class PromptCanonicalCodemapPackagingTests: XCTestCase {
         try super.tearDownWithError()
     }
 
-    func testRegularChatPackagingRendersOnlyCanonicalCodemapsExactlyOnce() async throws {
+    func testRegularChatPackagingOmitsIncompleteAutomaticCodemapWithoutLegacyFallback() async throws {
         let previousCodeMapsDisabled = GlobalSettingsStore.shared.globalCodeMapsDisabled()
         GlobalSettingsStore.shared.setCodeMapsGloballyDisabled(false, commit: false)
         defer {
@@ -83,14 +83,14 @@ final class PromptCanonicalCodemapPackagingTests: XCTestCase {
         )
         let packagedContents = canonicalMessage.fileBlocks.joined(separator: "\n")
 
-        XCTAssertEqual(occurrences(of: "targetCodemapSymbol", in: canonicalMessage.fileTree), 1)
+        XCTAssertEqual(occurrences(of: "targetCodemapSymbol", in: canonicalMessage.fileTree), 0)
         XCTAssertFalse(canonicalMessage.fileTree.contains("<Referenced APIs>"))
         XCTAssertFalse(packagedContents.contains("targetCodemapSymbol"), packagedContents)
         XCTAssertEqual(occurrences(of: "selectedFullContentSentinel", in: packagedContents), 1)
         XCTAssertFalse(packagedContents.contains("targetFullContentSentinel"), packagedContents)
     }
 
-    func testCopyPackagingReadsCanonicalCodemapsFromActiveComposeTabExactlyOnce() async throws {
+    func testCopyPackagingOmitsIncompleteAutomaticCodemapWithoutLegacyFallback() async throws {
         let previousCodeMapsDisabled = GlobalSettingsStore.shared.globalCodeMapsDisabled()
         GlobalSettingsStore.shared.setCodeMapsGloballyDisabled(false, commit: false)
         defer {
@@ -183,19 +183,25 @@ final class PromptCanonicalCodemapPackagingTests: XCTestCase {
             selection: capturedSelection,
             lookupContext: window.promptManager.allLoadedWorkspaceLookupContext()
         )
-        XCTAssertEqual(preAssembly.entries.filter(\.isCodemap).map(\.file.standardizedFullPath), [targetURL.standardizedFileURL.path])
+        XCTAssertTrue(preAssembly.entries.filter(\.isCodemap).isEmpty)
+        switch preAssembly.codemapPresentation.coverage {
+        case .complete, .partial:
+            XCTFail("Cold automatic codemap coverage must remain honestly incomplete")
+        case .pending, .unavailable:
+            break
+        }
         let canonicalClipboard = await window.promptManager.buildClipboard(
             for: makeAutoConfig(),
             promptTextOverride: ""
         )
 
-        XCTAssertEqual(occurrences(of: "targetCopyAPI", in: canonicalClipboard), 1, canonicalClipboard)
+        XCTAssertEqual(occurrences(of: "targetCopyAPI", in: canonicalClipboard), 0, canonicalClipboard)
         XCTAssertEqual(occurrences(of: "selectedCopyContentSentinel", in: canonicalClipboard), 1)
         XCTAssertFalse(canonicalClipboard.contains("targetCopyBodySentinel"), canonicalClipboard)
         XCTAssertFalse(canonicalClipboard.contains("<Referenced APIs>"), canonicalClipboard)
     }
 
-    func testFrozenHeadlessPackagingPreservesSlicesAndWorktreeProjectionWithCanonicalCodemap() async throws {
+    func testHeadlessPackagingPreservesSlicesWhenAutomaticCodemapIsIncomplete() async throws {
         let previousCodeMapsDisabled = GlobalSettingsStore.shared.globalCodeMapsDisabled()
         GlobalSettingsStore.shared.setCodeMapsGloballyDisabled(false, commit: false)
         defer {
@@ -299,7 +305,7 @@ final class PromptCanonicalCodemapPackagingTests: XCTestCase {
         XCTAssertFalse(packagedContents.contains("excludedAfterSlice"), packagedContents)
         XCTAssertFalse(packagedContents.contains("canonicalFullContentSentinel"), packagedContents)
         XCTAssertFalse(packagedContents.contains(worktreeRoot.standardizedFileURL.path), packagedContents)
-        XCTAssertEqual(occurrences(of: "worktreeTargetCodemapSymbol", in: message.fileTree), 1)
+        XCTAssertEqual(occurrences(of: "worktreeTargetCodemapSymbol", in: message.fileTree), 0)
         XCTAssertFalse(message.fileTree.contains("<Referenced APIs>"), message.fileTree)
         XCTAssertFalse(message.fileTree.contains(worktreeRoot.standardizedFileURL.path), message.fileTree)
         XCTAssertFalse(packagedContents.contains("worktreeTargetCodemapSymbol"), packagedContents)

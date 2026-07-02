@@ -19,6 +19,8 @@ struct WorkspaceCodemapUIPresentationEntry: Equatable {
 }
 
 struct WorkspaceCodemapUIPresentationSnapshot: Equatable {
+    static let empty = WorkspaceCodemapUIPresentationSnapshot(.empty)
+
     let presentationID: UUID
     let orderedEntries: [WorkspaceCodemapUIPresentationEntry]
     let entriesByFileID: [UUID: WorkspaceCodemapUIPresentationEntry]

@@ -67,7 +67,7 @@ struct PromptContextPreAssemblyResult {
     let entries: [ResolvedPromptFileEntry]
     let missingPaths: [String]
     let invalidPaths: [String]
-    let codemapSnapshotBundle: WorkspaceCodemapSnapshotBundle
+    let codemapPresentation: WorkspaceCodemapOperationPresentation
     let fileTreeContent: String?
     let gitDiff: String?
     let lookupContext: WorkspaceLookupContext
@@ -83,24 +83,102 @@ struct PromptContextPreAssemblyResult {
 
 enum PromptContextPreAssemblyService {
     static func resolve(_ request: PromptContextPreAssemblyRequest) async -> PromptContextPreAssemblyResult {
+        do {
+            return try await withResolved(request) { $0 }
+        } catch {
+            let issue: WorkspaceCodemapOperationIssue = (Task.isCancelled || error is CancellationError)
+                ? .cancelled
+                : .coordinationUnavailable
+            return await buildResult(
+                request: request,
+                physicalSelection: request.lookupContext.physicalizeSelection(request.selection),
+                rootDisplayNames: logicalRootDisplayNamesByRootID(
+                    store: request.store,
+                    rootScope: request.lookupContext.rootScope
+                ),
+                codemapPresentation: WorkspaceCodemapOperationPresentation(
+                    orderedEntries: [],
+                    coverage: .unavailable([issue]),
+                    issues: [issue],
+                    publicationReceipt: nil
+                ),
+                accountingService: PromptContextAccountingService()
+            )
+        }
+    }
+
+    static func withResolved<Value>(
+        _ request: PromptContextPreAssemblyRequest,
+        accountingService: PromptContextAccountingService = PromptContextAccountingService(),
+        codemapPresentation: WorkspaceCodemapOperationPresentation? = nil,
+        presentationCoordinator: WorkspaceCodemapPresentationCoordinator? = nil,
+        operation: (PromptContextPreAssemblyResult) async throws -> Value
+    ) async throws -> Value {
         let physicalSelection = request.lookupContext.physicalizeSelection(request.selection)
-        let codemapSnapshotBundle = await request.store.codemapSnapshotBundle(
+        let rootDisplayNames = await logicalRootDisplayNamesByRootID(
+            store: request.store,
             rootScope: request.lookupContext.rootScope
         )
-        let accountingService = PromptContextAccountingService()
+        if let codemapPresentation {
+            let result = await buildResult(
+                request: request,
+                physicalSelection: physicalSelection,
+                rootDisplayNames: rootDisplayNames,
+                codemapPresentation: codemapPresentation,
+                accountingService: accountingService
+            )
+            try Task.checkCancellation()
+            return try await operation(result)
+        }
+        let plan = await WorkspaceCodemapPresentationIntentResolver.plan(
+            codeMapUsage: request.codeMapUsage,
+            selection: physicalSelection,
+            store: request.store,
+            rootScope: request.lookupContext.rootScope,
+            profile: request.entryResolutionProfile
+        )
+        let coordinator = presentationCoordinator ?? WorkspaceCodemapPresentationCoordinator(store: request.store)
+        return try await coordinator.withPresentation(
+            for: plan.intent,
+            rootScope: request.lookupContext.rootScope,
+            logicalRootDisplayNamesByRootID: rootDisplayNames
+        ) { presentation in
+            let result = await buildResult(
+                request: request,
+                physicalSelection: physicalSelection,
+                rootDisplayNames: rootDisplayNames,
+                codemapPresentation: WorkspaceCodemapPresentationIntentResolver.merging(
+                    presentation,
+                    preflightIssues: plan.preflightIssues
+                ),
+                accountingService: accountingService
+            )
+            try Task.checkCancellation()
+            return try await operation(result)
+        }
+    }
+
+    private static func buildResult(
+        request: PromptContextPreAssemblyRequest,
+        physicalSelection: StoredSelection,
+        rootDisplayNames: [UUID: String],
+        codemapPresentation: WorkspaceCodemapOperationPresentation,
+        accountingService: PromptContextAccountingService
+    ) async -> PromptContextPreAssemblyResult {
         let resolution = await accountingService.resolveEntries(
             selection: physicalSelection,
             store: request.store,
             rootScope: request.lookupContext.rootScope,
             profile: request.entryResolutionProfile,
             codeMapUsage: request.codeMapUsage,
-            codemapSnapshotBundle: codemapSnapshotBundle
+            codemapPresentation: codemapPresentation,
+            codemapLogicalRootDisplayNamesByRootID: rootDisplayNames
         )
         let fileTreeContent = await resolveFileTreeContent(
             request: request,
             physicalSelection: physicalSelection,
             entries: resolution.entries,
-            codemapSnapshotBundle: codemapSnapshotBundle
+            codemapPresentation: codemapPresentation
         )
         let gitDiff = await resolveGitDiff(request: request, physicalSelection: physicalSelection, entries: resolution.entries)
         let packagingEntries = entriesForPackaging(request: request, entries: resolution.entries)
@@ -110,7 +188,7 @@ enum PromptContextPreAssemblyService {
             entries: packagingEntries,
             missingPaths: resolution.missingPaths,
             invalidPaths: resolution.invalidPaths,
-            codemapSnapshotBundle: codemapSnapshotBundle,
+            codemapPresentation: codemapPresentation,
             fileTreeContent: fileTreeContent,
             gitDiff: gitDiff,
             lookupContext: request.lookupContext,
@@ -122,7 +200,7 @@ enum PromptContextPreAssemblyService {
         request: PromptContextPreAssemblyRequest,
         physicalSelection: StoredSelection,
         entries: [ResolvedPromptFileEntry],
-        codemapSnapshotBundle: WorkspaceCodemapSnapshotBundle
+        codemapPresentation: WorkspaceCodemapOperationPresentation
     ) async -> String? {
         guard request.cfg.rendersFileTree else { return nil }
         let hasFileTreeInputs = !physicalSelection.selectedPaths.isEmpty
@@ -141,12 +219,20 @@ enum PromptContextPreAssemblyService {
                 showCodeMapMarkers: request.showCodeMapMarkers,
                 rootScope: request.lookupContext.rootScope
             ),
-            codemapSnapshotBundle: codemapSnapshotBundle,
+            codemapPresentation: codemapPresentation,
             profile: request.entryResolutionProfile
         )
         let fileTreeSnapshot = request.lookupContext.bindingProjection?.logicalizeFileTreeSnapshot(rawFileTreeSnapshot) ?? rawFileTreeSnapshot
         let tree = CodeMapExtractor.generateFileTree(using: fileTreeSnapshot)
         return tree.isEmpty ? nil : tree
+    }
+
+    private static func logicalRootDisplayNamesByRootID(
+        store: WorkspaceFileContextStore,
+        rootScope: WorkspaceLookupRootScope
+    ) async -> [UUID: String] {
+        let roots = await store.rootRefs(scope: rootScope)
+        return Dictionary(uniqueKeysWithValues: roots.map { ($0.id, $0.name) })
     }
 
     private static func entriesForPackaging(

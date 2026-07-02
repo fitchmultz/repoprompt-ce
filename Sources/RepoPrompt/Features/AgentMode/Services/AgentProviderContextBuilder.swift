@@ -31,7 +31,7 @@ enum AgentProviderContextBuilder {
         tokenCap: Int,
         store: WorkspaceFileContextStore,
         lookupContext: WorkspaceLookupContext,
-        overTokenCapSummaryProvider: ((StoredSelection, WorkspaceLookupContext, WorkspaceCodemapSnapshotBundle) async -> String?)? = nil
+        overTokenCapSummaryProvider: ((StoredSelection, WorkspaceLookupContext, WorkspaceCodemapOperationPresentation, WorkspaceCodemapSnapshotBundle) async -> String?)? = nil
     ) async -> String {
         let physicalSelection = lookupContext.physicalizeSelection(logicalSelection)
         let accountingService = PromptContextAccountingService()
@@ -48,9 +48,12 @@ enum AgentProviderContextBuilder {
                 display: .relative
             )
         }
+        let frozenCodemaps = await store.codemapSnapshotBundle(rootScope: lookupContext.rootScope)
+        let frozenPresentation = WorkspaceCodemapOperationPresentation.legacyCompatibility(from: frozenCodemaps)
         let accounting = await accountingService.calculatePromptStats(
             request: request,
             store: store,
+            codemapSnapshotBundle: frozenCodemaps,
             codemapDisplayPathResolver: displayPathResolver
         )
         let entries = accounting.resolvedEntries
@@ -62,6 +65,7 @@ enum AgentProviderContextBuilder {
             if let summary = await overTokenCapSummaryProvider?(
                 logicalSelection,
                 lookupContext,
+                frozenPresentation,
                 codemapSnapshotBundle
             ),
                 !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty

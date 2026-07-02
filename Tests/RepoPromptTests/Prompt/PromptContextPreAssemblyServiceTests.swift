@@ -112,25 +112,15 @@ final class PromptContextPreAssemblyServiceTests: XCTestCase {
 
         let store = WorkspaceFileContextStore()
         _ = try await store.loadRoot(path: root.path)
-        await store.applyObservedCodemapResults([
-            WorkspaceObservedCodemapResult(
-                fullPath: selectedURL.path,
-                modificationDate: Date(),
-                fileAPI: makeFileAPI(
-                    path: selectedURL.path,
-                    symbolName: "selectedCodemapSymbol",
-                    referencedTypes: ["TargetType"]
-                )
-            ),
-            WorkspaceObservedCodemapResult(
-                fullPath: targetURL.path,
-                modificationDate: Date(),
-                fileAPI: makeFileAPI(
-                    path: targetURL.path,
-                    symbolName: "targetCodemapSymbol",
-                    className: "TargetType"
-                )
-            )
+        let targetLookup = await store.lookupPath(targetURL.path)
+        let target = try XCTUnwrap(targetLookup?.file)
+        let targetAPI = makeFileAPI(
+            path: targetURL.path,
+            symbolName: "targetCodemapSymbol",
+            className: "TargetType"
+        )
+        let targetPresentation = try makePresentation(entries: [
+            (target, targetAPI, "PromptPreAssemblyCanonicalCodemap/Target.swift")
         ])
         let lookupContext = WorkspaceLookupContext(rootScope: .allLoaded, bindingProjection: nil)
 
@@ -174,7 +164,10 @@ final class PromptContextPreAssemblyServiceTests: XCTestCase {
             selectedGitDiffProvider: { _ in nil },
             completeGitDiffProvider: { nil }
         )
-        let canonicalResult = await PromptContextPreAssemblyService.resolve(canonicalRequest)
+        let canonicalResult = try await PromptContextPreAssemblyService.withResolved(
+            canonicalRequest,
+            codemapPresentation: targetPresentation
+        ) { $0 }
         let clipboard = await PromptPackagingService.generateClipboardContent(
             metaInstructions: [],
             userInstructions: "",
@@ -185,7 +178,7 @@ final class PromptContextPreAssemblyServiceTests: XCTestCase {
             includeFiles: true,
             includeUserPrompt: false,
             filePathDisplay: .relative,
-            codemapSnapshotBundle: canonicalResult.codemapSnapshotBundle,
+            codemapPresentation: canonicalResult.codemapPresentation,
             promptSectionsOrder: PromptAssemblyBuilder.defaultSectionOrder,
             disabledPromptSections: [],
             duplicateUserInstructionsAtTop: false
@@ -210,15 +203,14 @@ final class PromptContextPreAssemblyServiceTests: XCTestCase {
             let rootRecord = try await store.loadRoot(path: root.path)
             let loadedFileSystemService = await store.fileSystemServiceForTesting(rootID: rootRecord.id)
             let fileSystemService = try XCTUnwrap(loadedFileSystemService)
-            await store.applyObservedCodemapResults([
-                WorkspaceObservedCodemapResult(
-                    fullPath: targetURL.path,
-                    modificationDate: Date(),
-                    fileAPI: makeFileAPI(
-                        path: targetURL.path,
-                        symbolName: "frozenCodemapSentinel"
-                    )
-                )
+            let targetLookup = await store.lookupPath(targetURL.path)
+            let target = try XCTUnwrap(targetLookup?.file)
+            let targetAPI = makeFileAPI(
+                path: targetURL.path,
+                symbolName: "frozenCodemapSentinel"
+            )
+            let presentation = try makePresentation(entries: [
+                (target, targetAPI, "PromptPreAssemblyFrozenCodemap/Target.swift")
             ])
             let gate = PreAssemblyContentReadGate()
             await fileSystemService.setContentReadChunkHandlerForTesting { _ in
@@ -248,18 +240,14 @@ final class PromptContextPreAssemblyServiceTests: XCTestCase {
                 completeGitDiffProvider: { nil }
             )
             let resolveTask = Task {
-                await PromptContextPreAssemblyService.resolve(request)
+                try await PromptContextPreAssemblyService.withResolved(
+                    request,
+                    codemapPresentation: presentation
+                ) { $0 }
             }
             await gate.waitUntilStarted()
-            await store.applyObservedCodemapResults([
-                WorkspaceObservedCodemapResult(
-                    fullPath: targetURL.path,
-                    modificationDate: Date(),
-                    fileAPI: nil
-                )
-            ])
             await gate.release()
-            let result = await resolveTask.value
+            let result = try await resolveTask.value
             await fileSystemService.setContentReadChunkHandlerForTesting(nil)
 
             let clipboard = await PromptPackagingService.generateClipboardContent(
@@ -271,7 +259,7 @@ final class PromptContextPreAssemblyServiceTests: XCTestCase {
                 includeFiles: true,
                 includeUserPrompt: false,
                 filePathDisplay: .relative,
-                codemapSnapshotBundle: result.codemapSnapshotBundle,
+                codemapPresentation: result.codemapPresentation,
                 promptSectionsOrder: PromptAssemblyBuilder.defaultSectionOrder,
                 disabledPromptSections: [],
                 duplicateUserInstructionsAtTop: false
@@ -280,13 +268,7 @@ final class PromptContextPreAssemblyServiceTests: XCTestCase {
             XCTAssertEqual(result.entries.filter(\.isCodemap).map(\.file.standardizedFullPath), [targetURL.standardizedFileURL.path])
             XCTAssertTrue(result.fileTreeContent?.contains("Target.swift +") == true, result.fileTreeContent ?? "")
             XCTAssertTrue(clipboard.contains("frozenCodemapSentinel"), clipboard)
-            XCTAssertTrue(result.codemapSnapshotBundle.orderedSnapshots.contains {
-                $0.fileAPI?.apiDescription.contains("frozenCodemapSentinel") == true
-            })
-            let currentBundle = await store.codemapSnapshotBundle()
-            XCTAssertFalse(currentBundle.orderedSnapshots.contains {
-                $0.fileAPI?.apiDescription.contains("frozenCodemapSentinel") == true
-            })
+            XCTAssertEqual(result.codemapPresentation.id, presentation.id)
         #endif
     }
 
@@ -336,7 +318,7 @@ final class PromptContextPreAssemblyServiceTests: XCTestCase {
             includeFiles: true,
             includeUserPrompt: false,
             filePathDisplay: .relative,
-            codemapSnapshotBundle: includeResult.codemapSnapshotBundle,
+            codemapPresentation: includeResult.codemapPresentation,
             promptSectionsOrder: PromptAssemblyBuilder.defaultSectionOrder,
             disabledPromptSections: [],
             duplicateUserInstructionsAtTop: false
@@ -351,7 +333,7 @@ final class PromptContextPreAssemblyServiceTests: XCTestCase {
             includeFiles: true,
             includeUserPrompt: false,
             filePathDisplay: .relative,
-            codemapSnapshotBundle: respectResult.codemapSnapshotBundle,
+            codemapPresentation: respectResult.codemapPresentation,
             promptSectionsOrder: PromptAssemblyBuilder.defaultSectionOrder,
             disabledPromptSections: [],
             duplicateUserInstructionsAtTop: false
@@ -401,6 +383,48 @@ final class PromptContextPreAssemblyServiceTests: XCTestCase {
             codeMapUsage: codeMapUsage,
             gitInclusion: gitInclusion,
             storedPromptIds: []
+        )
+    }
+
+    private func makePresentation(
+        entries: [(WorkspaceFileRecord, FileAPI, String)]
+    ) throws -> WorkspaceCodemapOperationPresentation {
+        let pipeline = try SyntaxManager().pipelineIdentity(
+            for: .swift,
+            decoderPolicy: .workspaceAutomaticV1
+        )
+        let bundleID = WorkspaceCodemapFrozenPresentationBundleID()
+        let rendered = try entries.enumerated().map { index, pair in
+            let (file, api, displayPath) = pair
+            let logicalPath = try XCTUnwrap(WorkspaceCodemapLogicalPresentationPath(
+                rootDisplayName: "LogicalRoot",
+                standardizedRelativePath: file.standardizedRelativePath
+            ))
+            let text = api.getFullAPIDescription(displayPath: displayPath)
+            return WorkspaceCodemapOperationRenderedEntry(
+                bundleID: bundleID,
+                fileID: file.id,
+                rootEpoch: WorkspaceCodemapRootEpoch(
+                    rootID: file.rootID,
+                    rootLifetimeID: UUID()
+                ),
+                artifactKey: CodeMapArtifactKey(
+                    rawSHA256: CodeMapRawSourceDigest(
+                        bytes: Data(repeating: UInt8((index % 254) + 1), count: 32)
+                    ),
+                    rawByteCount: UInt64(text.utf8.count),
+                    pipelineIdentity: pipeline
+                ),
+                logicalPath: logicalPath,
+                text: text,
+                tokenCount: TokenCalculationService.estimateTokens(for: text)
+            )
+        }
+        return WorkspaceCodemapOperationPresentation(
+            orderedEntries: rendered,
+            coverage: .complete,
+            issues: [],
+            publicationReceipt: nil
         )
     }
 

@@ -4,7 +4,7 @@ import XCTest
 
 @MainActor
 final class MCPSelectionContentPackagingTests: XCTestCase {
-    func testContentViewIncludesCanonicalCodemapBlocksExactlyOnce() async throws {
+    func testContentViewOmitsIncompleteAutomaticCodemapWithoutLegacyFallback() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("RepoPromptTests", isDirectory: true)
             .appendingPathComponent("MCPSelectionContentPackaging-\(UUID().uuidString)", isDirectory: true)
@@ -61,7 +61,7 @@ final class MCPSelectionContentPackagingTests: XCTestCase {
         let failClosedBlocks = PromptPackagingService.generateFileBlocksDetailed(
             files: [malformedCodemapEntry],
             filePathDisplay: .relative,
-            codemapSnapshotBundle: .empty
+            codemapPresentation: .empty
         )
         XCTAssertTrue(failClosedBlocks.isEmpty)
 
@@ -84,11 +84,11 @@ final class MCPSelectionContentPackagingTests: XCTestCase {
         let blocks = try XCTUnwrap(reply.blocks)
         let packaged = blocks.joined(separator: "\n")
 
-        XCTAssertEqual(reply.files?.map(\.renderMode), ["full", "codemap"])
-        XCTAssertEqual(reply.summary?.codemapCount, 1)
-        XCTAssertEqual(blocks.count, 2)
+        XCTAssertEqual(reply.files?.map(\.renderMode), ["full"])
+        XCTAssertEqual(reply.summary?.codemapCount, 0)
+        XCTAssertEqual(blocks.count, 1)
         XCTAssertEqual(packaged.components(separatedBy: "selectedContentSentinel").count - 1, 1, packaged)
-        XCTAssertEqual(packaged.components(separatedBy: "canonicalCodemapSymbol").count - 1, 1, packaged)
+        XCTAssertEqual(packaged.components(separatedBy: "canonicalCodemapSymbol").count - 1, 0, packaged)
         XCTAssertFalse(packaged.contains("canonicalFullContentSentinel"), packaged)
     }
 
@@ -130,6 +130,7 @@ final class MCPSelectionContentPackagingTests: XCTestCase {
         let frozenBundle = await window.workspaceFileContextStore.codemapSnapshotBundle(
             rootScope: .visibleWorkspace
         )
+        let frozenPresentation = WorkspaceCodemapOperationPresentation.legacyCompatibility(from: frozenBundle)
         let source = MCPServerViewModel.StoredSelectionSource(
             stored: selection,
             codeMapUsage: .auto
@@ -138,7 +139,7 @@ final class MCPSelectionContentPackagingTests: XCTestCase {
             from: source,
             owner: window.mcpServer,
             rootScope: .visibleWorkspace,
-            codemapSnapshotBundle: frozenBundle,
+            codemapPresentation: frozenPresentation,
             contentPolicy: .cachedOnly
         )
         let codemapEntry = try XCTUnwrap(collections.codemap.first)

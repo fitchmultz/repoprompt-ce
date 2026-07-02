@@ -15875,14 +15875,14 @@ final class AgentModeViewModel: ObservableObject {
             tokenCap: tokenCap,
             store: promptManager.workspaceFileContextStore,
             lookupContext: lookupContext,
-            overTokenCapSummaryProvider: { [weak self] selection, lookupContext, codemapSnapshotBundle in
+            overTokenCapSummaryProvider: { [weak self] selection, lookupContext, codemapPresentation, _ in
                 guard let self, let mcp = mcpServer else { return nil }
                 let reply = await mcp.buildTabSelectionReply(
                     from: selection,
                     includeBlocks: false,
                     display: .relative,
                     lookupContextOverride: lookupContext,
-                    codemapSnapshotBundle: codemapSnapshotBundle
+                    codemapPresentation: codemapPresentation
                 )
                 let summary = ToolOutputFormatter.formatSelectionReplyToString(reply)
                 return """

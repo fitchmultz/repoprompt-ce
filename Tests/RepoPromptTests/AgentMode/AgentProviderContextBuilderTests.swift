@@ -129,7 +129,7 @@ final class AgentProviderContextBuilderTests: XCTestCase {
             tokenCap: renderedTokens - 1,
             store: fixture.store,
             lookupContext: lookupContext,
-            overTokenCapSummaryProvider: { _, _, frozenBundle in
+            overTokenCapSummaryProvider: { _, _, _, frozenBundle in
                 await fixture.store.applyObservedCodemapResults([
                     WorkspaceObservedCodemapResult(
                         fullPath: worktreeURL.path,

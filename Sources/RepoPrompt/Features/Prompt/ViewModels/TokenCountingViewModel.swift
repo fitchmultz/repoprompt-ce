@@ -17,7 +17,7 @@ class TokenCountingViewModel: ObservableObject {
     @Published private(set) var fileTokenInfo: [UUID: TokenInfo] = [:]
     @Published private(set) var codeMapFileCount: Int = 0
     @Published private(set) var codeMapTokenCount: Int = 0
-    @Published private(set) var cachedFileAPIs: [FileAPI] = []
+    @Published private(set) var codemapPresentation: WorkspaceCodemapUIPresentationSnapshot = .empty
     @Published private(set) var fileTreeContent: String = ""
     @Published private(set) var codeMapContent: String = ""
     @Published private(set) var scannedLanguages: Set<LanguageType> = []
@@ -424,7 +424,7 @@ class TokenCountingViewModel: ObservableObject {
                 "fileTokens": "\(totalTokenCountFilesOnly)",
                 "codeMapTokens": "\(codeMapTokenCount)",
                 "fileTreeTokens": "\(lastFileTreeTokens)",
-                "cachedFileAPIs": "\(cachedFileAPIs.count)"
+                "codemapEntries": "\(codemapPresentation.orderedEntries.count)"
             ]
         }
 
@@ -571,35 +571,6 @@ class TokenCountingViewModel: ObservableObject {
 
         let store = fileManager.workspaceFileContextStore
         let effectiveCodeMapUsage = copySnapshot.codeMapUsage
-        let shouldLoadCodemapAPIs = includeFiles && hasFileSelectionInputs && effectiveCodeMapUsage != .none
-        #if DEBUG
-            let codemapAPIsStartMS = PromptTokenRecountDiagnostics.start()
-            PromptTokenRecountDiagnostics.event(
-                "tokenRecount.calculate.codemapAPIs.begin",
-                fields: ["mode": shouldLoadCodemapAPIs ? "load" : "skipped"]
-            )
-        #endif
-        let storeFileAPIs = shouldLoadCodemapAPIs ? await store.allCodemapFileAPIs() : []
-        #if DEBUG
-            PromptTokenRecountDiagnostics.event(
-                "tokenRecount.calculate.codemapAPIs.end",
-                fields: [
-                    "fileAPIs": "\(storeFileAPIs.count)",
-                    "mode": shouldLoadCodemapAPIs ? "load" : "skipped",
-                    "duration": codemapAPIsStartMS.map { PromptTokenRecountDiagnostics.formatElapsedMS(since: $0) } ?? "notMeasured"
-                ]
-            )
-        #endif
-        guard !Task.isCancelled else {
-            #if DEBUG
-                PromptTokenRecountDiagnostics.event("tokenRecount.calculate.cancelled", fields: ["phase": "codemapAPIs", "duration": calculateStartMS.map { PromptTokenRecountDiagnostics.formatElapsedMS(since: $0) } ?? "notMeasured"])
-            #endif
-            return
-        }
-
-        // Cache store-owned file APIs only when selected inputs need codemap accounting.
-        cachedFileAPIs = storeFileAPIs
-
         let accountingCodeMapUsage: CodeMapUsage = includeFiles ? effectiveCodeMapUsage : .none
         let accountingSelection = includeFiles ? selectionAtStart : StoredSelection()
 
@@ -620,37 +591,21 @@ class TokenCountingViewModel: ObservableObject {
                 ]
             )
         #endif
-        let fileTreeInput: TokenCalculationFileTreeInput
-        if includeFileTree, effectiveFileTreeOption != .none {
-            #if DEBUG
-                let fileTreeStartMS = PromptTokenRecountDiagnostics.start()
-                PromptTokenRecountDiagnostics.event("tokenRecount.calculate.fileTree.begin")
-            #endif
-            let fileTreeSnapshot = await store.makeFileTreeSelectionSnapshot(
-                selection: accountingSelection,
-                request: WorkspaceFileTreeSnapshotRequest(
-                    mode: WorkspaceFileTreeSnapshotMode(fileTreeOption: effectiveFileTreeOption),
-                    filePathDisplay: settings.filePathDisplayOption,
-                    onlyIncludeRootsWithSelectedFiles: settings.onlyIncludeRootsWithSelectedFiles,
-                    includeLegend: true,
-                    showCodeMapMarkers: !settings.codeMapsGloballyDisabled,
-                    rootScope: .allLoaded
-                ),
-                profile: .uiAssisted
+        let fileTreeSnapshotRequest: WorkspaceFileTreeSnapshotRequest? = if includeFileTree,
+                                                                            effectiveFileTreeOption != .none
+        {
+            WorkspaceFileTreeSnapshotRequest(
+                mode: WorkspaceFileTreeSnapshotMode(fileTreeOption: effectiveFileTreeOption),
+                filePathDisplay: settings.filePathDisplayOption,
+                onlyIncludeRootsWithSelectedFiles: settings.onlyIncludeRootsWithSelectedFiles,
+                includeLegend: true,
+                showCodeMapMarkers: !settings.codeMapsGloballyDisabled,
+                rootScope: .allLoaded
             )
-            #if DEBUG
-                PromptTokenRecountDiagnostics.event(
-                    "tokenRecount.calculate.fileTree.end",
-                    fields: [
-                        "roots": "\(fileTreeSnapshot.roots.count)",
-                        "duration": fileTreeStartMS.map { PromptTokenRecountDiagnostics.formatElapsedMS(since: $0) } ?? "notMeasured"
-                    ]
-                )
-            #endif
-            fileTreeInput = .snapshot(fileTreeSnapshot)
         } else {
-            fileTreeInput = .none
+            nil
         }
+        let fileTreeInput: TokenCalculationFileTreeInput = .none
         guard !Task.isCancelled else {
             #if DEBUG
                 PromptTokenRecountDiagnostics.event("tokenRecount.calculate.cancelled", fields: ["phase": "fileTree", "duration": calculateStartMS.map { PromptTokenRecountDiagnostics.formatElapsedMS(since: $0) } ?? "notMeasured"])
@@ -672,10 +627,28 @@ class TokenCountingViewModel: ObservableObject {
             let accountingStartMS = PromptTokenRecountDiagnostics.start()
             PromptTokenRecountDiagnostics.event("tokenRecount.calculate.accounting.begin")
         #endif
-        let accountingResult = await promptContextAccountingService.calculatePromptStats(
-            request: accountingRequest,
-            store: store
-        )
+        let accountingResult: PromptContextAccountingResult
+        do {
+            accountingResult = try await promptContextAccountingService.withPromptStats(
+                request: accountingRequest,
+                store: store,
+                lookupContext: WorkspaceLookupContext(rootScope: .allLoaded, bindingProjection: nil),
+                fileTreeSnapshotRequest: fileTreeSnapshotRequest
+            ) { $0 }
+        } catch {
+            #if DEBUG
+                PromptTokenRecountDiagnostics.event(
+                    "tokenRecount.calculate.cancelled",
+                    fields: [
+                        "phase": error is CancellationError ? "coordination_cancelled" : "coordination_unavailable",
+                        "duration": calculateStartMS.map {
+                            PromptTokenRecountDiagnostics.formatElapsedMS(since: $0)
+                        } ?? "notMeasured"
+                    ]
+                )
+            #endif
+            return
+        }
         #if DEBUG
             PromptTokenRecountDiagnostics.event(
                 "tokenRecount.calculate.accounting.end",
@@ -684,7 +657,7 @@ class TokenCountingViewModel: ObservableObject {
                     "promptEntries": "\(accountingResult.promptFileEntrySnapshots.count)",
                     "missingPaths": "\(accountingResult.missingPaths.count)",
                     "invalidPaths": "\(accountingResult.invalidPaths.count)",
-                    "codemapsUsed": "\(accountingResult.codemapSnapshotsUsed.count)",
+                    "codemapsUsed": "\(accountingResult.codemapFileIDsUsed.count)",
                     "duration": accountingStartMS.map { PromptTokenRecountDiagnostics.formatElapsedMS(since: $0) } ?? "notMeasured"
                 ]
             )
@@ -695,6 +668,8 @@ class TokenCountingViewModel: ObservableObject {
             #endif
             return
         }
+
+        codemapPresentation = WorkspaceCodemapUIPresentationSnapshot(accountingResult.codemapPresentation)
 
         let detectedExts = accountingResult.resolvedEntries.map { (($0.file.name as NSString).pathExtension).lowercased() }
         let detectedLangs = detectedExts.compactMap { SyntaxManager.shared.extensionToLanguage[$0] }
@@ -1052,7 +1027,7 @@ class TokenCountingViewModel: ObservableObject {
 
     private func handleFileSystemTopologyChanged() {
         // Immediately clear caches used by UI previews so we don't show stale data
-        cachedFileAPIs = []
+        codemapPresentation = .empty
         scannedLanguages = []
         codeMapContent = ""
         fileTreeContent = ""

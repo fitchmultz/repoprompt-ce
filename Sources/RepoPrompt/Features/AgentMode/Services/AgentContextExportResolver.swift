@@ -268,7 +268,7 @@ enum AgentContextExportResolver {
             includeFiles: cfg.includeFiles,
             includeUserPrompt: cfg.includeUserPrompt,
             filePathDisplay: request.filePathDisplay,
-            codemapSnapshotBundle: preAssembly.codemapSnapshotBundle,
+            codemapPresentation: preAssembly.codemapPresentation,
             includeDatetimeInUserInstructions: request.includeDatetimeInUserInstructions,
             promptSectionsOrder: request.promptSectionsOrder,
             disabledPromptSections: request.disabledPromptSections,

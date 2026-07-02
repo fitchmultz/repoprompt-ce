@@ -321,7 +321,7 @@ extension MCPServerViewModel {
             includeFiles: cfg.includeFiles,
             includeUserPrompt: cfg.includeUserPrompt,
             filePathDisplay: promptVM.filePathDisplayOption,
-            codemapSnapshotBundle: preAssembly.codemapSnapshotBundle,
+            codemapPresentation: preAssembly.codemapPresentation,
             includeDatetimeInUserInstructions: promptVM.includeDatetimeInUserInstructions,
             promptSectionsOrder: promptVM.promptSectionsOrder,
             disabledPromptSections: promptVM.disabledPromptSections,
