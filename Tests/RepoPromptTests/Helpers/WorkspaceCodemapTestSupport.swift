@@ -150,7 +150,17 @@ extension WorkspaceFileContextStore {
                 dropped.append(result.fullPath)
                 continue
             }
-            stored[result.fullPath] = result
+            guard let attrs = try? FileManager.default.attributesOfItem(atPath: result.fullPath),
+                  let modificationDate = attrs[.modificationDate] as? Date
+            else {
+                dropped.append(result.fullPath)
+                continue
+            }
+            stored[result.fullPath] = WorkspaceCodemapFixtureResult(
+                fullPath: result.fullPath,
+                modificationDate: modificationDate,
+                fileAPI: result.fileAPI
+            )
         }
         observedCodemapResultsByStoreID[id] = stored
         return dropped.sorted()
@@ -219,7 +229,7 @@ extension WorkspaceFileContextStore {
         guard let result = observedCodemapResultsByStoreID[id]?[file.standardizedFullPath] else { return nil }
         guard let attrs = try? FileManager.default.attributesOfItem(atPath: file.standardizedFullPath),
               let currentModificationDate = attrs[.modificationDate] as? Date,
-              abs(currentModificationDate.timeIntervalSince(result.modificationDate)) < 1
+              currentModificationDate == result.modificationDate
         else { return nil }
         let root = rootRefs(scope: .allLoaded).first { $0.id == file.rootID }
         return WorkspaceCodemapSnapshot(
