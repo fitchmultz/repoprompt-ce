@@ -46,12 +46,10 @@ final class AgentContextExportResolverTests: XCTestCase {
             }
 
             let codemapCount = 44
-            var codemapPaths: [String] = []
             var observed: [WorkspaceObservedCodemapResult] = []
             for index in 0 ..< codemapCount {
                 let fileURL = root.appendingPathComponent("Dependency\(index).swift")
                 try write("struct Dependency\(index) {}", to: fileURL)
-                codemapPaths.append(fileURL.path)
                 observed.append(
                     WorkspaceObservedCodemapResult(
                         fullPath: fileURL.path,
@@ -64,12 +62,15 @@ final class AgentContextExportResolverTests: XCTestCase {
             let store = WorkspaceFileContextStore()
             _ = try await store.loadRoot(path: root.path)
             await store.applyObservedCodemapResults(observed)
+            let codemapPresentation = await WorkspaceCodemapOperationPresentation.legacyCompatibility(
+                from: store.codemapSnapshotBundle()
+            )
             let source = AgentContextExportSource(
                 tabID: UUID(),
                 promptText: "Review",
                 selection: StoredSelection(
                     selectedPaths: selectedPaths,
-                    autoCodemapPaths: codemapPaths,
+                    autoCodemapPaths: [],
                     slices: slices,
                     codemapAutoEnabled: true
                 ),
@@ -92,7 +93,8 @@ final class AgentContextExportResolverTests: XCTestCase {
                 source: source,
                 store: store,
                 filePathDisplay: .relative,
-                codeMapUsage: .auto
+                codeMapUsage: .auto,
+                codemapPresentation: codemapPresentation
             )
             let capture = EditFlowPerf.debugCaptureSnapshot(finish: true)
             let snapshotBuildCount = capture.stages
@@ -147,6 +149,7 @@ final class AgentContextExportResolverTests: XCTestCase {
                 source: source,
                 store: fixture.store,
                 lookupContext: model.lookupContext,
+                codemapPresentation: model.codemapPresentation,
                 filePathDisplay: .relative,
                 onlyIncludeRootsWithSelectedFiles: true,
                 showCodeMapMarkers: true,
@@ -543,6 +546,7 @@ final class AgentContextExportResolverTests: XCTestCase {
                 source: source,
                 store: fixture.store,
                 lookupContext: lookupContext,
+                codemapPresentation: nil,
                 filePathDisplay: .relative,
                 onlyIncludeRootsWithSelectedFiles: true,
                 showCodeMapMarkers: true,

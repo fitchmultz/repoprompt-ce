@@ -6846,7 +6846,7 @@ class WorkspaceFileContextStoreTestCase: XCTestCase {
         }
     #endif
 
-    func runTestCodemapFileAPIAggregatePreservesForeignNestedPathFirstWinnerAndRetainedRecomputeResults() async throws {
+    func runTestCodemapFileAPIAggregatePreservesForeignNestedPathFirstWinnerWithoutPersistingAutoSelection() async throws {
         let root = try makeTemporaryRoot(name: "CodemapAPIAggregateForeignNestedPath")
         let fileA = root.appendingPathComponent("A.swift")
         let fileB = root.appendingPathComponent("B.swift")
@@ -6880,7 +6880,7 @@ class WorkspaceFileContextStoreTestCase: XCTestCase {
 
         let foreignPathSelection = StoredSelection(selectedPaths: [fileB.path], autoCodemapPaths: [], slices: [:], codemapAutoEnabled: true)
         let foreignPathResult = await mutations.recomputeAutoCodemaps(foreignPathSelection)
-        XCTAssertEqual(foreignPathResult.autoCodemapPaths, [target.path])
+        XCTAssertTrue(foreignPathResult.autoCodemapPaths.isEmpty)
     }
 
     func runTestCodemapFileAPIAggregateFirstWinnerMatchesLegacyGroupingAcrossOverlappingRoots() async throws {
@@ -8070,8 +8070,8 @@ final class WorkspaceFileContextStoreCodemapPart2Tests: WorkspaceFileContextStor
             try await runTestAllCodemapFileAPIsCacheReusesOrderedAggregateAndRecordsRebuildOnlyRows()
         }
     #endif
-    func testCodemapFileAPIAggregatePreservesForeignNestedPathFirstWinnerAndRetainedRecomputeResults() async throws {
-        try await runTestCodemapFileAPIAggregatePreservesForeignNestedPathFirstWinnerAndRetainedRecomputeResults()
+    func testCodemapFileAPIAggregatePreservesForeignNestedPathFirstWinnerWithoutPersistingAutoSelection() async throws {
+        try await runTestCodemapFileAPIAggregatePreservesForeignNestedPathFirstWinnerWithoutPersistingAutoSelection()
     }
 
     func testCodemapFileAPIAggregateFirstWinnerMatchesLegacyGroupingAcrossOverlappingRoots() async throws {

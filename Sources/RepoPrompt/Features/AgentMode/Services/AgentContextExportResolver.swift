@@ -80,6 +80,7 @@ struct AgentContextExportModel: Equatable {
     let rows: [AgentContextExportRow]
     let missingPaths: [String]
     let invalidPaths: [String]
+    let codemapPresentation: WorkspaceCodemapOperationPresentation
 
     var fileCount: Int {
         rows.count
@@ -118,6 +119,7 @@ struct AgentContextExportRow: Identifiable, Equatable {
     let displayName: String
     let directoryDisplay: String?
     let lineRanges: [LineRange]?
+    let codemapText: String?
     let canRemove: Bool
 }
 
@@ -149,6 +151,7 @@ struct AgentContextClipboardRequest {
     let source: AgentContextExportSource
     let store: WorkspaceFileContextStore
     let lookupContext: WorkspaceLookupContext
+    let codemapPresentation: WorkspaceCodemapOperationPresentation?
     let filePathDisplay: FilePathDisplay
     let onlyIncludeRootsWithSelectedFiles: Bool
     let showCodeMapMarkers: Bool
@@ -202,18 +205,30 @@ enum AgentContextExportResolver {
         source: AgentContextExportSource,
         store: WorkspaceFileContextStore,
         filePathDisplay: FilePathDisplay,
-        codeMapUsage: CodeMapUsage
+        codeMapUsage: CodeMapUsage,
+        codemapPresentation frozenCodemapPresentation: WorkspaceCodemapOperationPresentation? = nil
     ) async -> AgentContextExportModel {
         let lookupContext = await lookupContext(source: source, store: store)
         let physicalSelection = lookupContext.physicalizeSelection(source.selection)
-        let codemapSnapshots = await store.codemapSnapshotDictionary()
+        let codemapPresentation: WorkspaceCodemapOperationPresentation = if let frozenCodemapPresentation {
+            frozenCodemapPresentation
+        } else {
+            await PromptContextAccountingService().resolveEntries(
+                selection: physicalSelection,
+                store: store,
+                rootScope: lookupContext.rootScope,
+                profile: .uiAssisted,
+                codeMapUsage: codeMapUsage,
+                contentPolicy: .cachedOnly
+            ).codemapPresentation
+        }
         let resolution = await resolveRows(
             selection: physicalSelection,
             store: store,
             rootScope: lookupContext.rootScope,
             profile: .uiAssisted,
             codeMapUsage: codeMapUsage,
-            codemapSnapshots: codemapSnapshots
+            codemapPresentation: codemapPresentation
         )
         let roots = await store.rootRefs(scope: lookupContext.rootScope)
         let rows = resolution.rows.map { rowEntry in
@@ -222,6 +237,7 @@ enum AgentContextExportResolver {
                 roots: roots,
                 lookupContext: lookupContext,
                 filePathDisplay: filePathDisplay,
+                codemapPresentation: codemapPresentation,
                 canRemove: rowEntry.canRemove
             )
         }
@@ -231,32 +247,42 @@ enum AgentContextExportResolver {
             lookupContext: lookupContext,
             rows: rows,
             missingPaths: resolution.missingPaths,
-            invalidPaths: resolution.invalidPaths
+            invalidPaths: resolution.invalidPaths,
+            codemapPresentation: codemapPresentation
         )
     }
 
     static func buildClipboardContent(_ request: AgentContextClipboardRequest) async -> String {
         let cfg = request.cfg
-        let preAssembly = await PromptContextPreAssemblyService.resolve(
-            PromptContextPreAssemblyRequest(
-                cfg: cfg,
-                selection: request.source.selection,
-                store: request.store,
-                lookupContext: request.lookupContext,
-                filePathDisplay: request.filePathDisplay,
-                onlyIncludeRootsWithSelectedFiles: request.onlyIncludeRootsWithSelectedFiles,
-                showCodeMapMarkers: request.showCodeMapMarkers,
-                selectedGitDiffFolderPolicy: .filesOnly,
-                selectedGitDiffLookupProfile: .mcpSelection,
-                selectedGitDiffArtifactPolicy: .respectGitInclusion,
-                selectedGitDiffProvider: { paths in
-                    await request.selectedGitDiffProvider(paths)
-                },
-                completeGitDiffProvider: {
-                    await request.completeGitDiffProvider()
-                }
-            )
+        let preAssemblyRequest = PromptContextPreAssemblyRequest(
+            cfg: cfg,
+            selection: request.source.selection,
+            store: request.store,
+            lookupContext: request.lookupContext,
+            filePathDisplay: request.filePathDisplay,
+            onlyIncludeRootsWithSelectedFiles: request.onlyIncludeRootsWithSelectedFiles,
+            showCodeMapMarkers: request.showCodeMapMarkers,
+            selectedGitDiffFolderPolicy: .filesOnly,
+            selectedGitDiffLookupProfile: .mcpSelection,
+            selectedGitDiffArtifactPolicy: .respectGitInclusion,
+            selectedGitDiffProvider: { paths in
+                await request.selectedGitDiffProvider(paths)
+            },
+            completeGitDiffProvider: {
+                await request.completeGitDiffProvider()
+            }
         )
+        let preAssembly: PromptContextPreAssemblyResult = if let codemapPresentation = request.codemapPresentation,
+                                                             let resolved = try? await PromptContextPreAssemblyService.withResolved(
+                                                                 preAssemblyRequest,
+                                                                 codemapPresentation: codemapPresentation,
+                                                                 operation: { $0 }
+                                                             )
+        {
+            resolved
+        } else {
+            await PromptContextPreAssemblyService.resolve(preAssemblyRequest)
+        }
 
         return await PromptPackagingService.generateClipboardContent(
             metaInstructions: request.metaInstructions,
@@ -286,9 +312,7 @@ enum AgentContextExportResolver {
     ) async -> String? {
         switch row.kind {
         case .codemap:
-            let snapshots = await store.codemapSnapshotDictionary()
-            let text = snapshots[row.id.fileID]?.fileAPI?.getFullAPIDescription(displayPath: row.displayPath)
-            guard let text, !text.isEmpty else { return nil }
+            guard let text = row.codemapText, !text.isEmpty else { return nil }
             return purpose == .preview ? AgentContextPreviewContentPolicy.boundedPreviewText(text) : text
         case .full:
             if purpose == .preview {
@@ -356,7 +380,7 @@ enum AgentContextExportResolver {
         rootScope: WorkspaceLookupRootScope,
         profile: PathLocateProfile,
         codeMapUsage: CodeMapUsage,
-        codemapSnapshots: [UUID: WorkspaceCodemapSnapshot]
+        codemapPresentation: WorkspaceCodemapOperationPresentation
     ) async -> (rows: [RowResolutionEntry], missingPaths: [String], invalidPaths: [String]) {
         var rows: [RowResolutionEntry] = []
         var missingPaths: [String] = []
@@ -395,7 +419,7 @@ enum AgentContextExportResolver {
             if let file = result.file {
                 selectedFileIDs.insert(file.id)
                 let ranges = sliceRanges(for: path, file: file, location: result.location, in: selection.slices)
-                let useSelectedCodemap = codeMapUsage == .selected && codemapSnapshots[file.id]?.fileAPI != nil
+                let useSelectedCodemap = codeMapUsage == .selected && codemapPresentation.renderedEntriesByFileID[file.id] != nil
                 let entry = ResolvedPromptFileEntry(
                     file: file,
                     isCodemap: useSelectedCodemap,
@@ -410,7 +434,7 @@ enum AgentContextExportResolver {
                 let prefix = folder.standardizedRelativePath
                 for file in files where prefix.isEmpty || file.standardizedRelativePath == prefix || file.standardizedRelativePath.hasPrefix(prefix + "/") {
                     selectedFileIDs.insert(file.id)
-                    let useSelectedCodemap = codeMapUsage == .selected && codemapSnapshots[file.id]?.fileAPI != nil
+                    let useSelectedCodemap = codeMapUsage == .selected && codemapPresentation.renderedEntriesByFileID[file.id] != nil
                     let entry = ResolvedPromptFileEntry(
                         file: file,
                         isCodemap: useSelectedCodemap,
@@ -458,48 +482,26 @@ enum AgentContextExportResolver {
         }
 
         let scopedRoots = await store.rootRefs(scope: rootScope)
-        let scopedRootIDs = Set(scopedRoots.map(\.id))
-        let codemapPaths: [String] = switch codeMapUsage {
-        case .none, .selected:
-            []
-        case .auto:
-            Array(selection.autoCodemapPaths)
-        case .complete:
-            codemapSnapshots.compactMap { fileID, snapshot in
-                guard !selectedFileIDs.contains(fileID),
-                      scopedRootIDs.contains(snapshot.rootID),
-                      snapshot.fileAPI != nil
-                else { return nil }
-                return snapshot.fullPath
+        let scopedRootsByID = Dictionary(uniqueKeysWithValues: scopedRoots.map { ($0.id, $0) })
+        if codeMapUsage == .auto || codeMapUsage == .complete {
+            for rendered in codemapPresentation.orderedEntries {
+                guard !selectedFileIDs.contains(rendered.fileID),
+                      scopedRootsByID[rendered.rootEpoch.rootID] != nil,
+                      let file = await store.file(
+                          rootID: rendered.rootEpoch.rootID,
+                          relativePath: rendered.logicalPath.standardizedRelativePath
+                      ),
+                      file.id == rendered.fileID
+                else { continue }
+                let entry = ResolvedPromptFileEntry(
+                    file: file,
+                    isCodemap: true,
+                    mode: .codemap,
+                    loadedContent: nil,
+                    rootFolderPath: scopedRootsByID[file.rootID]?.standardizedFullPath
+                )
+                append(entry, canRemove: codeMapUsage == .auto, to: &rows, seenIDs: &seenIDs)
             }
-        }
-
-        let codemapLookupRequests = codemapPaths.map {
-            WorkspacePathLookupRequest(userPath: $0, profile: profile, rootScope: rootScope)
-        }
-        let codemapLookupResults: [String: WorkspacePathLookupResult] = if codemapLookupRequests.isEmpty {
-            [:]
-        } else {
-            await store.lookupPaths(codemapLookupRequests)
-        }
-        for path in codemapPaths {
-            guard let result = codemapLookupResults[path] else {
-                missingPaths.append(path)
-                continue
-            }
-            guard let file = result.file else {
-                invalidPaths.append(path)
-                continue
-            }
-            guard !selectedFileIDs.contains(file.id), codemapSnapshots[file.id]?.fileAPI != nil else { continue }
-            let entry = ResolvedPromptFileEntry(
-                file: file,
-                isCodemap: true,
-                mode: .codemap,
-                loadedContent: nil,
-                rootFolderPath: result.location.rootPath
-            )
-            append(entry, canRemove: codeMapUsage == .auto, to: &rows, seenIDs: &seenIDs)
         }
 
         return (rows, Array(Set(missingPaths)).sorted(), Array(Set(invalidPaths)).sorted())
@@ -510,6 +512,7 @@ enum AgentContextExportResolver {
         roots: [WorkspaceRootRef],
         lookupContext: WorkspaceLookupContext,
         filePathDisplay: FilePathDisplay,
+        codemapPresentation: WorkspaceCodemapOperationPresentation,
         canRemove: Bool
     ) -> AgentContextExportRow {
         let displayPath = displayPath(for: entry, roots: roots, lookupContext: lookupContext, filePathDisplay: filePathDisplay)
@@ -532,6 +535,7 @@ enum AgentContextExportResolver {
             displayName: displayName.isEmpty ? entry.file.name : displayName,
             directoryDisplay: directory,
             lineRanges: entry.lineRanges,
+            codemapText: entry.isCodemap ? codemapPresentation.renderedEntriesByFileID[entry.file.id]?.text : nil,
             canRemove: canRemove
         )
     }

@@ -31,7 +31,8 @@ enum AgentProviderContextBuilder {
         tokenCap: Int,
         store: WorkspaceFileContextStore,
         lookupContext: WorkspaceLookupContext,
-        overTokenCapSummaryProvider: ((StoredSelection, WorkspaceLookupContext, WorkspaceCodemapOperationPresentation, WorkspaceCodemapSnapshotBundle) async -> String?)? = nil
+        codemapPresentation frozenCodemapPresentation: WorkspaceCodemapOperationPresentation? = nil,
+        overTokenCapSummaryProvider: ((StoredSelection, WorkspaceLookupContext, WorkspaceCodemapOperationPresentation) async -> String?)? = nil
     ) async -> String {
         let physicalSelection = lookupContext.physicalizeSelection(logicalSelection)
         let accountingService = PromptContextAccountingService()
@@ -48,25 +49,23 @@ enum AgentProviderContextBuilder {
                 display: .relative
             )
         }
-        let frozenCodemaps = await store.codemapSnapshotBundle(rootScope: lookupContext.rootScope)
-        let frozenPresentation = WorkspaceCodemapOperationPresentation.legacyCompatibility(from: frozenCodemaps)
         let accounting = await accountingService.calculatePromptStats(
             request: request,
             store: store,
-            codemapSnapshotBundle: frozenCodemaps,
-            codemapDisplayPathResolver: displayPathResolver
+            codemapPresentation: frozenCodemapPresentation,
+            codemapDisplayPathResolver: displayPathResolver,
+            compatibilityCodemapSnapshotBundle: .empty
         )
         let entries = accounting.resolvedEntries
         let selectionTokens = accounting.tokenResult.totalTokenCountFilesOnly
             + accounting.tokenResult.codeMapTokenCount
-        let codemapSnapshotBundle = accounting.codemapSnapshotBundle
+        let codemapPresentation = accounting.codemapPresentation
 
         if selectionTokens > tokenCap {
             if let summary = await overTokenCapSummaryProvider?(
                 logicalSelection,
                 lookupContext,
-                frozenPresentation,
-                codemapSnapshotBundle
+                codemapPresentation
             ),
                 !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             {
@@ -76,12 +75,12 @@ enum AgentProviderContextBuilder {
         }
 
         let renderableEntries = entries.filter { entry in
-            !entry.isCodemap || codemapSnapshotBundle.hasRenderableCodemap(for: entry.file)
+            !entry.isCodemap || codemapPresentation.renderedEntriesByFileID[entry.file.id] != nil
         }
         let (codemapBlocks, contentBlocks) = PromptPackagingService.generatePartitionedFileBlocks(
             renderableEntries,
             filePathDisplay: .relative,
-            codemapSnapshotBundle: codemapSnapshotBundle,
+            codemapPresentation: codemapPresentation,
             displayPathResolver: displayPathResolver
         )
         var sections: [String] = []

@@ -243,9 +243,12 @@ struct AgentExportCard: View {
 
     private func buildAgentClipboard(for cfg: PromptContextResolved) async -> String {
         let source = await MainActor.run { makeExportSource() }
-        let lookupContext = await AgentContextExportResolver.lookupContext(
+        let filePathDisplay = await MainActor.run { promptManager.filePathDisplayOption }
+        let model = await AgentContextExportResolver.resolveModel(
             source: source,
-            store: promptManager.workspaceFileContextStore
+            store: promptManager.workspaceFileContextStore,
+            filePathDisplay: filePathDisplay,
+            codeMapUsage: cfg.codeMapUsage
         )
         let meta = await MainActor.run {
             promptManager.metaInstructions(for: cfg, selectedPromptIDsOverride: source.selectedMetaPromptIDs)
@@ -255,8 +258,9 @@ struct AgentExportCard: View {
                 cfg: cfg,
                 source: source,
                 store: promptManager.workspaceFileContextStore,
-                lookupContext: lookupContext,
-                filePathDisplay: promptManager.filePathDisplayOption,
+                lookupContext: model.lookupContext,
+                codemapPresentation: model.codemapPresentation,
+                filePathDisplay: filePathDisplay,
                 onlyIncludeRootsWithSelectedFiles: promptManager.onlyIncludeRootsWithSelectedFiles,
                 showCodeMapMarkers: !promptManager.codeMapsGloballyDisabled,
                 metaInstructions: meta,

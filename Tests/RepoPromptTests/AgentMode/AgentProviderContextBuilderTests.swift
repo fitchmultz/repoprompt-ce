@@ -69,6 +69,9 @@ final class AgentProviderContextBuilderTests: XCTestCase {
                 fileAPI: makeFileAPI(path: worktreeCodemapURL.path, symbolName: "branchOnlyCodemapSymbol")
             )
         ])
+        let codemapPresentation = await WorkspaceCodemapOperationPresentation.legacyCompatibility(
+            from: fixture.store.codemapSnapshotBundle(rootScope: lookupContext.rootScope)
+        )
 
         let block = await AgentProviderContextBuilder.forkFileContentsBlock(
             selection: StoredSelection(
@@ -78,7 +81,8 @@ final class AgentProviderContextBuilderTests: XCTestCase {
             ),
             tokenCap: 10000,
             store: fixture.store,
-            lookupContext: lookupContext
+            lookupContext: lookupContext,
+            codemapPresentation: codemapPresentation
         )
 
         XCTAssertTrue(block.contains("<file_map>"), block)
@@ -113,12 +117,16 @@ final class AgentProviderContextBuilderTests: XCTestCase {
         )
         let rendered = api.getFullAPIDescription(displayPath: "Sources/BranchOnly.swift")
         let renderedTokens = TokenCalculationService.estimateTokens(for: rendered)
+        let codemapPresentation = await WorkspaceCodemapOperationPresentation.legacyCompatibility(
+            from: fixture.store.codemapSnapshotBundle(rootScope: lookupContext.rootScope)
+        )
 
         let atCap = await AgentProviderContextBuilder.forkFileContentsBlock(
             selection: selection,
             tokenCap: renderedTokens,
             store: fixture.store,
-            lookupContext: lookupContext
+            lookupContext: lookupContext,
+            codemapPresentation: codemapPresentation
         )
         XCTAssertTrue(atCap.contains("forkCapCodemapSentinel"), atCap)
         XCTAssertTrue(atCap.contains("  - Foundation"), atCap)
@@ -129,7 +137,8 @@ final class AgentProviderContextBuilderTests: XCTestCase {
             tokenCap: renderedTokens - 1,
             store: fixture.store,
             lookupContext: lookupContext,
-            overTokenCapSummaryProvider: { _, _, _, frozenBundle in
+            codemapPresentation: codemapPresentation,
+            overTokenCapSummaryProvider: { _, _, presentation in
                 await fixture.store.applyObservedCodemapResults([
                     WorkspaceObservedCodemapResult(
                         fullPath: worktreeURL.path,
@@ -137,13 +146,13 @@ final class AgentProviderContextBuilderTests: XCTestCase {
                         fileAPI: nil
                     )
                 ])
-                let retainedOriginal = frozenBundle.orderedSnapshots.contains { snapshot in
-                    snapshot.fileAPI?.apiDescription.contains("forkCapCodemapSentinel") == true
+                let retainedOriginal = presentation.orderedEntries.contains { entry in
+                    entry.text.contains("forkCapCodemapSentinel")
                 }
-                return retainedOriginal ? "<selection_summary>frozen bundle</selection_summary>" : nil
+                return retainedOriginal ? "<selection_summary>frozen presentation</selection_summary>" : nil
             }
         )
-        XCTAssertEqual(overCap, "<selection_summary>frozen bundle</selection_summary>")
+        XCTAssertEqual(overCap, "<selection_summary>frozen presentation</selection_summary>")
     }
 
     func testNonWorktreeForkFileContentsPreservesVisibleWorkspaceBehavior() async throws {

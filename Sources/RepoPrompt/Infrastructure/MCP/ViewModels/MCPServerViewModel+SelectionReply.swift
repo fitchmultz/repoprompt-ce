@@ -299,11 +299,18 @@ extension MCPServerViewModel {
         }
         let effectiveSelection = lookupContext.physicalizeSelection(selection)
         let source = StoredSelectionSource(stored: effectiveSelection, codeMapUsage: effectiveOverride)
+        let collectionCodemapPresentation: WorkspaceCodemapOperationPresentation? = if let codemapPresentation {
+            codemapPresentation
+        } else if !includeBlocks, effectiveOverride == .auto {
+            .empty
+        } else {
+            nil
+        }
         let collections = await SelectionReplyAssembler.collect(
             from: source,
             owner: self,
             rootScope: lookupContext.rootScope,
-            codemapPresentation: codemapPresentation,
+            codemapPresentation: collectionCodemapPresentation,
             contentPolicy: includeBlocks ? .loadContent : .cachedOnly
         )
         let resolvedPromptContext = promptVM.resolvePromptContext()

@@ -225,57 +225,321 @@ private extension WorkspaceCodemapPresentationCoordinator {
                 fileIDs: fileIDs,
                 completeRootSet: completeRootSet,
                 automaticIssue: nil,
+                automaticReceipt: nil,
                 rootScope: rootScope,
                 logicalRootDisplayNamesByRootID: logicalRootDisplayNamesByRootID
             )
         case let .automatic(sourceFileIDs):
-            let hasSources = await automaticHasSources(
+            return try await makeAutomaticPresentation(
                 sourceFileIDs: sourceFileIDs,
-                rootScope: rootScope
-            )
-            let automaticCoverage: WorkspaceCodemapAutomaticSelectionAggregateCoverage = hasSources
-                ? .pending([])
-                : .unavailable(.noReadySources)
-            return try await makeExactPresentation(
-                fileIDs: [],
-                completeRootSet: false,
-                automaticIssue: .automatic(automaticCoverage),
                 rootScope: rootScope,
                 logicalRootDisplayNamesByRootID: logicalRootDisplayNamesByRootID
             )
         }
     }
 
-    func automaticHasSources(
+    func makeAutomaticPresentation(
         sourceFileIDs: [UUID],
-        rootScope: WorkspaceLookupRootScope
-    ) async -> Bool {
-        guard !sourceFileIDs.isEmpty else { return false }
-        let sourceIDSet = Set(sourceFileIDs)
-        for root in await store.rootRefs(scope: rootScope) {
-            if await store.files(inRoot: root.id).contains(where: { sourceIDSet.contains($0.id) }) {
-                return true
+        rootScope: WorkspaceLookupRootScope,
+        logicalRootDisplayNamesByRootID: [UUID: String]
+    ) async throws -> PresentationBuildResult {
+        let sourceCollection = await store.codemapOperationPresentationCandidates(
+            forFileIDs: sourceFileIDs,
+            rootScope: rootScope,
+            logicalRootDisplayNamesByRootID: logicalRootDisplayNamesByRootID
+        )
+        var issues = sourceCollection.issues.map(WorkspaceCodemapOperationIssue.candidate)
+        guard !sourceCollection.candidates.isEmpty else {
+            let coverage = WorkspaceCodemapAutomaticSelectionAggregateCoverage.unavailable(.noReadySources)
+            issues.append(.automatic(coverage))
+            return PresentationBuildResult(
+                presentation: WorkspaceCodemapOperationPresentation(
+                    orderedEntries: [],
+                    coverage: .unavailable(issues),
+                    issues: issues,
+                    publicationReceipt: nil
+                ),
+                ownedTickets: []
+            )
+        }
+
+        let sourceLimit = await store.automaticCodemapSelectionSourceDemandLimit()
+        guard sourceCollection.candidates.count <= sourceLimit else {
+            let coverage = WorkspaceCodemapAutomaticSelectionAggregateCoverage.budget(.sourceLimit(
+                attempted: sourceCollection.candidates.count,
+                limit: sourceLimit
+            ))
+            issues.append(.automatic(coverage))
+            return PresentationBuildResult(
+                presentation: WorkspaceCodemapOperationPresentation(
+                    orderedEntries: [],
+                    coverage: .unavailable(issues),
+                    issues: issues,
+                    publicationReceipt: nil
+                ),
+                ownedTickets: []
+            )
+        }
+
+        var sourceTickets: [WorkspaceCodemapArtifactDemandTicket] = []
+        var readySources: [WorkspaceCodemapAutomaticSelectionSourceIdentity] = []
+        var ownedTickets: [WorkspaceCodemapArtifactDemandTicket] = []
+        var pendingReasons: [WorkspaceCodemapAutomaticSelectionPendingReason] = []
+        for candidate in sourceCollection.candidates {
+            let owned = await store.requestCodemapArtifactWithOwnership(forFileID: candidate.fileID)
+            if case let .created(ticket) = owned.ownership { ownedTickets.append(ticket) }
+            if case let .joined(ticket) = owned.ownership { ownedTickets.append(ticket) }
+            let result = try await waitForReadiness(owned.result)
+            switch result {
+            case let .ready(ready):
+                sourceTickets.append(ready.ticket)
+                readySources.append(WorkspaceCodemapAutomaticSelectionSourceIdentity(
+                    rootEpoch: ready.ticket.rootEpoch,
+                    fileID: ready.ticket.fileID,
+                    catalogGeneration: ready.ticket.catalogGeneration
+                ))
+            case let .pending(ticket):
+                pendingReasons.append(.sourceDemand(
+                    WorkspaceCodemapAutomaticSelectionSourceIdentity(
+                        rootEpoch: ticket.rootEpoch,
+                        fileID: ticket.fileID,
+                        catalogGeneration: ticket.catalogGeneration
+                    ),
+                    ticket
+                ))
+            case .unavailable:
+                break
             }
         }
-        return false
+        guard !readySources.isEmpty else {
+            let coverage: WorkspaceCodemapAutomaticSelectionAggregateCoverage = pendingReasons.isEmpty
+                ? .unavailable(.noReadySources)
+                : .pending(pendingReasons)
+            issues.append(.automatic(coverage))
+            return PresentationBuildResult(
+                presentation: WorkspaceCodemapOperationPresentation(
+                    orderedEntries: [],
+                    coverage: pendingReasons.isEmpty ? .unavailable(issues) : .pending(issues),
+                    issues: issues,
+                    publicationReceipt: nil
+                ),
+                ownedTickets: ownedTickets
+            )
+        }
+
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: policy.maximumTotalWait)
+        let projectionDeadline = projectionDeadlineUptimeNanoseconds(clock: clock, deadline: deadline)
+        for rootEpoch in Set(sourceTickets.map(\.rootEpoch)).sorted(by: workspaceCodemapRootEpochPrecedes) {
+            let tickets = sourceTickets.filter { $0.rootEpoch == rootEpoch }
+            let acquisition = await store.acquireCodemapProjectionDemand(
+                sourceTickets: tickets,
+                deadlineUptimeNanoseconds: projectionDeadline
+            )
+            guard case let .acquired(projectionTicket, _) = acquisition else {
+                let coverage = WorkspaceCodemapAutomaticSelectionAggregateCoverage.pending([.graphRebuild(rootEpoch: rootEpoch)])
+                issues.append(.automatic(coverage))
+                return PresentationBuildResult(
+                    presentation: WorkspaceCodemapOperationPresentation(
+                        orderedEntries: [],
+                        coverage: .pending(issues),
+                        issues: issues,
+                        publicationReceipt: nil
+                    ),
+                    ownedTickets: ownedTickets
+                )
+            }
+            let published = await store.waitForCodemapGraphPublication(projectionTicket, deadline: deadline)
+            _ = await store.releaseCodemapProjectionDemand(projectionTicket)
+            guard published else {
+                let coverage = WorkspaceCodemapAutomaticSelectionAggregateCoverage.pending([.graphRebuild(rootEpoch: rootEpoch)])
+                issues.append(.automatic(coverage))
+                return PresentationBuildResult(
+                    presentation: WorkspaceCodemapOperationPresentation(
+                        orderedEntries: [],
+                        coverage: .pending(issues),
+                        issues: issues,
+                        publicationReceipt: nil
+                    ),
+                    ownedTickets: ownedTickets
+                )
+            }
+        }
+
+        let planDisposition = await store.planAutomaticCodemapSelectionCandidates(
+            sources: readySources,
+            rootScope: rootScope,
+            maximumCandidateDemandCount: policy.maximumCandidateDemandCount
+        )
+        let plan: WorkspaceCodemapAutomaticSelectionCandidatePlan
+        switch planDisposition {
+        case let .ready(value):
+            plan = value
+        case let .pending(reasons):
+            let coverage = WorkspaceCodemapAutomaticSelectionAggregateCoverage.pending(reasons)
+            issues.append(.automatic(coverage))
+            return PresentationBuildResult(
+                presentation: WorkspaceCodemapOperationPresentation(
+                    orderedEntries: [],
+                    coverage: .pending(issues),
+                    issues: issues,
+                    publicationReceipt: nil
+                ),
+                ownedTickets: ownedTickets
+            )
+        case let .unavailable(reason):
+            let coverage = WorkspaceCodemapAutomaticSelectionAggregateCoverage.unavailable(reason)
+            issues.append(.automatic(coverage))
+            return PresentationBuildResult(
+                presentation: WorkspaceCodemapOperationPresentation(
+                    orderedEntries: [],
+                    coverage: .unavailable(issues),
+                    issues: issues,
+                    publicationReceipt: nil
+                ),
+                ownedTickets: ownedTickets
+            )
+        case let .stale(reason):
+            let coverage = WorkspaceCodemapAutomaticSelectionAggregateCoverage.stale(reason)
+            issues.append(.automatic(coverage))
+            return PresentationBuildResult(
+                presentation: WorkspaceCodemapOperationPresentation(
+                    orderedEntries: [],
+                    coverage: .unavailable(issues),
+                    issues: issues,
+                    publicationReceipt: nil
+                ),
+                ownedTickets: ownedTickets
+            )
+        case let .budget(reason):
+            let coverage = WorkspaceCodemapAutomaticSelectionAggregateCoverage.budget(reason)
+            issues.append(.automatic(coverage))
+            return PresentationBuildResult(
+                presentation: WorkspaceCodemapOperationPresentation(
+                    orderedEntries: [],
+                    coverage: .unavailable(issues),
+                    issues: issues,
+                    publicationReceipt: nil
+                ),
+                ownedTickets: ownedTickets
+            )
+        case let .provisional(provisional):
+            let coverage = WorkspaceCodemapAutomaticSelectionAggregateCoverage.provisional(
+                incomplete: provisional.incompleteReasons,
+                pending: [],
+                partial: []
+            )
+            issues.append(.automatic(coverage))
+            return PresentationBuildResult(
+                presentation: WorkspaceCodemapOperationPresentation(
+                    orderedEntries: [],
+                    coverage: .pending(issues),
+                    issues: issues,
+                    publicationReceipt: nil
+                ),
+                ownedTickets: ownedTickets
+            )
+        case let .incomplete(reasons):
+            let coverage = WorkspaceCodemapAutomaticSelectionAggregateCoverage.incomplete(reasons)
+            issues.append(.automatic(coverage))
+            return PresentationBuildResult(
+                presentation: WorkspaceCodemapOperationPresentation(
+                    orderedEntries: [],
+                    coverage: .pending(issues),
+                    issues: issues,
+                    publicationReceipt: nil
+                ),
+                ownedTickets: ownedTickets
+            )
+        case let .busy(reason):
+            let coverage = WorkspaceCodemapAutomaticSelectionAggregateCoverage.busy(reason)
+            issues.append(.automatic(coverage))
+            return PresentationBuildResult(
+                presentation: WorkspaceCodemapOperationPresentation(
+                    orderedEntries: [],
+                    coverage: .pending(issues),
+                    issues: issues,
+                    publicationReceipt: nil
+                ),
+                ownedTickets: ownedTickets
+            )
+        }
+
+        let targets = plan.candidates.compactMap { candidate -> WorkspaceCodemapAutomaticSelectionTarget? in
+            let rootName = logicalRootDisplayNamesByRootID[candidate.identity.rootID]
+                ?? URL(fileURLWithPath: candidate.identity.standardizedRootPath).lastPathComponent
+            guard let logicalPath = WorkspaceCodemapLogicalPresentationPath(
+                rootDisplayName: rootName,
+                standardizedRelativePath: candidate.identity.standardizedRelativePath
+            ) else { return nil }
+            return WorkspaceCodemapAutomaticSelectionTarget(
+                rootEpoch: candidate.rootEpoch,
+                fileID: candidate.identity.fileID,
+                catalogGeneration: candidate.catalogGeneration,
+                requestGeneration: candidate.requestGeneration,
+                logicalPath: logicalPath
+            )
+        }
+        let receipt = WorkspaceCodemapAutomaticSelectionPublicationReceipt(
+            requestID: UUID(),
+            rootScope: rootScope,
+            rootScopeEpochs: plan.rootScopeEpochs,
+            sourceTickets: sourceTickets,
+            graphKeys: plan.coverageProofs.map { WorkspaceCodemapSelectionGraphRuntimeKey(generation: $0.generation) },
+            coverageProofs: plan.coverageProofs,
+            targets: targets,
+            publicationPermit: WorkspaceCodemapAutomaticSelectionPublicationPermit()
+        )
+        var result = try await makeExactPresentation(
+            fileIDs: targets.map(\.fileID),
+            completeRootSet: false,
+            automaticIssue: nil,
+            automaticReceipt: receipt,
+            rootScope: rootScope,
+            logicalRootDisplayNamesByRootID: logicalRootDisplayNamesByRootID
+        )
+        result = PresentationBuildResult(
+            presentation: WorkspaceCodemapOperationPresentation(
+                orderedEntries: result.presentation.orderedEntries,
+                coverage: issues.isEmpty ? result.presentation.coverage : .partial(issues),
+                issues: issues + result.presentation.issues,
+                publicationReceipt: result.presentation.publicationReceipt
+            ),
+            ownedTickets: ownedTickets + result.ownedTickets
+        )
+        return result
     }
 
     func makeExactPresentation(
         fileIDs: [UUID],
         completeRootSet: Bool,
         automaticIssue: WorkspaceCodemapOperationIssue?,
+        automaticReceipt: WorkspaceCodemapAutomaticSelectionPublicationReceipt?,
         rootScope: WorkspaceLookupRootScope,
         logicalRootDisplayNamesByRootID: [UUID: String]
     ) async throws -> PresentationBuildResult {
         try Task.checkCancellation()
         guard !fileIDs.isEmpty else {
             let issues = [automaticIssue].compactMap(\.self)
+            let receipt: WorkspaceCodemapOperationPresentationPublicationReceipt? = automaticReceipt.map {
+                WorkspaceCodemapOperationPresentationPublicationReceipt(
+                    requestID: UUID(),
+                    rootScope: rootScope,
+                    logicalRootDisplayNamesByRootID: [:],
+                    completeRootSet: completeRootSet,
+                    completeRootCatalogs: [],
+                    candidates: [],
+                    demandTickets: [],
+                    bundles: [],
+                    automaticReceipt: $0
+                )
+            }
             return PresentationBuildResult(
                 presentation: WorkspaceCodemapOperationPresentation(
                     orderedEntries: [],
                     coverage: issues.isEmpty ? .complete : .unavailable(issues),
                     issues: issues,
-                    publicationReceipt: nil
+                    publicationReceipt: receipt
                 ),
                 ownedTickets: []
             )
@@ -360,7 +624,7 @@ private extension WorkspaceCodemapPresentationCoordinator {
                 candidates: candidates,
                 demandTickets: readyTickets,
                 bundles: bundles,
-                automaticReceipt: nil
+                automaticReceipt: automaticReceipt
             )
         }
         let coverage = coverage(entryCount: rendered.count, requestedCount: fileIDs.count, issues: issues)
@@ -371,6 +635,30 @@ private extension WorkspaceCodemapPresentationCoordinator {
             publicationReceipt: receipt
         )
         return PresentationBuildResult(presentation: presentation, ownedTickets: ownedTickets)
+    }
+
+    func projectionDeadlineUptimeNanoseconds(
+        clock: ContinuousClock,
+        deadline: ContinuousClock.Instant
+    ) -> UInt64 {
+        let remaining = clock.now.duration(to: deadline)
+        guard remaining > .zero else { return DispatchTime.now().uptimeNanoseconds }
+        let components = remaining.components
+        guard components.seconds >= 0, components.attoseconds >= 0 else {
+            return DispatchTime.now().uptimeNanoseconds
+        }
+        let seconds = UInt64(components.seconds)
+        let attoseconds = UInt64(components.attoseconds)
+        let (secondNanoseconds, secondsOverflow) = seconds.multipliedReportingOverflow(by: 1_000_000_000)
+        let (combinedNanoseconds, combinedOverflow) = secondNanoseconds.addingReportingOverflow(
+            attoseconds / 1_000_000_000
+        )
+        let remainingNanoseconds = secondsOverflow || combinedOverflow
+            ? UInt64.max
+            : combinedNanoseconds
+        let now = DispatchTime.now().uptimeNanoseconds
+        let (value, overflow) = now.addingReportingOverflow(remainingNanoseconds)
+        return overflow ? UInt64.max : value
     }
 
     func waitForReadiness(
@@ -488,6 +776,17 @@ private extension WorkspaceCodemapPresentationCoordinator {
                 issues.append(.publicationStale(.demand(ticket)))
             case .unavailable:
                 issues.append(.publicationStale(.demand(ticket)))
+            }
+        }
+        if let automaticReceipt = receipt.automaticReceipt {
+            switch await store.revalidateAutomaticCodemapSelectionForPublication(
+                automaticReceipt,
+                rootScope: receipt.rootScope
+            ) {
+            case .current:
+                break
+            case let .stale(reason):
+                issues.append(.publicationStale(.automatic(reason)))
             }
         }
         return issues

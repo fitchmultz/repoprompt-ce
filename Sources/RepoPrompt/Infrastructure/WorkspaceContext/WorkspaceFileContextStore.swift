@@ -5908,6 +5908,343 @@ actor WorkspaceFileContextStore {
             lhs.ingressGeneration == rhs.ingressGeneration
     }
 
+    func codemapOperationPresentationCandidates(
+        forFileIDs fileIDs: [UUID],
+        rootScope: WorkspaceLookupRootScope,
+        logicalRootDisplayNamesByRootID: [UUID: String],
+        includeCompleteRootCatalogs: Bool = false
+    ) -> WorkspaceCodemapOperationCandidateCollection {
+        let roots = rootsForPathLookup(scope: rootScope)
+        let rootIDs = Set(roots.map(\.id))
+        let rootsByID = Dictionary(uniqueKeysWithValues: roots.map { ($0.id, $0) })
+        var candidates: [WorkspaceCodemapOperationPresentationCandidate] = []
+        var issues: [WorkspaceCodemapOperationCandidateIssue] = []
+        var seen = Set<UUID>()
+
+        for fileID in fileIDs where seen.insert(fileID).inserted {
+            guard let file = filesByID[fileID] else {
+                issues.append(.fileNotCataloged(fileID))
+                continue
+            }
+            guard rootIDs.contains(file.rootID),
+                  let state = rootStatesByID[file.rootID],
+                  state.fileIDsByRelativePath[file.standardizedRelativePath] == fileID,
+                  let catalogGeneration = translatedModernCodemapGeneration(
+                      catalogGenerationsByRootID[file.rootID] ?? 0
+                  )
+            else {
+                issues.append(.fileOutsideRootScope(fileID))
+                continue
+            }
+            let rootName = logicalRootDisplayNamesByRootID[file.rootID]
+                ?? rootsByID[file.rootID].map { URL(fileURLWithPath: $0.standardizedFullPath).lastPathComponent }
+                ?? URL(fileURLWithPath: state.root.standardizedFullPath).lastPathComponent
+            guard let logicalPath = WorkspaceCodemapLogicalPresentationPath(
+                rootDisplayName: rootName,
+                standardizedRelativePath: file.standardizedRelativePath
+            ) else {
+                issues.append(.logicalPathUnavailable(fileID))
+                continue
+            }
+            candidates.append(WorkspaceCodemapOperationPresentationCandidate(
+                fileID: fileID,
+                rootEpoch: WorkspaceCodemapRootEpoch(rootID: file.rootID, rootLifetimeID: state.lifetimeID),
+                catalogGeneration: catalogGeneration,
+                logicalPath: logicalPath
+            ))
+        }
+
+        let completeRootCatalogs: [WorkspaceCodemapOperationCompleteRootCatalogReceipt] = if includeCompleteRootCatalogs {
+            roots.compactMap { root in
+                guard let state = rootStatesByID[root.id],
+                      let catalogGeneration = translatedModernCodemapGeneration(
+                          catalogGenerationsByRootID[root.id] ?? 0
+                      )
+                else { return nil }
+                let supported = state.fileIDsByRelativePath.values.compactMap { fileID -> UUID? in
+                    guard let file = filesByID[fileID], modernCodemapFileIsSupported(file) else { return nil }
+                    return fileID
+                }.sorted { $0.uuidString < $1.uuidString }
+                return WorkspaceCodemapOperationCompleteRootCatalogReceipt(
+                    rootEpoch: WorkspaceCodemapRootEpoch(rootID: root.id, rootLifetimeID: state.lifetimeID),
+                    catalogGeneration: catalogGeneration,
+                    supportedFileIDs: supported
+                )
+            }
+        } else {
+            []
+        }
+
+        return WorkspaceCodemapOperationCandidateCollection(
+            candidates: candidates,
+            issues: issues,
+            completeRootCatalogs: completeRootCatalogs
+        )
+    }
+
+    func codemapAutomaticSelectionSourceIdentities(
+        forFileIDs fileIDs: [UUID],
+        rootScope: WorkspaceLookupRootScope
+    ) -> [WorkspaceCodemapAutomaticSelectionSourceIdentity] {
+        let rootIDs = Set(rootsForPathLookup(scope: rootScope).map(\.id))
+        var seen = Set<UUID>()
+        return fileIDs.compactMap { fileID in
+            guard seen.insert(fileID).inserted,
+                  let file = filesByID[fileID],
+                  rootIDs.contains(file.rootID),
+                  let state = rootStatesByID[file.rootID],
+                  let catalogGeneration = translatedModernCodemapGeneration(
+                      catalogGenerationsByRootID[file.rootID] ?? 0
+                  )
+            else { return nil }
+            return WorkspaceCodemapAutomaticSelectionSourceIdentity(
+                rootEpoch: WorkspaceCodemapRootEpoch(rootID: file.rootID, rootLifetimeID: state.lifetimeID),
+                fileID: fileID,
+                catalogGeneration: catalogGeneration
+            )
+        }
+    }
+
+    func automaticCodemapSelectionSourceDemandLimit() -> Int {
+        4096
+    }
+
+    func planAutomaticCodemapSelectionCandidates(
+        sources: [WorkspaceCodemapAutomaticSelectionSourceIdentity],
+        rootScope: WorkspaceLookupRootScope,
+        maximumCandidateDemandCount: Int
+    ) async -> WorkspaceCodemapAutomaticSelectionCandidatePlanDisposition {
+        let rootScopeEpochs = currentRootScopeEpochs(rootScope)
+        let allowedRootEpochs = Set(rootScopeEpochs)
+        let groupedSources = Dictionary(grouping: sources, by: \.rootEpoch)
+        var allCandidates: [WorkspaceCodemapBindingAutomaticSelectionCatalogCandidate] = []
+        var proofs: [WorkspaceCodemapProjectionCoverageProof] = []
+
+        for rootEpoch in groupedSources.keys.sorted(by: workspaceCodemapRootEpochPrecedes) {
+            guard allowedRootEpochs.contains(rootEpoch),
+                  let session = modernCodemapSessionsByRootEpoch[rootEpoch],
+                  modernCodemapAuthorityIsCurrent(session.authority),
+                  let engine = session.engine
+            else { return .stale(.rootEpochNotCurrent(rootEpoch)) }
+            let sourceTickets = groupedSources[rootEpoch]?.compactMap { source -> WorkspaceCodemapArtifactDemandTicket? in
+                guard let record = session.demandsByFileID[source.fileID],
+                      record.ticket.catalogGeneration == source.catalogGeneration,
+                      case .ready = record.result
+                else { return nil }
+                return record.ticket
+            } ?? []
+            guard sourceTickets.count == groupedSources[rootEpoch]?.count else {
+                return .stale(.rootEpochNotCurrent(rootEpoch))
+            }
+            let candidates = modernCodemapProjectionCandidates(rootEpoch: rootEpoch, authority: session.authority)
+            guard candidates.count <= maximumCandidateDemandCount else {
+                return .budget(.candidateDemandLimit(attempted: candidates.count, limit: maximumCandidateDemandCount))
+            }
+            switch await engine.planAutomaticSelectionCandidates(WorkspaceCodemapBindingAutomaticSelectionPlanRequest(
+                rootEpoch: rootEpoch,
+                sourceTickets: sourceTickets,
+                candidates: candidates,
+                maximumMatchedCandidateCount: maximumCandidateDemandCount
+            )) {
+            case let .ready(plan):
+                allCandidates.append(contentsOf: plan.necessaryCandidates)
+                proofs.append(plan.coverageProof)
+            case let .provisional(necessary, _, progress, remainingCount, retry):
+                return .provisional(WorkspaceCodemapAutomaticSelectionProvisionalCandidatePlan(
+                    candidates: necessary,
+                    rootScopeEpochs: rootScopeEpochs,
+                    incompleteReasons: [.graph(.definitionUniverse(
+                        rootEpoch: rootEpoch,
+                        progress: progress,
+                        remainingCount: remainingCount,
+                        retry: retry
+                    ))]
+                ))
+            case .incomplete:
+                return .pending([.graphRebuild(rootEpoch: rootEpoch)])
+            case .busy:
+                return .pending([.graphRebuild(rootEpoch: rootEpoch)])
+            case .stale:
+                return .stale(.coverageProof(rootEpoch))
+            case let .unavailable(reason):
+                return .unavailable(.graph(.definitionUniverse(rootEpoch: rootEpoch, reason: reason)))
+            case let .budget(dimension, attempted, limit):
+                return .budget(.graph(
+                    rootEpoch: rootEpoch,
+                    reason: .definitionUniverse(
+                        rootEpoch: rootEpoch,
+                        dimension: dimension,
+                        attempted: attempted,
+                        limit: limit
+                    )
+                ))
+            }
+        }
+
+        return .ready(WorkspaceCodemapAutomaticSelectionCandidatePlan(
+            candidates: allCandidates.sorted(by: automaticSelectionCandidatePrecedes),
+            rootScopeEpochs: rootScopeEpochs,
+            coverageProofs: proofs
+        ))
+    }
+
+    func acquireCodemapProjectionDemand(
+        sourceTickets: [WorkspaceCodemapArtifactDemandTicket],
+        deadlineUptimeNanoseconds: UInt64
+    ) async -> WorkspaceCodemapProjectionDemandAcquisition {
+        guard let first = sourceTickets.first,
+              sourceTickets.allSatisfy({ $0.rootEpoch == first.rootEpoch }),
+              let session = modernCodemapSessionsByRootEpoch[first.rootEpoch],
+              modernCodemapAuthorityIsCurrent(session.authority),
+              let engine = session.engine
+        else {
+            return .unavailable(reason: .rootNotRegistered, retryAfterMilliseconds: nil)
+        }
+        return await engine.acquireProjectionDemand(
+            rootEpoch: first.rootEpoch,
+            fileIDs: sourceTickets.map(\.fileID),
+            catalogGeneration: first.catalogGeneration,
+            ingressGeneration: first.ingressGeneration,
+            deadlineUptimeNanoseconds: deadlineUptimeNanoseconds,
+            owner: WorkspaceCodemapLiveDemandOwner()
+        )
+    }
+
+    func codemapProjectionDemandStatus(
+        _ ticket: WorkspaceCodemapProjectionDemandTicket
+    ) async -> WorkspaceCodemapProjectionDemandStatus {
+        guard let session = modernCodemapSessionsByRootEpoch[ticket.rootEpoch],
+              let engine = session.engine
+        else { return .stale }
+        return await engine.projectionDemandStatus(ticket)
+    }
+
+    func releaseCodemapProjectionDemand(_ ticket: WorkspaceCodemapProjectionDemandTicket) async -> Bool {
+        guard let session = modernCodemapSessionsByRootEpoch[ticket.rootEpoch],
+              let engine = session.engine
+        else { return false }
+        await engine.releaseProjectionDemand(ticket)
+        return true
+    }
+
+    func waitForCodemapGraphPublication(
+        _ ticket: WorkspaceCodemapProjectionDemandTicket,
+        deadline: ContinuousClock.Instant
+    ) async -> Bool {
+        guard let engine = modernCodemapSessionsByRootEpoch[ticket.rootEpoch]?.engine else { return false }
+        let clock = ContinuousClock()
+        while clock.now < deadline, !Task.isCancelled {
+            switch await engine.projectionDemandStatus(ticket) {
+            case .ready:
+                return true
+            case .waitingForSetup, .queued, .joined, .waitingForBatchBoundary, .activeBatch, .suspendedBusy:
+                try? await Task.sleep(for: .milliseconds(25))
+            case .stale, .expired, .cancelled, .unavailable:
+                return false
+            }
+        }
+        return false
+    }
+
+    func requestAutomaticCodemapArtifactWithOwnership(
+        candidate: WorkspaceCodemapBindingAutomaticSelectionCatalogCandidate,
+        rootScope: WorkspaceLookupRootScope,
+        rootScopeEpochs: [WorkspaceCodemapRootEpoch],
+        coverageProofs: [WorkspaceCodemapProjectionCoverageProof]
+    ) async -> WorkspaceCodemapArtifactDemandOwnedResult? {
+        guard Set(rootScopeEpochs).contains(candidate.rootEpoch),
+              rootsForPathLookup(scope: rootScope).contains(where: { $0.id == candidate.identity.rootID })
+        else { return nil }
+        return requestCodemapArtifactWithOwnership(forFileID: candidate.identity.fileID)
+    }
+
+    func requestProvisionalAutomaticCodemapArtifactWithOwnership(
+        candidate: WorkspaceCodemapBindingAutomaticSelectionCatalogCandidate,
+        rootScope: WorkspaceLookupRootScope,
+        rootScopeEpochs: [WorkspaceCodemapRootEpoch]
+    ) async -> WorkspaceCodemapArtifactDemandOwnedResult? {
+        guard Set(rootScopeEpochs).contains(candidate.rootEpoch),
+              rootsForPathLookup(scope: rootScope).contains(where: { $0.id == candidate.identity.rootID })
+        else { return nil }
+        return requestCodemapArtifactWithOwnership(forFileID: candidate.identity.fileID, priority: .background)
+    }
+
+    func retryBusyAutomaticCodemapArtifactDemand(
+        _ ticket: WorkspaceCodemapArtifactDemandTicket,
+        candidate: WorkspaceCodemapBindingAutomaticSelectionCatalogCandidate,
+        rootScope: WorkspaceLookupRootScope,
+        rootScopeEpochs: [WorkspaceCodemapRootEpoch],
+        coverageProofs: [WorkspaceCodemapProjectionCoverageProof]
+    ) async -> WorkspaceCodemapArtifactDemandOwnedResult? {
+        guard Set(rootScopeEpochs).contains(candidate.rootEpoch),
+              rootsForPathLookup(scope: rootScope).contains(where: { $0.id == candidate.identity.rootID })
+        else { return nil }
+        let result = await retryBusyCodemapArtifactDemand(ticket, priority: .demand)
+        return WorkspaceCodemapArtifactDemandOwnedResult(result: result, ownership: .notAcquired)
+    }
+
+    func retryBusyCodemapArtifactDemand(
+        _ ticket: WorkspaceCodemapArtifactDemandTicket,
+        priority: CodeMapArtifactBuildPriority
+    ) async -> WorkspaceCodemapArtifactDemandResult {
+        guard case .unavailable(.busy) = codemapArtifactDemandStatus(ticket) else {
+            return codemapArtifactDemandStatus(ticket)
+        }
+        _ = await cancelCodemapArtifactDemand(ticket)
+        return requestCodemapArtifact(forFileID: ticket.fileID, priority: priority)
+    }
+
+    func revalidateAutomaticCodemapSelectionForPublication(
+        _ receipt: WorkspaceCodemapAutomaticSelectionPublicationReceipt,
+        rootScope: WorkspaceLookupRootScope
+    ) async -> WorkspaceCodemapAutomaticSelectionPublicationDisposition {
+        guard receipt.rootScope == rootScope,
+              receipt.rootScopeEpochs == currentRootScopeEpochs(rootScope),
+              receipt.publicationPermit.withCurrent({ true }) == true
+        else { return .stale(.publicationReceipt) }
+        for ticket in receipt.sourceTickets {
+            guard case .ready = codemapArtifactDemandStatus(ticket) else {
+                receipt.publicationPermit.revoke()
+                return .stale(.sourceStateChanged(WorkspaceCodemapAutomaticSelectionSourceIdentity(
+                    rootEpoch: ticket.rootEpoch,
+                    fileID: ticket.fileID,
+                    catalogGeneration: ticket.catalogGeneration
+                )))
+            }
+        }
+        for target in receipt.targets {
+            guard let file = filesByID[target.fileID],
+                  let state = rootStatesByID[file.rootID],
+                  target.rootEpoch == WorkspaceCodemapRootEpoch(rootID: file.rootID, rootLifetimeID: state.lifetimeID),
+                  target.requestGeneration == translatedModernCodemapGeneration(
+                      appliedIndexGenerationsByRootID[file.rootID] ?? 0
+                  )
+            else {
+                receipt.publicationPermit.revoke()
+                return .stale(.targetStateChanged(.notCataloged(rootEpoch: target.rootEpoch, fileID: target.fileID)))
+            }
+        }
+        return .current(receipt.targets)
+    }
+
+    func revalidateCodemapOperationPresentationForPublication(
+        _ receipt: WorkspaceCodemapOperationPresentationPublicationReceipt,
+        rootScope: WorkspaceLookupRootScope
+    ) -> WorkspaceCodemapOperationPublicationDisposition {
+        guard receipt.rootScope == rootScope else { return .stale(.rootScope) }
+        for ticket in receipt.demandTickets {
+            guard case .ready = codemapArtifactDemandStatus(ticket) else {
+                return .stale(.demand(ticket))
+            }
+        }
+        if let automaticReceipt = receipt.automaticReceipt {
+            guard automaticReceipt.publicationPermit.withCurrent({ true }) == true else {
+                return .stale(.automatic(.publicationReceipt))
+            }
+        }
+        return .current
+    }
+
     private func performModernCodemapSetup(
         authority: ModernCodemapRootAuthority
     ) async -> ModernCodemapSetupDisposition {
@@ -5952,12 +6289,19 @@ actor WorkspaceFileContextStore {
                     relativePath: relativePath,
                     authority: authority
                 )
-            } readProjectionCatalogPage: {
-                _ in .unavailable(.catalogUnavailable)
-            } revalidateProjectionCatalogToken: {
-                _, _ in .unavailable(.catalogUnavailable)
-            } publishProjection: {
-                _ in .superseded
+            } readProjectionCatalogPage: { [weak self] request in
+                guard let self else { return .unavailable(.catalogUnavailable) }
+                return await readModernCodemapProjectionCatalogPage(request, authority: authority)
+            } revalidateProjectionCatalogToken: { [weak self] rootEpoch, token in
+                guard let self else { return .unavailable(.catalogUnavailable) }
+                return await revalidateModernCodemapProjectionCatalogToken(
+                    rootEpoch: rootEpoch,
+                    token: token,
+                    authority: authority
+                )
+            } publishProjection: { [weak self] snapshot in
+                guard let self else { return .superseded }
+                return await acceptModernCodemapProjectionSnapshot(snapshot, authority: authority)
             } publishMarkerReadiness: { [weak self] update in
                 guard let self else { return false }
                 return await acceptCodemapMarkerReadinessUpdate(update, authority: authority)
@@ -6518,6 +6862,172 @@ actor WorkspaceFileContextStore {
             throw WorkspaceCodemapBindingIntegrationRoutingError.routeDetached(authority.rootEpoch)
         }
         return snapshot
+    }
+
+    private func currentRootScopeEpochs(_ rootScope: WorkspaceLookupRootScope) -> [WorkspaceCodemapRootEpoch] {
+        rootsForPathLookup(scope: rootScope).compactMap { root in
+            guard let state = rootStatesByID[root.id] else { return nil }
+            return WorkspaceCodemapRootEpoch(rootID: root.id, rootLifetimeID: state.lifetimeID)
+        }
+    }
+
+    private func modernCodemapFileIsSupported(_ file: WorkspaceFileRecord) -> Bool {
+        let fileExtension = (file.name as NSString).pathExtension
+        return SyntaxManager.shared.language(forFileExtension: fileExtension) != nil &&
+            SyntaxManager.supportsCodeMap(fileExtension: fileExtension)
+    }
+
+    private func modernCodemapProjectionCandidates(
+        rootEpoch: WorkspaceCodemapRootEpoch,
+        authority: ModernCodemapRootAuthority
+    ) -> [WorkspaceCodemapBindingAutomaticSelectionCatalogCandidate] {
+        guard let state = rootStatesByID[rootEpoch.rootID],
+              state.lifetimeID == rootEpoch.rootLifetimeID
+        else { return [] }
+        return state.fileIDsByRelativePath.values.compactMap { fileID in
+            guard let file = filesByID[fileID], modernCodemapFileIsSupported(file) else { return nil }
+            let fileExtension = (file.name as NSString).pathExtension
+            guard let language = SyntaxManager.shared.language(forFileExtension: fileExtension),
+                  let identity = WorkspaceCodemapArtifactBindingIdentity(
+                      rootID: file.rootID,
+                      rootLifetimeID: rootEpoch.rootLifetimeID,
+                      fileID: file.id,
+                      standardizedRootPath: authority.standardizedRootPath,
+                      standardizedRelativePath: file.standardizedRelativePath,
+                      standardizedFullPath: file.standardizedFullPath
+                  )
+            else { return nil }
+            return WorkspaceCodemapBindingAutomaticSelectionCatalogCandidate(
+                identity: identity,
+                language: language,
+                requestGeneration: authority.ingressGeneration,
+                catalogGeneration: authority.catalogGeneration,
+                pathGeneration: authority.ingressGeneration,
+                ingressGeneration: authority.ingressGeneration
+            )
+        }.sorted(by: automaticSelectionCandidatePrecedes)
+    }
+
+    private func readModernCodemapProjectionCatalogPage(
+        _ request: WorkspaceCodemapProjectionCatalogPageRequest,
+        authority: ModernCodemapRootAuthority
+    ) async -> WorkspaceCodemapProjectionCatalogPageDisposition {
+        guard request.rootEpoch == authority.rootEpoch,
+              modernCodemapAuthorityIsCurrent(authority)
+        else { return .stale }
+        if let token = request.token {
+            guard token.rootEpoch == authority.rootEpoch,
+                  token.catalogGeneration == authority.catalogGeneration,
+                  token.ingressGeneration == authority.ingressGeneration
+            else { return .stale }
+        }
+        let token = request.token ?? WorkspaceCodemapProjectionCatalogToken(
+            rootEpoch: authority.rootEpoch,
+            topologyGeneration: authority.ingressGeneration,
+            appliedIndexGeneration: authority.ingressGeneration,
+            catalogGeneration: authority.catalogGeneration,
+            ingressGeneration: authority.ingressGeneration,
+            projectionInvalidationGeneration: authority.ingressGeneration
+        )
+        let allCandidates = modernCodemapProjectionCandidates(
+            rootEpoch: authority.rootEpoch,
+            authority: authority
+        ).map { candidate in
+            WorkspaceCodemapProjectionCatalogCandidate(
+                identity: candidate.identity,
+                language: candidate.language,
+                requestGeneration: candidate.requestGeneration,
+                pathGeneration: candidate.pathGeneration
+            )
+        }
+        let startIndex: Int
+        if let cursor = request.cursor {
+            guard let index = allCandidates.firstIndex(where: {
+                $0.identity.fileID == cursor.fileID &&
+                    $0.identity.standardizedRelativePath == cursor.standardizedRelativePath
+            }) else { return .stale }
+            startIndex = allCandidates.index(after: index)
+        } else {
+            startIndex = allCandidates.startIndex
+        }
+        var entries: [WorkspaceCodemapProjectionCatalogCandidate] = []
+        var pathBytes: UInt64 = 0
+        var index = startIndex
+        while index < allCandidates.endIndex, entries.count < request.maximumEntryCount {
+            let candidate = allCandidates[index]
+            guard let bytes = UInt64(exactly: candidate.identity.standardizedRelativePath.utf8.count),
+                  pathBytes + bytes >= pathBytes,
+                  pathBytes + bytes <= request.maximumPathByteCount
+            else { break }
+            entries.append(candidate)
+            pathBytes += bytes
+            index = allCandidates.index(after: index)
+        }
+        let nextCursor: WorkspaceCodemapProjectionCatalogCursor? = entries.isEmpty ? nil : entries.last.map {
+            WorkspaceCodemapProjectionCatalogCursor(
+                standardizedRelativePath: $0.identity.standardizedRelativePath,
+                fileID: $0.identity.fileID
+            )
+        }
+        let isEnd = index >= allCandidates.endIndex
+        let supportedThroughPage = UInt64(min(index, allCandidates.count))
+        switch WorkspaceCodemapProjectionCatalogPage.validated(
+            request: request,
+            token: token,
+            entries: entries,
+            nextCursor: isEnd ? nil : nextCursor,
+            isEnd: isEnd,
+            supportedCandidateCountThroughPage: supportedThroughPage
+        ) {
+        case let .success(page):
+            return .page(page)
+        case .failure:
+            return .unavailable(.catalogUnavailable)
+        }
+    }
+
+    private func revalidateModernCodemapProjectionCatalogToken(
+        rootEpoch: WorkspaceCodemapRootEpoch,
+        token: WorkspaceCodemapProjectionCatalogToken,
+        authority: ModernCodemapRootAuthority
+    ) async -> WorkspaceCodemapProjectionCatalogTokenDisposition {
+        guard rootEpoch == authority.rootEpoch,
+              token.rootEpoch == authority.rootEpoch,
+              token.catalogGeneration == authority.catalogGeneration,
+              token.ingressGeneration == authority.ingressGeneration
+        else { return .stale }
+        return modernCodemapAuthorityIsCurrent(authority) ? .current : .stale
+    }
+
+    private func acceptModernCodemapProjectionSnapshot(
+        _ snapshot: WorkspaceCodemapProjectionSnapshot,
+        authority: ModernCodemapRootAuthority
+    ) async -> WorkspaceCodemapProjectionSnapshotDisposition {
+        guard modernCodemapAuthorityIsCurrent(authority) else { return .stale }
+        let progress: WorkspaceCodemapProjectionProgress
+        switch snapshot {
+        case let .segment(segment):
+            guard segment.generation.rootEpoch == authority.rootEpoch,
+                  segment.generation.catalogGeneration == authority.catalogGeneration,
+                  segment.generation.catalogToken.ingressGeneration == authority.ingressGeneration
+            else { return .stale }
+            progress = segment.progress
+        case let .seal(proof):
+            guard proof.generation.rootEpoch == authority.rootEpoch,
+                  proof.generation.catalogGeneration == authority.catalogGeneration,
+                  proof.generation.catalogToken.ingressGeneration == authority.ingressGeneration
+            else { return .stale }
+            progress = WorkspaceCodemapProjectionProgress(
+                phase: .complete,
+                counts: proof.counts,
+                catalogPageCount: 0,
+                catalogPathByteCount: 0,
+                publishedSegmentCount: proof.lastSegmentSequence.map { $0 + 1 } ?? 0,
+                publishedSegmentByteCount: 0,
+                catalogCompletion: proof.catalogCompletion
+            )
+        }
+        return .accepted(progress)
     }
 
     private func modernCodemapAuthorityIsCurrent(

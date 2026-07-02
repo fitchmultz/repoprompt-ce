@@ -235,6 +235,7 @@ final class AgentSelectedFilePreviewLifecycleTests: XCTestCase {
             displayName: displayName,
             directoryDisplay: "Sources",
             lineRanges: lineRanges,
+            codemapText: nil,
             canRemove: true
         )
     }

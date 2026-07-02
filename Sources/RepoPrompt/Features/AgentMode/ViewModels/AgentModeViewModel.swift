@@ -12637,7 +12637,7 @@ final class AgentModeViewModel: ObservableObject {
         let workspaceBlocks = PromptPackagingService.generateFileBlocksDetailed(
             files: workspaceEntries,
             filePathDisplay: .relative,
-            codemapSnapshotBundle: .empty,
+            codemapPresentation: .empty,
             displayPathResolver: { entry in
                 if let projected = lookupContext.bindingProjection?.projectedLogicalPathComponents(
                     forPhysicalPath: entry.file.standardizedFullPath
@@ -15875,7 +15875,7 @@ final class AgentModeViewModel: ObservableObject {
             tokenCap: tokenCap,
             store: promptManager.workspaceFileContextStore,
             lookupContext: lookupContext,
-            overTokenCapSummaryProvider: { [weak self] selection, lookupContext, codemapPresentation, _ in
+            overTokenCapSummaryProvider: { [weak self] selection, lookupContext, codemapPresentation in
                 guard let self, let mcp = mcpServer else { return nil }
                 let reply = await mcp.buildTabSelectionReply(
                     from: selection,
