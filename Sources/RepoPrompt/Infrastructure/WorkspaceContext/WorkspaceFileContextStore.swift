@@ -3864,15 +3864,15 @@ actor WorkspaceFileContextStore {
     func codemapSnapshotBundle(
         rootScope: WorkspaceLookupRootScope = .allLoaded
     ) -> WorkspaceCodemapSnapshotBundle {
-        let allowedRootIDs = Set(rootsForPathLookup(scope: rootScope).map(\.id))
-        let snapshots = codemapSnapshotsByFileID.values.filter {
-            allowedRootIDs.contains($0.rootID) && isDiscoverableFileID($0.fileID)
-        }
-        return WorkspaceCodemapSnapshotBundle(snapshots: Array(snapshots))
+        WorkspaceCodemapSnapshotBundle(snapshots: Array(codemapSnapshotsByID(rootScope: rootScope).values))
     }
 
-    func codemapSnapshotDictionary() -> [UUID: WorkspaceCodemapSnapshot] {
-        codemapSnapshotBundle().snapshotsByFileID
+    private func codemapSnapshotsByID(rootScope: WorkspaceLookupRootScope = .allLoaded) -> [UUID: WorkspaceCodemapSnapshot] {
+        let allowedRootIDs = Set(rootsForPathLookup(scope: rootScope).map(\.id))
+        return Dictionary(uniqueKeysWithValues: codemapSnapshotsByFileID.values.compactMap { snapshot in
+            guard allowedRootIDs.contains(snapshot.rootID), isDiscoverableFileID(snapshot.fileID) else { return nil }
+            return (snapshot.fileID, snapshot)
+        })
     }
 
     func codemapSnapshots(inRoot rootID: UUID) -> [WorkspaceCodemapSnapshot] {
@@ -4061,7 +4061,7 @@ actor WorkspaceFileContextStore {
         makeFileTreeSelectionSnapshot(
             request,
             selectedStoreFileIDs: request.selectedFileIDs,
-            codemapSnapshotBundle: codemapSnapshotBundle(rootScope: request.rootScope)
+            codemapFileIDs: renderableCodemapFileIDs(rootScope: request.rootScope)
         )
     }
 
@@ -4087,7 +4087,6 @@ actor WorkspaceFileContextStore {
     func makeFileTreeSelectionSnapshot(
         selection: StoredSelection,
         request: WorkspaceFileTreeSnapshotRequest,
-        codemapSnapshotBundle frozenCodemaps: WorkspaceCodemapSnapshotBundle? = nil,
         profile: PathLocateProfile = .uiAssisted
     ) async -> FileTreeSelectionSnapshot {
         let selectedStoreFileIDs = await selectedFileIDs(
@@ -4095,11 +4094,10 @@ actor WorkspaceFileContextStore {
             request: request,
             profile: profile
         )
-        let codemapSnapshotBundle = frozenCodemaps ?? codemapSnapshotBundle(rootScope: request.rootScope)
         return await makeFileTreeSelectionSnapshot(
             request,
             selectedStoreFileIDs: selectedStoreFileIDs,
-            codemapSnapshotBundle: codemapSnapshotBundle,
+            codemapFileIDs: renderableCodemapFileIDs(rootScope: request.rootScope),
             profile: profile
         )
     }
@@ -4200,22 +4198,9 @@ actor WorkspaceFileContextStore {
         return fileIDs
     }
 
-    private func makeFileTreeSelectionSnapshot(
-        _ request: WorkspaceFileTreeSnapshotRequest,
-        selectedStoreFileIDs: Set<UUID>,
-        codemapSnapshotBundle: WorkspaceCodemapSnapshotBundle
-    ) -> FileTreeSelectionSnapshot {
-        makeFileTreeSelectionSnapshot(
-            request,
-            selectedStoreFileIDs: selectedStoreFileIDs,
-            codemapFileIDs: renderableCodemapFileIDs(in: codemapSnapshotBundle),
-            startFolder: nil
-        )
-    }
-
-    private func renderableCodemapFileIDs(in bundle: WorkspaceCodemapSnapshotBundle) -> Set<UUID> {
-        Set(bundle.orderedSnapshots.compactMap { snapshot in
-            snapshot.fileAPI == nil ? nil : snapshot.fileID
+    private func renderableCodemapFileIDs(rootScope: WorkspaceLookupRootScope) -> Set<UUID> {
+        Set(codemapSnapshotsByID(rootScope: rootScope).compactMap { fileID, snapshot in
+            snapshot.fileAPI == nil ? nil : fileID
         })
     }
 
@@ -4229,20 +4214,6 @@ actor WorkspaceFileContextStore {
             selectedStoreFileIDs: selectedStoreFileIDs,
             codemapFileIDs: codemapFileIDs,
             startFolder: nil
-        )
-    }
-
-    private func makeFileTreeSelectionSnapshot(
-        _ request: WorkspaceFileTreeSnapshotRequest,
-        selectedStoreFileIDs: Set<UUID>,
-        codemapSnapshotBundle: WorkspaceCodemapSnapshotBundle,
-        profile: PathLocateProfile
-    ) async -> FileTreeSelectionSnapshot {
-        await makeFileTreeSelectionSnapshot(
-            request,
-            selectedStoreFileIDs: selectedStoreFileIDs,
-            codemapFileIDs: renderableCodemapFileIDs(in: codemapSnapshotBundle),
-            profile: profile
         )
     }
 
@@ -7156,7 +7127,7 @@ actor WorkspaceFileContextStore {
         }
         guard !missingFiles.isEmpty else {
             return WorkspaceCodemapRepairResult(
-                snapshotsByFileID: codemapSnapshotDictionary(),
+                snapshotsByFileID: codemapSnapshotsByID(),
                 pendingFileIDs: []
             )
         }
@@ -7168,7 +7139,7 @@ actor WorkspaceFileContextStore {
             pollInterval: pollInterval
         )
         try Task.checkCancellation()
-        let snapshots = codemapSnapshotDictionary()
+        let snapshots = codemapSnapshotsByID()
         return WorkspaceCodemapRepairResult(
             snapshotsByFileID: snapshots,
             pendingFileIDs: submittedFileIDs.filter { snapshots[$0] == nil }

@@ -37,8 +37,8 @@ final class WorkspaceCheckoutRefreshServiceTests: XCTestCase {
         XCTAssertTrue(result.removedStaleCodemapFileIDs.contains(fileID))
         let snapshotAfterRefresh = await store.codemapSnapshot(rootID: record.id, relativePath: "Sources/App.swift")
         XCTAssertNil(snapshotAfterRefresh)
-        let snapshots = await store.codemapSnapshotDictionary()
-        XCTAssertFalse(snapshots.values.contains { snapshot in
+        let snapshots = await store.codemapSnapshots(inRoot: record.id)
+        XCTAssertFalse(snapshots.contains { snapshot in
             snapshot.fileAPI?.apiDescription.contains("branchASymbol") == true
         })
     }
