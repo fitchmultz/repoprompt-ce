@@ -301,13 +301,13 @@ struct WorkspaceRootBindingProjection: Equatable {
         }
     }
 
-    private func boundRoot(containingLogicalAbsolutePath path: String) -> BoundRoot? {
+    func boundRoot(containingLogicalAbsolutePath path: String) -> BoundRoot? {
         replacementsByLogicalRootPath.values
             .filter { path == $0.logicalRoot.standardizedFullPath || path.hasPrefix($0.logicalRoot.standardizedFullPath + "/") }
             .max { $0.logicalRoot.standardizedFullPath.count < $1.logicalRoot.standardizedFullPath.count }
     }
 
-    private func boundRoot(containingPhysicalAbsolutePath path: String) -> BoundRoot? {
+    func boundRoot(containingPhysicalAbsolutePath path: String) -> BoundRoot? {
         replacementsByLogicalRootPath.values
             .filter { path == $0.physicalRoot.standardizedFullPath || path.hasPrefix($0.physicalRoot.standardizedFullPath + "/") }
             .max { $0.physicalRoot.standardizedFullPath.count < $1.physicalRoot.standardizedFullPath.count }
@@ -507,6 +507,47 @@ struct WorkspaceLookupContext: Equatable {
 
     func displayPath(forPhysicalPath path: String, display: FilePathDisplay = .relative) -> String {
         bindingProjection?.logicalDisplayPath(forPhysicalPath: path, display: display) ?? path
+    }
+
+    func logicalRootDisplayNamesByRootID(store: WorkspaceFileContextStore) async -> [UUID: String] {
+        let roots = await store.rootRefs(scope: rootScope)
+        let boundLogicalNames = Dictionary(
+            (bindingProjection?.boundRootsForMetadata ?? []).map { ($0.physicalRoot.id, $0.logicalRoot.name) },
+            uniquingKeysWith: { current, _ in current }
+        )
+        let preferredNames = Dictionary(uniqueKeysWithValues: roots.map { root in
+            (root.id, boundLogicalNames[root.id] ?? root.name)
+        })
+        let nameCounts = Dictionary(grouping: preferredNames.values) { $0.lowercased() }
+            .mapValues(\.count)
+        return Dictionary(uniqueKeysWithValues: roots.map { root in
+            let preferredName = preferredNames[root.id] ?? root.name
+            let label = nameCounts[preferredName.lowercased()] == 1
+                ? preferredName
+                : "root@\(root.id.uuidString.lowercased())"
+            return (root.id, label)
+        })
+    }
+
+    func logicalDisplayPath(
+        for file: WorkspaceFileRecord,
+        roots: [WorkspaceRootRef],
+        rootDisplayNamesByRootID: [UUID: String],
+        display: FilePathDisplay
+    ) -> String? {
+        guard let root = roots.first(where: { $0.id == file.rootID }) else { return nil }
+        if display == .full {
+            return bindingProjection?.projectedLogicalDisplayPath(
+                forPhysicalPath: file.standardizedFullPath,
+                display: .full
+            ) ?? file.standardizedFullPath
+        }
+        let relativePath = file.standardizedRelativePath
+        if roots.count == 1 {
+            return relativePath
+        }
+        let rootLabel = rootDisplayNamesByRootID[file.rootID] ?? root.name
+        return relativePath.isEmpty ? rootLabel : "\(rootLabel)/\(relativePath)"
     }
 
     func logicalizeSelection(_ selection: StoredSelection) -> StoredSelection {

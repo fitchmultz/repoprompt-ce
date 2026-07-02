@@ -228,15 +228,14 @@ final class AgentSelectedFilePreviewLifecycleTests: XCTestCase {
         return AgentContextExportRow(
             id: resolvedID,
             kind: kind,
-            physicalPath: "/tmp/RepoPromptTests/\(resolvedRelativePath)",
             rootID: rootID,
             relativePath: resolvedRelativePath,
             displayPath: resolvedRelativePath,
             displayName: displayName,
             directoryDisplay: "Sources",
             lineRanges: lineRanges,
-            codemapText: nil,
-            canRemove: true
+            canRemove: true,
+            directContentPath: "/tmp/RepoPromptTests/\(resolvedRelativePath)"
         )
     }
 

@@ -1291,6 +1291,7 @@ actor WorkspaceFileContextStore {
     private var codemapMarkerReadinessContinuations: [UUID: AsyncStream<WorkspaceCodemapMarkerReadinessEvent>.Continuation] = [:]
     #if DEBUG
         private var codemapScanWillStartHandlerForTesting: (@Sendable (UUID) async -> Void)?
+        private var filesInRootRequestCountForTesting = 0
     #endif
     private var fileSystemDeltaContinuations: [UUID: AsyncStream<WorkspaceFileSystemDeltaEvent>.Continuation] = [:]
     private var appliedIndexContinuations: [UUID: AsyncStream<WorkspaceAppliedIndexBatchEvent>.Continuation] = [:]
@@ -2132,11 +2133,19 @@ actor WorkspaceFileContextStore {
     }
 
     func files(inRoot rootID: UUID) -> [WorkspaceFileRecord] {
+        #if DEBUG
+            filesInRootRequestCountForTesting += 1
+        #endif
         guard let state = rootStatesByID[rootID] else { return [] }
         return state.fileIDsByRelativePath.values
             .filter(isDiscoverableFileID)
             .compactMap { filesByID[$0] }
             .sorted { $0.standardizedRelativePath < $1.standardizedRelativePath }
+    }
+
+    func file(id fileID: UUID) -> WorkspaceFileRecord? {
+        guard isDiscoverableFileID(fileID) else { return nil }
+        return filesByID[fileID]
     }
 
     func folders(inRoot rootID: UUID) -> [WorkspaceFolderRecord] {
@@ -4047,6 +4056,20 @@ actor WorkspaceFileContextStore {
         return selectedStoreFileIDs
     }
 
+    func lookupSelectionPaths(_ requests: [WorkspacePathLookupRequest]) async -> [String: WorkspacePathLookupResult] {
+        var results: [String: WorkspacePathLookupResult] = [:]
+        results.reserveCapacity(requests.count)
+        for request in requests {
+            guard let result = await lookupSelectionPath(
+                request.userPath,
+                profile: request.profile,
+                rootScope: request.rootScope
+            ) else { continue }
+            results[request.userPath] = result
+        }
+        return results
+    }
+
     private func lookupSelectionPath(
         _ userPath: String,
         profile: PathLocateProfile,
@@ -4333,6 +4356,14 @@ actor WorkspaceFileContextStore {
             _ handler: (@Sendable (UUID) async -> Void)?
         ) async {
             codemapScanWillStartHandlerForTesting = handler
+        }
+
+        func resetFilesInRootRequestCountForTesting() {
+            filesInRootRequestCountForTesting = 0
+        }
+
+        func fileEnumerationRequestCountForTesting() -> Int {
+            filesInRootRequestCountForTesting
         }
     #endif
 
