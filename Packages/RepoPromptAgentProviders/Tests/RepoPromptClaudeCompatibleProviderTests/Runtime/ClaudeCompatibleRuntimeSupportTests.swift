@@ -179,7 +179,7 @@ final class ClaudeCompatibleRuntimeSupportTests: XCTestCase {
         XCTAssertFalse(kimiArgs.contains("--append-system-prompt"))
     }
 
-    func testProviderCatalogDefaultsExposeStableRawValues() {
+    func testProviderCatalogDefaultsExposeStableRawValues() throws {
         XCTAssertEqual(ClaudeCompatibleProviderPluginID.allCases.map(\.rawValue), [
             "claude-code",
             "zai-claude-code",
@@ -198,11 +198,20 @@ final class ClaudeCompatibleRuntimeSupportTests: XCTestCase {
         XCTAssertEqual(claude.options.first?.isPlaceholderDefault, true)
         XCTAssertTrue(claude.options.contains { $0.rawValue == "claude-fable-5" && $0.supportedEffortLevels.contains("xhigh") })
         XCTAssertTrue(claude.options.contains { $0.rawValue == "opus[1m]" && $0.supportedEffortLevels.contains("xhigh") })
+        let sonnet5 = try XCTUnwrap(claude.options.first { $0.rawValue == "claude-sonnet-5" })
+        XCTAssertEqual(sonnet5.displayName, "Sonnet 5")
+        XCTAssertEqual(sonnet5.supportedEffortLevels, ["low", "medium", "high", "max", "xhigh"])
+
+        let expandedClaude = ClaudeCompatibleModelCatalog.snapshot(pluginID: .claudeCode)
+        XCTAssertTrue(expandedClaude.options.contains { $0.rawValue == "claude-sonnet-5:max" })
+        XCTAssertTrue(expandedClaude.options.contains { $0.rawValue == "claude-sonnet-5:xhigh" })
 
         let zai = ClaudeCompatibleModelCatalog.snapshot(pluginID: .zaiClaudeCode, includeEffortVariants: false)
         XCTAssertEqual(zai.defaultModelRaw, "sonnet")
         XCTAssertEqual(zai.options.map(\.rawValue), ["haiku", "sonnet", "opus"])
         XCTAssertEqual(zai.options.first { $0.isProviderDefault }?.rawValue, "sonnet")
+
+        XCTAssertEqual(ClaudeCompatibleHeadlessRuntime.runtimeModelParam("claude-sonnet-5:xhigh"), "claude-sonnet-5")
 
         let kimi = ClaudeCompatibleModelCatalog.snapshot(pluginID: .kimiClaudeCode, includeEffortVariants: false)
         XCTAssertEqual(kimi.defaultModelRaw, "kimi-code")

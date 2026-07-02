@@ -611,6 +611,13 @@ public enum ClaudeCompatibleHeadlessRuntime {
     }
 
     public static func runtimeModelParam(_ raw: String?) -> String? {
-        ClaudeCompatibleModelNormalizer.normalizedRequestedModel(raw)
+        guard let normalized = ClaudeCompatibleModelNormalizer.normalizedRequestedModel(raw) else { return nil }
+        guard let effortSeparator = normalized.lastIndex(of: ":") else { return normalized }
+        let suffixStart = normalized.index(after: effortSeparator)
+        guard suffixStart < normalized.endIndex else { return normalized }
+        let suffix = normalized[suffixStart...].lowercased()
+        guard ["low", "medium", "high", "max", "xhigh"].contains(suffix) else { return normalized }
+        let base = String(normalized[..<effortSeparator]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return base.isEmpty ? nil : base
     }
 }
