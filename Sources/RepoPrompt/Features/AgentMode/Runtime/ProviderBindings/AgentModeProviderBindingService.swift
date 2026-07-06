@@ -8,8 +8,14 @@ final class AgentModeProviderBindingService {
         self.init(preferences: AgentProviderPreferenceSnapshotStore())
     }
 
-    init(preferences: AgentProviderPreferenceSnapshotStore) {
+    init(
+        preferences: AgentProviderPreferenceSnapshotStore,
+        preloadSubagentPermissions: Bool = true
+    ) {
         self.preferences = preferences
+        if preloadSubagentPermissions {
+            _ = preferences.securePermissions?.subagentPermissions()
+        }
     }
 
     func topLevelSettingsControlsBinding(providerID: AgentProviderBindingID) -> AgentProviderControlsBinding {

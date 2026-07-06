@@ -274,7 +274,8 @@ final class AgentRunMCPToolServiceStartDefaultTests: XCTestCase {
                         )
                     ]
                 }
-            )
+            ),
+            preloadSubagentPermissions: false
         )
     }
 
