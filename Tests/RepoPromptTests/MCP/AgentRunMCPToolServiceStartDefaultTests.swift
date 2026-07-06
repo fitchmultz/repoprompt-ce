@@ -211,7 +211,7 @@ final class AgentRunMCPToolServiceStartDefaultTests: XCTestCase {
         XCTAssertFalse(profile.codexSuppressesThirdPartyMCPServers)
     }
 
-    func testSubagentPolicyUnavailableUsesCodexSafeManagedSnapshotWithoutKeychainRead() throws {
+    func testSubagentPolicyUnavailableUsesCodexSafeManagedSnapshot() throws {
         let suiteName = "AgentRunMCPToolServiceStartDefaultTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -237,7 +237,7 @@ final class AgentRunMCPToolServiceStartDefaultTests: XCTestCase {
         XCTAssertEqual(snapshot.codexTools?.mcpServerStatesByNormalizedName["external-tools"], false)
         XCTAssertTrue(profile.codexBashToolEnabled(userConfigured: false))
         XCTAssertTrue(profile.codexSuppressesThirdPartyMCPServers)
-        XCTAssertNil(secureStore.diagnostic(for: .subagent))
+        XCTAssertEqual(secureStore.diagnostic(for: .subagent)?.kind, .keychainInteractionNotAllowed)
     }
 
     func testExplicitTargetTabWithOmittedModelIDPreservesCurrentSelection() {
@@ -274,8 +274,7 @@ final class AgentRunMCPToolServiceStartDefaultTests: XCTestCase {
                         )
                     ]
                 }
-            ),
-            preloadSubagentPermissions: false
+            )
         )
     }
 

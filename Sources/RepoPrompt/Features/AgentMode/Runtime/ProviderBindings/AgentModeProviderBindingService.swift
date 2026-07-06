@@ -8,14 +8,8 @@ final class AgentModeProviderBindingService {
         self.init(preferences: AgentProviderPreferenceSnapshotStore())
     }
 
-    init(
-        preferences: AgentProviderPreferenceSnapshotStore,
-        preloadSubagentPermissions: Bool = true
-    ) {
+    init(preferences: AgentProviderPreferenceSnapshotStore) {
         self.preferences = preferences
-        if preloadSubagentPermissions {
-            _ = preferences.securePermissions?.subagentPermissions()
-        }
     }
 
     func topLevelSettingsControlsBinding(providerID: AgentProviderBindingID) -> AgentProviderControlsBinding {
@@ -65,7 +59,7 @@ final class AgentModeProviderBindingService {
         provider: AgentProviderBindingID?
     ) -> AgentProviderPermissionProfile {
         _ = isSubagent
-        let document = preferences.securePermissions?.cachedSubagentPermissionsOrFailClosed()
+        let document = preferences.securePermissions?.subagentPermissions()
         let global = document?.globalPolicy() ?? AgentModePermissionPreferences.subagentPermissionPolicy(defaults: preferences.defaults, secureStore: nil)
         switch global {
         case .safeManaged:
