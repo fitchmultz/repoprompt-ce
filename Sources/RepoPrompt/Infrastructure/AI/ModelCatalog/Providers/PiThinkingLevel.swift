@@ -7,10 +7,11 @@ enum PiThinkingLevel: String, CaseIterable, Hashable, Codable {
     case medium
     case high
     case xhigh
+    case max
 
-    static let displayOrder: [PiThinkingLevel] = [.off, .minimal, .low, .medium, .high, .xhigh]
+    static let displayOrder: [PiThinkingLevel] = [.off, .minimal, .low, .medium, .high, .xhigh, .max]
     static let standardModelOrder: [PiThinkingLevel] = [.off, .minimal, .low, .medium, .high]
-    static let canonicalRawValues: Set<String> = ["off", "minimal", "low", "medium", "high", "xhigh"]
+    static let canonicalRawValues: Set<String> = ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
     static let noOverrideDisplayName = "No Override"
 
     static func isCanonicalRawValue(_ raw: String?) -> Bool {
@@ -37,6 +38,8 @@ enum PiThinkingLevel: String, CaseIterable, Hashable, Codable {
             return .high
         case "xhigh", "x-high", "extra-high", "extra high":
             return .xhigh
+        case "max":
+            return .max
         default:
             return nil
         }
@@ -50,6 +53,7 @@ enum PiThinkingLevel: String, CaseIterable, Hashable, Codable {
         case .medium: "Medium"
         case .high: "High"
         case .xhigh: "XHigh"
+        case .max: "Max"
         }
     }
 }

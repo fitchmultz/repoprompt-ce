@@ -5,6 +5,7 @@ extension PiRPCClient.Event {
         switch self {
         case .agentStart: "agent_start"
         case .agentEnd: "agent_end"
+        case .agentSettled: "agent_settled"
         case .turnStart: "turn_start"
         case .turnEnd: "turn_end"
         case .messageStart: "message_start"
@@ -50,7 +51,8 @@ extension PiRPCClient.Event {
              .customMessage,
              .unhandled:
             true
-        case .turnEnd,
+        case .agentSettled,
+             .turnEnd,
              .sessionInfoChanged,
              .thinkingLevelChanged,
              .transportClosed,
@@ -63,6 +65,7 @@ extension PiRPCClient.Event {
         switch self {
         case .agentStart,
              .agentEnd,
+             .agentSettled,
              .turnStart,
              .turnEnd,
              .messageStart,

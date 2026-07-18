@@ -81,9 +81,43 @@ final class PiModelCatalogTests: XCTestCase {
         XCTAssertFalse(AgentModelCatalog.isValid(rawModel: "missing/gpt-5.5:low", for: .pi, availability: availability))
     }
 
-    func testPiThinkingLevelOptionsUseKnownGpt55FallbackWithoutWorkspaceCatalog() {
+    func testPiThinkingLevelsIncludeGpt56MaxAndMaxOnlyModels() throws {
+        let snapshot = try XCTUnwrap(AgentPiModelRegistry.discoveredModels(
+            from: [
+                .init(provider: "openai-codex", id: "gpt-5.6-sol", displayName: "GPT-5.6 Sol", description: nil, raw: [
+                    "reasoning": .bool(true),
+                    "thinkingLevelMap": .object(["minimal": .string("low"), "xhigh": .string("xhigh"), "max": .string("max")])
+                ]),
+                .init(provider: "kimi-coding", id: "k3", displayName: "Kimi K3", description: nil, raw: [
+                    "reasoning": .bool(true),
+                    "thinkingLevelMap": .object([
+                        "off": .null,
+                        "minimal": .null,
+                        "low": .null,
+                        "medium": .null,
+                        "high": .null,
+                        "xhigh": .null,
+                        "max": .string("max")
+                    ])
+                ])
+            ],
+            currentModel: nil
+        ))
+
+        XCTAssertEqual(
+            snapshot.supportedThinkingLevels(for: "openai-codex/gpt-5.6-sol"),
+            [.off, .minimal, .low, .medium, .high, .xhigh, .max]
+        )
+        XCTAssertEqual(snapshot.supportedThinkingLevels(for: "kimi-coding/k3"), [.max])
+    }
+
+    func testPiThinkingLevelOptionsUseKnownGptFallbacksWithoutWorkspaceCatalog() {
         AgentPiModelRegistry.shared.test_reset()
 
+        XCTAssertEqual(
+            AgentModelCatalog.piThinkingLevelOptions(for: "openai-codex/gpt-5.6-sol", workspacePath: "/tmp/new-ai-workspace"),
+            [.off, .minimal, .low, .medium, .high, .xhigh, .max]
+        )
         XCTAssertEqual(
             AgentModelCatalog.piThinkingLevelOptions(for: "openai-codex/gpt-5.5", workspacePath: "/tmp/new-ai-workspace"),
             [.off, .low, .medium, .high, .xhigh]
@@ -563,6 +597,45 @@ final class PiModelCatalogTests: XCTestCase {
 
         XCTAssertEqual(snapshot.option(matching: "zai/glm-5.2")?.supportedPiThinkingLevels, PiThinkingLevel.standardModelOrder)
         XCTAssertEqual(snapshot.option(matching: "openai-codex/gpt-5.5")?.supportedPiThinkingLevels, [.off, .low, .medium, .high, .xhigh])
+    }
+
+    func testPiDynamicModelRecordBackfillsLegacyGpt56AndKimiK3ThinkingLevels() throws {
+        let json = #"""
+        {
+          "currentModelRaw": "openai-codex/gpt-5.6-sol",
+          "options": [
+            {
+              "rawValue": "openai-codex/gpt-5.6-sol",
+              "displayName": "GPT-5.6 Sol",
+              "isPlaceholderDefault": false,
+              "isProviderDefault": true
+            },
+            {
+              "rawValue": "kimi-coding/k3",
+              "displayName": "Kimi K3",
+              "isPlaceholderDefault": false,
+              "isProviderDefault": false
+            },
+            {
+              "rawValue": "openai-codex/gpt-5.6-terra",
+              "displayName": "GPT-5.6 Terra",
+              "isPlaceholderDefault": false,
+              "isProviderDefault": false,
+              "supportedThinkingLevels": ["high"]
+            }
+          ]
+        }
+        """#.data(using: .utf8)!
+
+        let record = try JSONDecoder().decode(PiDynamicModelSnapshotRecord.self, from: json)
+        let snapshot = try XCTUnwrap(PiDynamicModelStore.snapshot(from: record))
+
+        XCTAssertEqual(
+            snapshot.option(matching: "openai-codex/gpt-5.6-sol")?.supportedPiThinkingLevels,
+            [.off, .minimal, .low, .medium, .high, .xhigh, .max]
+        )
+        XCTAssertEqual(snapshot.option(matching: "kimi-coding/k3")?.supportedPiThinkingLevels, [.max])
+        XCTAssertEqual(snapshot.option(matching: "openai-codex/gpt-5.6-terra")?.supportedPiThinkingLevels, [.high])
     }
 
     func testPiModelCatalogResolvesDiscoveredModelsByWorkspaceAvailability() {

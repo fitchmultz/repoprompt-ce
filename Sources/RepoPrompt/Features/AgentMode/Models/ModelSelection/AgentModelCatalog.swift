@@ -782,6 +782,9 @@ enum AgentModelCatalog {
         let normalized = rawModel
             .replacingOccurrences(of: "_", with: "-")
             .lowercased()
+        if normalized.contains("gpt-5.6") || normalized.contains("gpt-5-6") {
+            return [.off, .minimal, .low, .medium, .high, .xhigh, .max]
+        }
         if normalized.contains("gpt-5.5-pro") || normalized.contains("gpt-5-5-pro") {
             return [.medium, .high, .xhigh]
         }
@@ -2386,6 +2389,12 @@ enum AgentModelCatalog {
         case design
     }
 
+    static let preferredPiModelBaseRaw = "openai-codex/gpt-5.6-sol"
+
+    static func preferredPiModelRaw(thinkingLevel: PiThinkingLevel) -> String {
+        "\(preferredPiModelBaseRaw):\(thinkingLevel.rawValue)"
+    }
+
     /// Metadata for a task label.
     struct TaskLabel {
         let kind: TaskLabelKind
@@ -2426,6 +2435,7 @@ enum AgentModelCatalog {
         switch kind {
         case .explore:
             [
+                SelectionCandidate(agent: .pi, modelRaw: preferredPiModelRaw(thinkingLevel: .medium)),
                 SelectionCandidate(agent: .codexExec, modelRaw: AgentModel.gpt55CodexLow.rawValue),
                 SelectionCandidate(agent: .claudeCode, modelRaw: ClaudeModelSpecifier.encodedRaw(baseModelRaw: AgentModel.claudeSonnet.rawValue, effort: .high)),
                 SelectionCandidate(agent: .claudeCode, modelRaw: AgentModel.claudeHaiku.rawValue),
@@ -2440,6 +2450,7 @@ enum AgentModelCatalog {
             ]
         case .engineer:
             [
+                SelectionCandidate(agent: .pi, modelRaw: preferredPiModelRaw(thinkingLevel: .high)),
                 SelectionCandidate(agent: .codexExec, modelRaw: AgentModel.gpt55CodexLow.rawValue),
                 SelectionCandidate(agent: .claudeCode, modelRaw: AgentModel.claudeSonnet.rawValue),
                 SelectionCandidate(agent: .claudeCodeGLM, modelRaw: AgentModel.claudeSonnet.rawValue),
@@ -2451,6 +2462,7 @@ enum AgentModelCatalog {
             ]
         case .pair:
             [
+                SelectionCandidate(agent: .pi, modelRaw: preferredPiModelRaw(thinkingLevel: .high)),
                 SelectionCandidate(agent: .codexExec, modelRaw: AgentModel.gpt55CodexHigh.rawValue),
                 SelectionCandidate(agent: .claudeCode, modelRaw: AgentModel.claudeOpus.rawValue),
                 SelectionCandidate(agent: .claudeCodeGLM, modelRaw: AgentModel.claudeOpus.rawValue),
@@ -2462,6 +2474,7 @@ enum AgentModelCatalog {
             ]
         case .design:
             [
+                SelectionCandidate(agent: .claudeCode, modelRaw: ClaudeModelSpecifier.encodedRaw(baseModelRaw: AgentModel.claudeFable5.rawValue, effort: .xhigh)),
                 SelectionCandidate(agent: .claudeCode, modelRaw: AgentModel.claudeOpus.rawValue),
                 SelectionCandidate(agent: .claudeCodeGLM, modelRaw: AgentModel.claudeOpus.rawValue),
                 SelectionCandidate(agent: .kimiCode, modelRaw: AgentModel.kimiCode.rawValue),

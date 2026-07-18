@@ -274,12 +274,18 @@ final class ContextBuilderModelStartupSelectionTests: XCTestCase {
         XCTAssertFalse(fixture.store.hasUserSetGlobalContextBuilderAgentDefaults)
     }
 
-    func testContextBuilderStartupSelectsReadyPiAheadOfOpenCodeAndCursor() throws {
+    func testContextBuilderStartupSelectsPiGpt56SolLowAheadOfOtherProviders() throws {
         AgentPiModelRegistry.shared.test_reset()
         addTeardownBlock { AgentPiModelRegistry.shared.test_reset() }
-        let piModelRaw = "openai-codex/gpt-5.5"
+        let piModelRaw = AgentModelCatalog.preferredPiModelBaseRaw
         XCTAssertTrue(AgentPiModelRegistry.shared.updateDiscoveredModels(PiDiscoveredModels(
-            options: [AgentModelOption(rawValue: piModelRaw, displayName: "GPT 5.5", description: nil, isDefault: true)],
+            options: [AgentModelOption(
+                rawValue: piModelRaw,
+                displayName: "GPT-5.6 Sol",
+                description: nil,
+                isDefault: true,
+                supportedPiThinkingLevels: [.low, .medium, .high, .xhigh, .max]
+            )],
             currentModelRaw: piModelRaw
         )))
 
@@ -287,8 +293,8 @@ final class ContextBuilderModelStartupSelectionTests: XCTestCase {
             persistedAgentRaw: nil,
             persistedModelRaw: nil,
             availability: .init(
-                claudeCodeAvailable: false,
-                codexAvailable: false,
+                claudeCodeAvailable: true,
+                codexAvailable: true,
                 openCodeAvailable: true,
                 cursorAvailable: true,
                 piAvailable: true
@@ -296,17 +302,55 @@ final class ContextBuilderModelStartupSelectionTests: XCTestCase {
         ))
 
         XCTAssertEqual(resolved.agent, .pi)
-        XCTAssertEqual(resolved.modelRaw, piModelRaw)
-        let recommendation = try XCTUnwrap(AutoRecommendationEngine.contextBuilderRecommendation(status: ProviderStatusSnapshot(
-            claudeCodeCLI: .notConfigured,
-            codexCLI: .notConfigured,
-            cursorCLI: .ready,
-            piCLI: .ready,
-            openCodeCLI: .ready,
-            openAI: .notConfigured
-        )))
+        XCTAssertEqual(resolved.modelRaw, AgentModelCatalog.preferredPiModelRaw(thinkingLevel: .low))
+        let recommendation = try XCTUnwrap(AutoRecommendationEngine.contextBuilderRecommendation(
+            status: ProviderStatusSnapshot(
+                claudeCodeCLI: .ready,
+                codexCLI: .ready,
+                cursorCLI: .ready,
+                piCLI: .ready,
+                openCodeCLI: .ready,
+                openAI: .notConfigured
+            ),
+            preferredPiModelAvailable: true
+        ))
         XCTAssertEqual(recommendation.recommendedAgent, .pi)
-        XCTAssertFalse(recommendation.rationale.localizedCaseInsensitiveContains("fallback"))
+        XCTAssertEqual(recommendation.recommendedModelRaw, AgentModelCatalog.preferredPiModelRaw(thinkingLevel: .low))
+    }
+
+    func testOracleRecommendationPersistsPiGpt56SolXHighAndKeepsRoleDiscoveryUnrestricted() throws {
+        let fixture = try makeStoreFixture()
+        let keyManager = KeyManager(secureService: SecureKeysService(secureStorage: TestSecureStorageBackend()))
+        let apiSettings = APISettingsViewModel(
+            aiQueriesService: AIQueriesService(keyManager: keyManager),
+            keyManager: keyManager,
+            loadStoredDataOnInit: false
+        )
+        apiSettings.isPiConnected = true
+        apiSettings.availablePiModelOptions = [AgentModelOption(
+            rawValue: AgentModelCatalog.preferredPiModelBaseRaw,
+            displayName: "GPT-5.6 Sol",
+            description: nil,
+            isDefault: true,
+            supportedPiThinkingLevels: [.low, .medium, .high, .xhigh, .max]
+        )]
+        apiSettings.test_completeContextBuilderProviderValidation(verifiedProviders: [.pi])
+        let engine = AutoRecommendationEngine(settingsStore: fixture.store, apiSettingsViewModel: apiSettings)
+        let workspaceID = UUID()
+
+        let recommendation = try XCTUnwrap(engine.computeRecommendations(for: workspaceID).chatModel)
+        let expectedModel = AIModel.piCustom(
+            name: AgentModelCatalog.preferredPiModelRaw(thinkingLevel: .xhigh)
+        ).rawValue
+        XCTAssertEqual(recommendation.defaultBackend, .pi)
+        XCTAssertEqual(recommendation.piOption?.modelString, expectedModel)
+        XCTAssertEqual(recommendation.piOption?.displayName, "pi (Recommended)")
+
+        engine.applyChatModelRecommendation(recommendation, backend: recommendation.defaultBackend, workspaceID: workspaceID)
+
+        XCTAssertEqual(fixture.store.planningModelRaw(), expectedModel)
+        XCTAssertEqual(fixture.store.preferredComposeModelRaw(), expectedModel)
+        XCTAssertFalse(fixture.store.restrictMCPAgentDiscoveryToRoleLabels())
     }
 
     func testContextBuilderStartupSkipsReadyPiWithoutUsableModelCatalog() throws {

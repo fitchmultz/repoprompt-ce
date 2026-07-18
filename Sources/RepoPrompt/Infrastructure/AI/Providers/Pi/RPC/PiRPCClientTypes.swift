@@ -101,6 +101,7 @@ extension PiRPCClient {
     enum Event: Equatable {
         case agentStart
         case agentEnd(messages: [[String: PiJSONValue]], willRetry: Bool)
+        case agentSettled
         case turnStart
         case turnEnd(message: [String: PiJSONValue]?, toolResults: [[String: PiJSONValue]])
         case messageStart(message: [String: PiJSONValue]?)

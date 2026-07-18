@@ -338,6 +338,63 @@ final class PiNativeSessionControllerTests: XCTestCase {
         })
     }
 
+    func testAgentSettledCompletesAfterCompactionRetryWithoutWaitingForLegacyRecovery() async throws {
+        let directory = try makeTemporaryDirectory()
+        let scriptURL = try makeFakePiControllerScript(recordURL: directory.appendingPathComponent("commands.jsonl"))
+        let client = PiRPCClient(config: .init(
+            commandName: scriptURL.path,
+            additionalPathHints: [],
+            requestTimeout: 2,
+            launchArguments: [],
+            requiresSupportedVersionCheck: false
+        ))
+        let sleeper = ManualRecoverySleeper()
+        let controller = makeController(client: client, recoverySleeper: { await sleeper.sleep($0) })
+        addTeardownBlock { await controller.shutdown() }
+        _ = try await controller.startOrResume(existing: nil)
+
+        let stream = await controller.events
+        let recorder = EventRecorder()
+        let collector = Task {
+            for await event in stream {
+                await recorder.append(event)
+            }
+        }
+
+        let turnID = try await controller.sendUserMessage("agent-settled-after-compaction")
+        let events = await waitForRecordedEvents(recorder, timeoutNanoseconds: 1_500_000_000) { events in
+            events.contains { event in
+                if case let .turnCompleted(completedTurnID, status) = event {
+                    return completedTurnID == turnID && status == .completed
+                }
+                return false
+            }
+        }
+        collector.cancel()
+
+        XCTAssertEqual(events.count { event in
+            if case .turnCompleted = event { return true }
+            return false
+        }, 1)
+        let continuationIndex = try XCTUnwrap(events.firstIndex { event in
+            if case let .stream(result) = event {
+                return result.type == "content" && result.text == "continued after compaction"
+            }
+            return false
+        })
+        let completionIndex = try XCTUnwrap(events.firstIndex { event in
+            if case .turnCompleted = event { return true }
+            return false
+        })
+        XCTAssertLessThan(continuationIndex, completionIndex)
+        XCTAssertFalse(events.contains { event in
+            if case let .diagnostic(diagnostic) = event {
+                return diagnostic.kind == .unknownEventType && diagnostic.eventType == "agent_settled"
+            }
+            return false
+        })
+    }
+
     func testDoneDeltaBeforeUsageDoesNotEmitPrematureMessageStop() async throws {
         let directory = try makeTemporaryDirectory()
         let scriptURL = try makeFakePiControllerScript(recordURL: directory.appendingPathComponent("commands.jsonl"))
@@ -2226,6 +2283,10 @@ final class PiNativeSessionControllerTests: XCTestCase {
             PiModelSpecifier(provider: "zai", modelID: "glm-5.2", thinkingLevel: "xhigh")
         )
         XCTAssertEqual(
+            PiModelSpecifier(raw: "openai-codex/gpt-5.6-sol:max", knownModelIDs: []),
+            PiModelSpecifier(provider: "openai-codex", modelID: "gpt-5.6-sol", thinkingLevel: "max")
+        )
+        XCTAssertEqual(
             PiModelSpecifier(raw: "openai-codex/gpt-5.5:low", knownModelIDs: [])?.providerQualifiedModelRaw,
             "openai-codex/gpt-5.5"
         )
@@ -2562,6 +2623,16 @@ final class PiNativeSessionControllerTests: XCTestCase {
                     COMPACTION_ACTIVE = True
                     emit({"type": "agent_end", "messages": [], "willRetry": False})
                     emit({"type": "compaction_start", "reason": "threshold"})
+                elif request.get("message") == "agent-settled-after-compaction":
+                    emit({"type": "agent_end", "messages": [], "willRetry": False})
+                    emit({"type": "compaction_start", "reason": "overflow"})
+                    emit({"type": "compaction_end", "reason": "overflow", "result": {"messageCount": 1}, "aborted": False, "willRetry": True})
+                    emit({"type": "agent_start"})
+                    emit({"type": "turn_start"})
+                    emit({"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": "continued after compaction"}})
+                    emit({"type": "turn_end", "toolResults": []})
+                    emit({"type": "agent_end", "messages": [], "willRetry": False})
+                    emit({"type": "agent_settled"})
                 elif request.get("message") == "agent-end-usage":
                     emit({"type": "agent_end", "messages": [{"role": "assistant", "content": "final", "usage": {"input": 8, "output": 4, "cacheRead": 1, "totalTokens": 14}}], "willRetry": False})
                 elif request.get("message") == "auto-retry-failure":

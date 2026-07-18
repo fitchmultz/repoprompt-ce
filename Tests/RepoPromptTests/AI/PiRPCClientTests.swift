@@ -136,7 +136,7 @@ final class PiRPCClientTests: XCTestCase {
             var collected: [PiRPCClient.Event] = []
             for await event in events {
                 collected.append(event)
-                if collected.count >= 7 { break }
+                if collected.count >= 8 { break }
             }
             return collected
         }
@@ -165,6 +165,7 @@ final class PiRPCClientTests: XCTestCase {
         XCTAssertTrue(collected.contains(.thinkingLevelChanged(level: "high")))
         XCTAssertTrue(collected.contains(.sessionInfoChanged(name: "Renamed session")))
         XCTAssertTrue(collected.contains(.agentEnd(messages: [], willRetry: false)))
+        XCTAssertTrue(collected.contains(.agentSettled))
     }
 
     func testMutatingRequestTimeoutInvalidatesRPCProcessAndNextCommandRestarts() async throws {
@@ -693,6 +694,7 @@ final class PiRPCClientTests: XCTestCase {
                 emit({"type": "thinking_level_changed", "level": "high"})
                 emit({"type": "session_info_changed", "name": "Renamed session"})
                 emit({"type": "agent_end", "messages": [], "willRetry": False})
+                emit({"type": "agent_settled"})
                 emit({
                     "type": "response",
                     "id": request_id,

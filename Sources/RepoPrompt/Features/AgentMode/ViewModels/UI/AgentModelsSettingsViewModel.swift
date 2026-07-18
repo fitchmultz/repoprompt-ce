@@ -146,7 +146,7 @@ final class AgentModelsSettingsViewModel: ObservableObject {
     var recommendedContextBuilderDescription: String? {
         guard let rec = recommendations.contextBuilder else { return nil }
         return ModelSelectionDisplayFormatter.agentQualifiedDisplayName(
-            for: rec.recommendedModel.rawValue,
+            for: rec.recommendedModelRaw,
             agentKind: rec.recommendedAgent,
             availability: availability
         )

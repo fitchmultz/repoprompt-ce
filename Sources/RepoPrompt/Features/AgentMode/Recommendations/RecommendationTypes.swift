@@ -152,7 +152,7 @@ struct ChatModelRecommendation {
 
     /// Returns all available options.
     var availableOptions: [ChatBackendOption] {
-        [openAIOption, codexOption, claudeCodeOption, piOption].compactMap(\.self)
+        [piOption, claudeCodeOption, codexOption, openAIOption].compactMap(\.self)
     }
 
     /// Returns the option for a specific backend kind.
@@ -185,14 +185,23 @@ struct ContextBuilderRecommendation {
     var isMuted: Bool = false
 
     let recommendedAgent: AgentProviderKind
-    let recommendedModel: AgentModel
+    let recommendedModelRaw: String
     let rationale: String
     /// Optional hint to show user how to upgrade to a better setup.
     let upgradeHint: String?
 
     init(recommendedAgent: AgentProviderKind, recommendedModel: AgentModel, rationale: String, upgradeHint: String? = nil) {
+        self.init(
+            recommendedAgent: recommendedAgent,
+            recommendedModelRaw: recommendedModel.rawValue,
+            rationale: rationale,
+            upgradeHint: upgradeHint
+        )
+    }
+
+    init(recommendedAgent: AgentProviderKind, recommendedModelRaw: String, rationale: String, upgradeHint: String? = nil) {
         self.recommendedAgent = recommendedAgent
-        self.recommendedModel = recommendedModel
+        self.recommendedModelRaw = recommendedModelRaw
         self.rationale = rationale
         self.upgradeHint = upgradeHint
     }
@@ -278,15 +287,15 @@ struct RecommendationSet {
     }
 }
 
-// MARK: - Best Practice Profiles (May 2026)
+// MARK: - Best Practice Profiles (July 2026)
 
 /// Canonical best practice recommendations, versioned by date.
 /// Update `versionCode` when recommendations change significantly.
 enum BestPracticeProfiles {
     /// Bump when the table changes (used for gating mutes/badge).
     /// Format: YYYYMM plus a two-digit patch when the recommendation provider set changes inside a month.
-    static let versionCode: Int = 20_260_602
-    static let tableTitle = "Best Models by Use Case (GPT-5.5)"
+    static let versionCode: Int = 20_260_701
+    static let tableTitle = "Best Models by Use Case (pi + GPT-5.6)"
 
     struct UseCase {
         let id: String
@@ -308,63 +317,63 @@ enum BestPracticeProfiles {
     static let bestAgent = UseCase(
         id: "bestAgent",
         title: "Best Agent",
-        modelLabel: "GPT-5.5 Low",
-        accessLabel: "Codex CLI",
-        modelString: "gpt-5.5-low",
-        agentKind: .codexExec,
-        agentModel: .gpt55CodexLow,
+        modelLabel: "GPT-5.6 Sol Medium",
+        accessLabel: "pi · OpenAI Codex",
+        modelString: AIModel.piCustom(name: AgentModelCatalog.preferredPiModelRaw(thinkingLevel: .medium)).rawValue,
+        agentKind: .pi,
+        agentModel: .defaultModel,
         strengths: [
-            "Fast default for explore, discovery, and implementation",
-            "Strong reasoning during agentic tool use",
-            "Lower usage burn than higher GPT-5.5 efforts",
-            "Codex-only GPT-5.5 via Codex CLI"
+            "Preferred default for exploration and implementation",
+            "Native pi RPC sessions and RepoPrompt bridge tools",
+            "Balanced reasoning effort for routine agentic work",
+            "Uses OpenAI Codex subscription auth through pi"
         ]
     )
 
     static let bestPlanning = UseCase(
         id: "bestPlanning",
         title: "Best Planning",
-        modelLabel: "GPT-5.5 Pro",
-        accessLabel: "ChatGPT Pro export",
-        modelString: "gpt-5.5-pro",
-        agentKind: nil,
-        agentModel: nil,
+        modelLabel: "GPT-5.6 Sol XHigh",
+        accessLabel: "pi · OpenAI Codex",
+        modelString: AIModel.piCustom(name: AgentModelCatalog.preferredPiModelRaw(thinkingLevel: .xhigh)).rawValue,
+        agentKind: .pi,
+        agentModel: .defaultModel,
         strengths: [
-            "Extended reasoning time produces thorough analysis",
-            "Can reason about entire codebases at once",
-            "Produces clear, actionable architectural specifications",
-            "Catches edge cases and implications other models miss"
+            "Deep reasoning for architecture and whole-codebase analysis",
+            "Native pi RPC sessions and RepoPrompt bridge tools",
+            "Produces clear, actionable specifications",
+            "Catches edge cases and cross-boundary implications"
         ]
     )
 
     static let bestInAppPlanningReview = UseCase(
         id: "bestInAppPlanningReview",
         title: "Best In‑App Planning/Review",
-        modelLabel: "GPT-5.5 High",
-        accessLabel: "Codex CLI",
-        modelString: AIModel.codexCliGpt55CodexHigh.rawValue,
-        agentKind: .codexExec,
-        agentModel: .gpt55CodexHigh,
+        modelLabel: "GPT-5.6 Sol XHigh",
+        accessLabel: "pi · OpenAI Codex",
+        modelString: AIModel.piCustom(name: AgentModelCatalog.preferredPiModelRaw(thinkingLevel: .xhigh)).rawValue,
+        agentKind: .pi,
+        agentModel: .defaultModel,
         strengths: [
-            "Strong reasoning without extended wait times",
-            "Won't exhaust weekly usage limits quickly",
-            "Excellent diff generation",
-            "XHigh available when maximum reasoning is needed"
+            "Deep reasoning for Oracle planning and review",
+            "Native pi RPC sessions and RepoPrompt bridge tools",
+            "Excellent diff and architecture analysis",
+            "Max remains available for exceptional cases"
         ]
     )
 
     static let bestContextBuilder = UseCase(
         id: "bestContextBuilder",
         title: "Best Context Builder",
-        modelLabel: "GPT-5.5 Low",
-        accessLabel: "Codex CLI",
-        modelString: "gpt-5.5-low",
-        agentKind: .codexExec,
-        agentModel: .gpt55CodexLow,
+        modelLabel: "GPT-5.6 Sol Low",
+        accessLabel: "pi · OpenAI Codex",
+        modelString: AIModel.piCustom(name: AgentModelCatalog.preferredPiModelRaw(thinkingLevel: .low)).rawValue,
+        agentKind: .pi,
+        agentModel: .defaultModel,
         strengths: [
             "Strong codebase understanding",
             "Efficient file exploration and selection",
-            "Lower usage burn than higher GPT-5.5 efforts",
+            "Lower usage burn than higher reasoning efforts",
             "Practical default for repeated discovery runs"
         ]
     )
@@ -379,14 +388,14 @@ enum BestPracticeProfiles {
     // MARK: Model Strength Summary
 
     static let claudeStrengths = """
-    Claude Opus 4.6 remains great for editing-heavy work and careful file modifications. \
-    GPT-5.5 Low via Codex CLI is now our default recommendation for explore, discovery, and general agentic work.
+    Claude Fable 5 XHigh remains the preferred design model for architecture and creative problem solving. \
+    GPT-5.6 Sol through pi is the default for exploration, engineering, pairing, Context Builder, and Oracle.
     """
 
     static let gpt5HighStrengths = """
-    GPT-5.5 Low/High via Codex CLI provides strong reasoning without extended wait times. \
-    Low is recommended for explore, discovery, and default implementation; High is recommended for Oracle, review, and pair agents. \
-    XHigh offers maximum reasoning but can exhaust usage limits quickly.
+    GPT-5.6 Sol through pi provides the preferred reasoning range for RepoPrompt workflows. \
+    Low is recommended for Context Builder, Medium for exploration, High for engineering and pair work, and XHigh for Oracle. \
+    Max is available for exceptional cases but is not the default.
     """
 
     static let geminiStrengths = """
@@ -397,22 +406,18 @@ enum BestPracticeProfiles {
     // MARK: Explanatory Text
 
     static let codexVsOpenAIExplanation = """
-    GPT-5.5 is available to RepoPrompt through Codex CLI; do not configure it as an OpenAI API/OpenRouter model.
+    GPT-5.6 Sol is available through pi's OpenAI Codex provider. RepoPrompt discovers it from pi's authenticated model catalog rather than hard-coding provider availability.
 
-    Use GPT‑5.5 Low via Codex CLI for Context Builder discovery, explore, and default agentic implementation, \
-    and GPT‑5.5 High via Codex CLI for Oracle, review, and pair-agent work. Use GPT‑5.5 Pro for ChatGPT Pro export/planning.
+    Use Low for Context Builder, Medium for exploration, High for engineering and pair work, and XHigh for Oracle. \
+    Direct Codex CLI and API models remain fallbacks when the preferred pi model is unavailable.
     """
 
-    static let contextBuilderRationale = "Codex with GPT-5.5 Low provides the best Context Builder/discovery default – strong codebase exploration with practical usage burn."
+    static let contextBuilderRationale = "pi with OpenAI Codex GPT-5.6 Sol Low is the preferred Context Builder default for strong exploration with practical usage burn."
 
     static let contextWindowNote = """
-    You can use xhigh for context building, but context windows are finite, \
-    and reasoning takes space. Prefer GPT-5.5 Low for prompt and context building, \
-    then let GPT-5.5 High reason in full when needed.
+    You can use XHigh or Max for context building, but context windows are finite, \
+    and reasoning takes space. Prefer GPT-5.6 Sol Low for prompt and context building, \
+    then use higher effort only when the task needs it.
     """
 
-    static let codexHarnessNote = """
-    This works best with the API, as the model served in the Codex harness \
-    has capped reasoning time.
-    """
 }

@@ -898,6 +898,8 @@ actor PiRPCClient {
         case "agent_end":
             let messages = payload["messages"]?.arrayValue?.compactMap(\.objectValue) ?? []
             return .agentEnd(messages: messages, willRetry: payload["willRetry"]?.boolValue ?? false)
+        case "agent_settled":
+            return .agentSettled
         case "turn_start":
             return .turnStart
         case "turn_end":

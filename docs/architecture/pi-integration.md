@@ -1,6 +1,6 @@
 # pi Integration Architecture
 
-Current as of 2026-06-22 for pi 0.79.10. This document is contributor-facing: use it when editing RepoPrompt CE's pi provider, managed pi RPC runs, model discovery, Agent Mode runner, or RepoPrompt MCP bridge extension.
+Current as of 2026-07-18 for pi 0.80.10. This document is contributor-facing: use it when editing RepoPrompt CE's pi provider, managed pi RPC runs, model discovery, Agent Mode runner, or RepoPrompt MCP bridge extension.
 
 ## Scope and goals
 
@@ -93,7 +93,7 @@ RepoPrompt sets `REPOPROMPT_PI_MANAGED_RUN=1` for managed runs. The global/windo
 
 RepoPrompt also sets `REPOPROMPT_PI_PERMISSION_LEVEL` for managed runs. The window-scoped bridge reads this value before pi built-in tools execute and applies RepoPrompt's preflight policy gate. This gate is a RepoPrompt approval/policy boundary; it is not an OS or kernel sandbox.
 
-Minimum supported pi version is currently `0.79.0`, enforced by `PiIntegrationConfiguration.checkManagedRPCAvailability` before managed RPC runs that require the supported-version check. RepoPrompt is validated against pi 0.79.10. The 0.79.0-0.79.10 changelog keeps the same required managed launch shape for RepoPrompt. Important integration inputs from that range: project trust and RPC extension UI start at 0.79.0, `ctx.isProjectTrusted()` appears in 0.79.1, `CONFIG_DIR_NAME` / public diff helpers appear in 0.79.7, compaction events/results now include `estimatedTokensAfter`, and extension compaction events include `reason` plus `willRetry` in 0.79.10. None of these require removing `--approve` or changing JSONL framing.
+Minimum supported pi version is currently `0.79.0`, enforced by `PiIntegrationConfiguration.checkManagedRPCAvailability` before managed RPC runs that require the supported-version check. RepoPrompt is validated against pi 0.80.10 while retaining the tested 0.79 fallback path. Important integration inputs through 0.80.10 include project trust and RPC extension UI, compaction `reason` / `willRetry`, the authoritative `agent_settled` final-idle event, `max` thinking, GPT-5.6 model metadata, and provider-owned asynchronous model catalogs. None of these require removing `--approve` or changing JSONL framing.
 
 ### Built-in tool permission policy
 
@@ -134,14 +134,14 @@ Persisted model selection uses provider-qualified raw values when possible:
 
 `PiModelSpecifier` parses user/persisted raw values. Selecting a concrete pi model normally uses a provider prefix; pi default/no-model selections should use RepoPrompt's default-model sentinel and let pi choose from its own settings.
 
-Thinking levels are translated through `PiThinkingLevel` and then sent to pi via `set_thinking_level`. Do not persist pi-specific thinking values outside the existing `selectedReasoningEffortRaw` path. pi supports both forms for every pi model:
+Thinking levels are translated through `PiThinkingLevel` and then sent to pi via `set_thinking_level`. RepoPrompt supports pi's canonical `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max` values; model `thinkingLevelMap` metadata remains authoritative for which levels are selectable. Do not persist pi-specific thinking values outside the existing `selectedReasoningEffortRaw` path. pi supports both forms for every pi model:
 
 ```text
 pi --model <provider>/<modelID> --thinking high
 pi --model <provider>/<modelID>:high
 ```
 
-The pi catalog is workspace-scoped and state-aware. `AgentPiModelRegistry.catalogState` is the synchronous read model for menus and can be `loading`, `loaded(PiDiscoveredModels)`, or `unavailable`. Cold persisted snapshots are synchronously warmed on first read so the first menu open can show cached models. Menus must render loaded model rows, a disabled `Loading pi models…` row, or a disabled `No pi models available` row; no provider menu should be enabled with an empty child list.
+The pi catalog is workspace-scoped and state-aware. `AgentPiModelRegistry.catalogState` is the synchronous read model for menus and can be `loading`, `loaded(PiDiscoveredModels)`, or `unavailable`. pi 0.80.8+ composes built-ins, `models.json`, extension overlays, and provider-owned persisted catalogs asynchronously; `get_available_models` returns the current authenticated/available snapshot, not a force-refresh operation. RepoPrompt polling starts a fresh RPC discovery process and preserves its last successful snapshot on failures. Users can force pi's remote catalog refresh with `pi update --models`. Cold RepoPrompt snapshots are synchronously warmed on first read so the first menu open can show cached models. Menus must render loaded model rows, a disabled `Loading pi models…` row, or a disabled `No pi models available` row; no provider menu should be enabled with an empty child list.
 
 ### Image payloads
 
@@ -164,6 +164,8 @@ pi RPC is JSON Lines over stdin/stdout. RepoPrompt splits only on LF, trims ASCI
 - `response` payloads by request id;
 - `extension_ui_request` payloads to Agent Mode user interactions;
 - agent, turn, message, tool, queue, compaction, and extension events to `PiNativeSessionController.Event`.
+
+`agent_end` closes one low-level agent run and remains the bounded completion fallback for pi 0.79. `agent_settled` is the authoritative pi 0.80.4+ final-idle boundary after retries, compaction retries, and queued continuations; RepoPrompt completes the pending turn exactly once on settlement.
 
 Unknown event types should remain non-fatal. Protocol drift should produce bounded diagnostics rather than crashing normal runs or silently losing all evidence. When stdout closes, RepoPrompt must clear expected-pi PID registration, fail pending requests, emit transport closure, close file handles, and reap or terminate the raw `posix_spawn` child. Dropping the pid without `waitpid` can leave zombie or orphaned pi processes and violates the managed-run lifecycle contract.
 
@@ -239,7 +241,7 @@ Use the coordinated `make dev-*` commands by default so builds, tests, and launc
 
 ## Developer setup and smoke notes
 
-- Install pi `0.79.0` or newer.
+- Install pi `0.79.0` or newer; pi `0.80.10` is the current validated target.
 - RepoPrompt launches pi through the configured `pi` CLI profile and supplemental PATH hints.
 - Managed runs use `--mode rpc --approve`; model discovery and prompt-only flows can add `--no-session --no-tools`.
 - The window-scoped bridge is generated and installed automatically for Agent Mode pi runs. RepoPrompt keeps other managed window-scoped bridge files in place so concurrent pi runs in different windows can survive pi extension reload/rebind events; stale managed bridge files are repaired in place during install.
@@ -258,7 +260,7 @@ Cost-sensitive live pi call guidance:
 
 - Use `zai/glm-5.2`, `deepseek/deepseek-v4-pro`, and `deepseek/deepseek-v4-flash` freely for real pi calls; they are cheap test models.
 - Prefer colon or flag thinking syntax with those models, for example `zai/glm-5.2:high` or `--model zai/glm-5.2 --thinking high`.
-- If the cheaper models are unreliable, use real `openai-codex/gpt-5.5` calls sparingly relative to the cheap models; low and medium thinking levels are acceptable for practical validation.
+- If the cheaper models are unreliable, use real `openai-codex/gpt-5.6-sol` calls sparingly relative to the cheap models; low and medium thinking levels are acceptable for practical validation.
 - This list is only cost-control guidance for real provider calls. It must never be copied into discovery, picker, settings, validation, or persistence logic as an allowlist.
 
 ## Upstream PR expectations

@@ -449,9 +449,9 @@ final class PiRepoPromptBridgeExtensionInstallerTests: XCTestCase {
         try Self.runProcess(
             executable: tsc,
             arguments: [
-                "--module", "commonjs",
+                "--module", "node16",
                 "--target", "es2022",
-                "--moduleResolution", "node",
+                "--moduleResolution", "node16",
                 "--esModuleInterop",
                 "--skipLibCheck",
                 "--noImplicitAny", "false",

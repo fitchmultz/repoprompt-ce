@@ -407,6 +407,14 @@ actor PiNativeSessionController {
             if hasTurnInFlight {
                 await completeTurnIfPiReportsIdle(eventType: "agent_end")
             }
+        case .agentSettled:
+            guard hasTurnInFlight else { return }
+            if hasPendingMessageStop || !didEmitMessageStopSinceAgentStart {
+                emitMessageStop(stopReason: autoRetryInProgress ? "failed" : (pendingMessageStopReason ?? "completed"))
+            }
+            compactionInProgress = false
+            _ = await refreshCurrentSessionState()
+            terminalizeTurnAfterPiTerminalSignal(eventType: "agent_settled", usedStateFailureFallback: false)
         case let .extensionUIRequest(request):
             emit(.extensionUIRequest(request))
         case let .extensionError(message):

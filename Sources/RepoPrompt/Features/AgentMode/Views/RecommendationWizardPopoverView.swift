@@ -726,14 +726,14 @@ private func roleDefaultsSummary(_ defaults: [MCPAgentRoleDefault]) -> String {
 
 private func contextBuilderRecommendationDisplayName(_ recommendation: ContextBuilderRecommendation) -> String {
     ModelSelectionDisplayFormatter.agentQualifiedDisplayName(
-        for: recommendation.recommendedModel.rawValue,
+        for: recommendation.recommendedModelRaw,
         agentKind: recommendation.recommendedAgent
     )
 }
 
 private func contextBuilderRecommendationModelDisplayName(_ recommendation: ContextBuilderRecommendation) -> String {
     AgentModelCatalog.displayName(
-        for: recommendation.recommendedModel.rawValue,
+        for: recommendation.recommendedModelRaw,
         agentKind: recommendation.recommendedAgent
     )
 }
@@ -792,6 +792,9 @@ private struct ChatModelStepView: View {
             if let rec = viewModel.recommendations.chatModel {
                 // Backend selection cards
                 VStack(spacing: 12) {
+                    if rec.piOption != nil {
+                        backendCard(.pi, option: rec.piOption!)
+                    }
                     if rec.claudeCodeOption != nil {
                         backendCard(.claudeCode, option: rec.claudeCodeOption!)
                     }
@@ -800,9 +803,6 @@ private struct ChatModelStepView: View {
                     }
                     if rec.openAIOption != nil {
                         backendCard(.openAI, option: rec.openAIOption!)
-                    }
-                    if rec.piOption != nil {
-                        backendCard(.pi, option: rec.piOption!)
                     }
                 }
                 .id("recommendationContent")

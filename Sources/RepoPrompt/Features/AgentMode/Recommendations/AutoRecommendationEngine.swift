@@ -123,8 +123,8 @@ final class AutoRecommendationEngine {
     // MARK: - Chat Model Recommendation
 
     private func computeChatModelRecommendation(status: ProviderStatusSnapshot) -> ChatModelRecommendation? {
-        let inAppPlanning = BestPracticeProfiles.bestInAppPlanningReview
-        let bestPlanning = BestPracticeProfiles.bestPlanning
+        let codexFallbackModelString = AIModel.codexCliGpt55CodexHigh.rawValue
+        let codexFallbackModelLabel = AIModel.codexCliGpt55CodexHigh.displayName
         let apiPlanningModelString = AIModel.gpt54Pro.rawValue
         let apiPlanningModelLabel = AIModel.gpt54Pro.displayName
 
@@ -138,9 +138,9 @@ final class AutoRecommendationEngine {
         if status.codexCLI == .ready {
             codexOption = ChatBackendOption(
                 kind: .codex,
-                displayName: "Codex CLI (Recommended)",
-                modelString: inAppPlanning.modelString,
-                description: "\(inAppPlanning.modelLabel) – strong reasoning with practical limits",
+                displayName: "Codex CLI",
+                modelString: codexFallbackModelString,
+                description: "\(codexFallbackModelLabel) – fallback when pi GPT-5.6 Sol is unavailable",
                 tradeoffs: [
                     "• Strong reasoning without extended wait times",
                     "• Won't exhaust weekly usage limits quickly",
@@ -149,18 +149,16 @@ final class AutoRecommendationEngine {
             )
         }
 
-        // OpenAI API option - shows reasoning but higher cost. GPT-5.5 Pro is a ChatGPT Pro export/planning recommendation,
-        // not an OpenAI API model in RepoPrompt's guidance.
         if status.openAI == .ready {
             openAIOption = ChatBackendOption(
                 kind: .openAI,
                 displayName: "OpenAI API",
                 modelString: apiPlanningModelString,
-                description: "\(apiPlanningModelLabel) via API – use \(bestPlanning.modelLabel) through ChatGPT Pro export/planning",
+                description: "\(apiPlanningModelLabel) via API — fallback when pi GPT-5.6 Sol is unavailable",
                 tradeoffs: [
-                    "• API-backed planning and review when Codex CLI is unavailable",
+                    "• API-backed planning and review",
                     "• Visible reasoning traces",
-                    "• GPT-5.5 is Codex CLI / ChatGPT Pro guidance, not an API availability claim"
+                    "• Pay-per-use fallback independent of pi and Codex subscription auth"
                 ]
             )
         }
@@ -183,7 +181,7 @@ final class AutoRecommendationEngine {
         if status.piCLI == .ready, let option = recommendedPiChatModelOption() {
             piOption = ChatBackendOption(
                 kind: .pi,
-                displayName: "pi",
+                displayName: option.rawValue == AgentModelCatalog.preferredPiModelRaw(thinkingLevel: .xhigh) ? "pi (Recommended)" : "pi",
                 modelString: AIModel.piCustom(name: option.rawValue).rawValue,
                 description: "\(option.displayName) via pi RPC — uses pi's configured provider/model setup",
                 tradeoffs: [
@@ -194,27 +192,34 @@ final class AutoRecommendationEngine {
             )
         }
 
-        // Determine default backend and upgrade hint
-        // Priority for CHAT: Codex CLI > OpenAI API > Claude Code > pi
+        // Determine default backend and upgrade hint.
         let defaultBackend: ChatBackendKind
         var priorityPath: [String] = []
         var upgradeHint: String? = nil
+        let preferredPiModel = AIModel.piCustom(name: AgentModelCatalog.preferredPiModelRaw(thinkingLevel: .xhigh)).rawValue
+        let preferredPiSetupHint = status.piCLI == .ready
+            ? "Run pi update --models or configure openai-codex/gpt-5.6-sol for the preferred Oracle default."
+            : "Connect pi and configure OpenAI Codex GPT-5.6 Sol for the preferred Oracle default."
 
-        if codexOption != nil {
+        if piOption?.modelString == preferredPiModel {
+            defaultBackend = .pi
+            priorityPath = ["pi (GPT-5.6 Sol XHigh)", "Codex CLI", "Claude Code"]
+        } else if codexOption != nil {
             defaultBackend = .codex
-            priorityPath = ["Codex CLI (\(inAppPlanning.modelLabel))", "OpenAI API", "Claude Code"]
+            priorityPath = ["Codex CLI (\(codexFallbackModelLabel))", "OpenAI API", "Claude Code"]
+            upgradeHint = preferredPiSetupHint
         } else if openAIOption != nil {
             defaultBackend = .openAI
             priorityPath = ["OpenAI API (\(apiPlanningModelLabel))", "Claude Code"]
-            upgradeHint = "Connect Codex CLI for \(inAppPlanning.modelLabel) – strong reasoning with practical usage limits (requires OpenAI Plus/Pro)."
+            upgradeHint = preferredPiSetupHint
         } else if claudeCodeOption != nil {
             defaultBackend = .claudeCode
             priorityPath = ["Claude Code", "pi"]
-            upgradeHint = "For best chat experience, connect Codex CLI (requires OpenAI Plus/Pro) for \(inAppPlanning.modelLabel) – balances quality with usage limits."
+            upgradeHint = preferredPiSetupHint
         } else if piOption != nil {
             defaultBackend = .pi
             priorityPath = ["pi"]
-            upgradeHint = "Connect Codex CLI, OpenAI API, or Claude Code for the curated chat defaults; pi remains available through its dynamically configured models."
+            upgradeHint = preferredPiSetupHint
         } else {
             return nil
         }
@@ -230,110 +235,23 @@ final class AutoRecommendationEngine {
         )
     }
 
-    // MARK: - Free Tier Chat Model Recommendation
-
-    /// Compute chat model recommendation for CE users.
-    /// Priority: Claude Code > Codex CLI > OpenAI API
-    private func computeFreeTierChatModelRecommendation(status: ProviderStatusSnapshot) -> ChatModelRecommendation? {
-        var claudeCodeOption: ChatBackendOption?
-        var codexOption: ChatBackendOption?
-        var openAIOption: ChatBackendOption?
-        var piOption: ChatBackendOption?
-
-        // Priority 1: Claude Code CLI
-        if status.claudeCodeCLI == .ready {
-            claudeCodeOption = ChatBackendOption(
-                kind: .claudeCode,
-                displayName: "Claude Code CLI (Recommended)",
-                modelString: AIModel.claudeCodeSonnet.rawValue,
-                description: "Claude Sonnet via Claude Code CLI",
-                tradeoffs: [
-                    "• Excellent chat and editing capabilities",
-                    "• Good balance of speed and quality",
-                    "• Uses your Claude Code subscription"
-                ]
-            )
-        }
-
-        // Priority 2: Codex CLI
-        if status.codexCLI == .ready {
-            codexOption = ChatBackendOption(
-                kind: .codex,
-                displayName: "Codex CLI",
-                modelString: AIModel.codexCliGpt55CodexMedium.rawValue,
-                description: "GPT-5.5 Medium via Codex CLI",
-                tradeoffs: [
-                    "• Superior reasoning capabilities",
-                    "• Excellent for complex tasks",
-                    "• Uses your Codex subscription"
-                ]
-            )
-        }
-
-        // Priority 4: OpenAI API
-        if status.openAI == .ready {
-            openAIOption = ChatBackendOption(
-                kind: .openAI,
-                displayName: "OpenAI API",
-                modelString: AIModel.gpt54.rawValue,
-                description: "GPT-5.4 via OpenAI API",
-                tradeoffs: [
-                    "• Superior reasoning capabilities",
-                    "• Pay-per-use pricing",
-                    "• Direct API access"
-                ]
-            )
-        }
-
-        if status.piCLI == .ready, let option = recommendedPiChatModelOption() {
-            piOption = ChatBackendOption(
-                kind: .pi,
-                displayName: "pi",
-                modelString: AIModel.piCustom(name: option.rawValue).rawValue,
-                description: "\(option.displayName) via pi RPC",
-                tradeoffs: [
-                    "• Uses your configured pi model/provider",
-                    "• Native RPC integration with RepoPrompt bridge tools",
-                    "• RepoPrompt-managed runs gate pi built-ins before execution"
-                ]
-            )
-        }
-
-        // Determine default backend based on priority
-        let defaultBackend: ChatBackendKind
-        var priorityPath: [String] = []
-
-        if claudeCodeOption != nil {
-            defaultBackend = .claudeCode
-            priorityPath.append("Claude Code CLI")
-        } else if codexOption != nil {
-            defaultBackend = .codex
-            priorityPath.append("Codex CLI")
-        } else if openAIOption != nil {
-            defaultBackend = .openAI
-            priorityPath.append("OpenAI API")
-        } else if piOption != nil {
-            defaultBackend = .pi
-            priorityPath.append("pi")
-        } else {
-            // No suitable providers available
-            return nil
-        }
-
-        return ChatModelRecommendation(
-            defaultBackend: defaultBackend,
-            codexOption: codexOption,
-            openAIOption: openAIOption,
-            claudeCodeOption: claudeCodeOption,
-            piOption: piOption,
-            priorityPath: priorityPath,
-            upgradeHint: nil
+    private func preferredPiModelOption(thinkingLevel: PiThinkingLevel) -> AgentModelOption? {
+        guard let base = apiSettingsViewModel?.availablePiModelOptions.first(where: {
+            $0.rawValue.caseInsensitiveCompare(AgentModelCatalog.preferredPiModelBaseRaw) == .orderedSame
+        }), base.supportedPiThinkingLevels.contains(thinkingLevel) else { return nil }
+        return AgentModelOption(
+            rawValue: AgentModelCatalog.preferredPiModelRaw(thinkingLevel: thinkingLevel),
+            displayName: "\(base.displayName) \(thinkingLevel.displayName)",
+            description: base.description,
+            isDefault: false,
+            supportedPiThinkingLevels: base.supportedPiThinkingLevels
         )
     }
 
     private func recommendedPiChatModelOption() -> AgentModelOption? {
         guard let vm = apiSettingsViewModel else { return nil }
-        return vm.availablePiModelOptions.first(where: { $0.isProviderDefault })
+        return preferredPiModelOption(thinkingLevel: .xhigh)
+            ?? vm.availablePiModelOptions.first(where: { $0.isProviderDefault })
             ?? vm.availablePiModelOptions.first
     }
 
@@ -343,43 +261,54 @@ final class AutoRecommendationEngine {
         status: ProviderStatusSnapshot,
         settings _: ChatGlobalSettings
     ) -> ContextBuilderRecommendation? {
-        Self.contextBuilderRecommendation(status: status)
+        Self.contextBuilderRecommendation(
+            status: status,
+            preferredPiModelAvailable: preferredPiModelOption(thinkingLevel: .low) != nil
+        )
     }
 
     /// Shared Context Builder recommendation ranking used by both the wizard and startup restore.
     /// Keeping this pure prevents startup fallback behavior from drifting from the recommendation UI.
     static func contextBuilderRecommendation(
-        status: ProviderStatusSnapshot
+        status: ProviderStatusSnapshot,
+        preferredPiModelAvailable: Bool = false
     ) -> ContextBuilderRecommendation? {
-        // Priority: Codex CLI (requires CLI) > Claude Code > pi > Cursor CLI.
-        // pi is a first-class peer candidate when its native runtime and usable model catalog are ready.
-        // Note: codexExec agent requires Codex CLI specifically, not just OpenAI API key
-        if status.codexCLI == .ready {
+        let preferredPiSetupHint = status.piCLI == .ready
+            ? "Run pi update --models or configure openai-codex/gpt-5.6-sol for the preferred Context Builder default."
+            : "Connect pi and configure OpenAI Codex GPT-5.6 Sol for the preferred Context Builder default."
+        if status.piCLI == .ready, preferredPiModelAvailable {
+            return ContextBuilderRecommendation(
+                recommendedAgent: .pi,
+                recommendedModelRaw: AgentModelCatalog.preferredPiModelRaw(thinkingLevel: .low),
+                rationale: BestPracticeProfiles.contextBuilderRationale
+            )
+        } else if status.codexCLI == .ready {
             return ContextBuilderRecommendation(
                 recommendedAgent: .codexExec,
                 recommendedModel: .gpt55CodexLow,
-                rationale: BestPracticeProfiles.contextBuilderRationale
+                rationale: "Codex with GPT-5.5 Low is the fallback when pi GPT-5.6 Sol is unavailable.",
+                upgradeHint: preferredPiSetupHint
             )
         } else if status.claudeCodeCLI == .ready {
             return ContextBuilderRecommendation(
                 recommendedAgent: .claudeCode,
                 recommendedModel: .claudeSonnet,
                 rationale: "Claude Code with Sonnet provides strong context building with good balance of speed and quality.",
-                upgradeHint: "For best context building, connect Codex CLI with GPT-5.5 Low. Requires OpenAI Plus/Pro subscription."
+                upgradeHint: preferredPiSetupHint
             )
         } else if status.piCLI == .ready {
             return ContextBuilderRecommendation(
                 recommendedAgent: .pi,
                 recommendedModel: .defaultModel,
                 rationale: "pi can build RepoPrompt context through its native RPC session, configured model catalog, and managed RepoPrompt bridge.",
-                upgradeHint: "For best context building, compare pi's configured default model with Codex CLI GPT-5.5 Low or Claude Code Sonnet."
+                upgradeHint: preferredPiSetupHint
             )
         } else if status.cursorCLI == .ready {
             return ContextBuilderRecommendation(
                 recommendedAgent: .cursor,
                 recommendedModel: .cursorComposer2,
                 rationale: "Cursor CLI with Composer 2 can handle context building when higher-ranked peer providers are not configured.",
-                upgradeHint: "For best context building, connect Codex CLI with GPT-5.5 Low, Claude Code with Sonnet, or pi with its configured default model."
+                upgradeHint: preferredPiSetupHint
             )
         }
 
@@ -416,10 +345,17 @@ final class AutoRecommendationEngine {
             openCodeCLI: availability.openCodeAvailable ? .ready : .notConfigured,
             openAI: .notConfigured
         ).filtered(to: enabledRecommendationProviders)
-        if let recommendation = contextBuilderRecommendation(status: status) {
+        if let recommendation = contextBuilderRecommendation(
+            status: status,
+            preferredPiModelAvailable: AgentModelCatalog.isValid(
+                rawModel: AgentModelCatalog.preferredPiModelRaw(thinkingLevel: .low),
+                for: .pi,
+                availability: availability
+            )
+        ) {
             let resolved = AgentModelCatalog.normalizeSelection(
                 agentRaw: recommendation.recommendedAgent.rawValue,
-                modelRaw: recommendation.recommendedModel.rawValue,
+                modelRaw: recommendation.recommendedModelRaw,
                 availability: availability
             )
             if AgentModelCatalog.isValid(rawModel: resolved.modelRaw, for: resolved.agent, availability: availability) {
@@ -558,16 +494,21 @@ final class AutoRecommendationEngine {
             $0.selectionIDRaw == $1.selectionIDRaw
         }
 
-        // Suggest upgrade if only some CLIs are available
+        let preferredPiRoleDefaultsAvailable = [PiThinkingLevel.medium, .high].allSatisfy { level in
+            AgentModelCatalog.isValid(
+                rawModel: AgentModelCatalog.preferredPiModelRaw(thinkingLevel: level),
+                for: .pi,
+                availability: recommendedAvailability
+            )
+        }
         let upgradeHint: String? = {
-            if recommendedStatus.codexCLI != .ready {
-                return "Connect Codex CLI for GPT-5.5 Low (explore/discovery/engineer/default implementation), GPT-5.5 High (pair/Oracle), and GPT-5.5 Medium (design fallback)."
+            if !preferredPiRoleDefaultsAvailable {
+                return recommendedStatus.piCLI == .ready
+                    ? "Run pi update --models or configure openai-codex/gpt-5.6-sol for the preferred explore, engineer, and pair defaults."
+                    : "Connect pi with OpenAI Codex GPT-5.6 Sol for the preferred explore, engineer, and pair defaults."
             }
             if recommendedStatus.claudeCodeCLI != .ready {
-                return "Connect Claude Code for Claude Opus (design/pair). Best for architecture and creative work."
-            }
-            if recommendedStatus.piCLI != .ready {
-                return "Connect pi to make its native session-capable agent available as a fallback for MCP role defaults."
+                return "Connect Claude Code for Fable 5 XHigh, the preferred design default."
             }
             return nil
         }()
@@ -620,7 +561,7 @@ final class AutoRecommendationEngine {
     /// Keeps recommendations hardcoded while resolving to an equivalent Codex dynamic model
     /// when model/list data is available.
     private func resolveContextBuilderRecommendedModelRaw(_ rec: ContextBuilderRecommendation) -> String {
-        let fallback = rec.recommendedModel.rawValue
+        let fallback = rec.recommendedModelRaw
         guard rec.recommendedAgent == .codexExec else { return fallback }
 
         let options = CodexDynamicModelStore.modelOptions()
@@ -707,7 +648,7 @@ final class AutoRecommendationEngine {
         // MCP callers that still read these fields remain in sync with recommendations.
         var workspaceSettings = settingsStore.chatSettings(for: workspaceID)
         workspaceSettings.contextBuilderAgentRaw = rec.recommendedAgent.rawValue
-        workspaceSettings.contextBuilderAgentModelRaw = rec.recommendedModel.rawValue
+        workspaceSettings.contextBuilderAgentModelRaw = resolvedModelRaw
         workspaceSettings.didUserSetContextBuilderDefaults = true
         settingsStore.updateChatSettings(workspaceSettings, commit: true)
         // Note: Notification is posted by the caller (wizard) after all recommendations are applied
@@ -955,13 +896,13 @@ final class AutoRecommendationEngine {
         let modelMatch: Bool = {
             guard let globalModelRaw else { return false }
             if rec.recommendedAgent != .codexExec {
-                return globalModelRaw == rec.recommendedModel.rawValue
+                return globalModelRaw == rec.recommendedModelRaw
             }
 
             let globalNormalized = globalModelRaw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             guard !globalNormalized.isEmpty else { return false }
 
-            var accepted = Set(codexEquivalentModelCandidates(for: rec.recommendedModel.rawValue).map { $0.lowercased() })
+            var accepted = Set(codexEquivalentModelCandidates(for: rec.recommendedModelRaw).map { $0.lowercased() })
             accepted.insert(resolveContextBuilderRecommendedModelRaw(rec).lowercased())
             return accepted.contains(globalNormalized)
         }()

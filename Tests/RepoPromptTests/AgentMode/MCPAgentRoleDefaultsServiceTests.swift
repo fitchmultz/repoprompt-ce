@@ -67,6 +67,51 @@ final class MCPAgentRoleDefaultsServiceTests: XCTestCase {
         XCTAssertEqual(engineer.effective, engineer.recommended)
     }
 
+    func testBestPracticeProfilesUseRequestedPiGpt56Defaults() {
+        XCTAssertEqual(
+            BestPracticeProfiles.bestInAppPlanningReview.modelString,
+            AIModel.piCustom(name: AgentModelCatalog.preferredPiModelRaw(thinkingLevel: .xhigh)).rawValue
+        )
+        XCTAssertEqual(
+            BestPracticeProfiles.bestContextBuilder.modelString,
+            AIModel.piCustom(name: AgentModelCatalog.preferredPiModelRaw(thinkingLevel: .low)).rawValue
+        )
+    }
+
+    func testPreferredRoleDefaultsUsePiGpt56SolAndClaudeFable5() {
+        AgentPiModelRegistry.shared.test_reset()
+        defer { AgentPiModelRegistry.shared.test_reset() }
+        XCTAssertTrue(AgentPiModelRegistry.shared.updateDiscoveredModels(PiDiscoveredModels(
+            options: [AgentModelOption(
+                rawValue: AgentModelCatalog.preferredPiModelBaseRaw,
+                displayName: "GPT-5.6 Sol",
+                description: nil,
+                isDefault: true,
+                supportedPiThinkingLevels: [.low, .medium, .high, .xhigh, .max]
+            )],
+            currentModelRaw: AgentModelCatalog.preferredPiModelBaseRaw
+        )))
+        let availability = AgentModelCatalog.AvailabilityContext(
+            claudeCodeAvailable: true,
+            codexAvailable: true,
+            openCodeAvailable: false,
+            cursorAvailable: false,
+            piAvailable: true
+        )
+
+        let resolutions = MCPAgentRoleDefaultsService.resolutions(
+            availability: availability,
+            settingsStore: RoleDefaultsStoreStub()
+        )
+
+        XCTAssertEqual(resolutions.map(\.recommended), [
+            .init(agent: .pi, modelRaw: AgentModelCatalog.preferredPiModelRaw(thinkingLevel: .medium)),
+            .init(agent: .pi, modelRaw: AgentModelCatalog.preferredPiModelRaw(thinkingLevel: .high)),
+            .init(agent: .pi, modelRaw: AgentModelCatalog.preferredPiModelRaw(thinkingLevel: .high)),
+            .init(agent: .claudeCode, modelRaw: "claude-fable-5:xhigh")
+        ])
+    }
+
     func testSetSelectionPersistsExplicitPickEvenWhenItMatchesRecommendation() {
         let actualAvailability = AgentModelCatalog.AvailabilityContext(
             claudeCodeAvailable: false,

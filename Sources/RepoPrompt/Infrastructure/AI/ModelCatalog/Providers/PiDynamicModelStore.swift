@@ -43,6 +43,12 @@ struct PiDynamicModelRecord: Codable, Hashable {
         let normalized = "\(rawValue) \(displayName)"
             .replacingOccurrences(of: "_", with: "-")
             .lowercased()
+        if normalized.contains("gpt-5.6") || normalized.contains("gpt 5.6") || normalized.contains("gpt-5-6") {
+            return PiThinkingLevel.displayOrder
+        }
+        if normalized.contains("kimi-coding/k3") || normalized.contains("kimi k3") {
+            return [.max]
+        }
         if normalized.contains("gpt-5.5-pro") || normalized.contains("gpt 5.5 pro") || normalized.contains("gpt-5-5-pro") {
             return [.medium, .high, .xhigh]
         }
